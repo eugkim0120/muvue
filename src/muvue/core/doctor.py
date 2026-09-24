@@ -18,6 +18,7 @@ from pathlib import Path
 from . import adapters as adapters_mod
 from . import db as core_db
 from . import gitutil
+from . import runner as runner_mod
 from .config import ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
 
@@ -260,6 +261,22 @@ def run_doctor(
             config = load_config(config_path)
         except ConfigError as e:
             report.fail(str(e))
+
+    # v4 section 2: "`doctor` errors if `budget.unit` is not producible by
+    # that driver's `cost_model`." Mirrors decision #72's existing
+    # cost_model -> agent_spend-unit mapping (core.runner.
+    # EXPECTED_BUDGET_UNIT), not a new one.
+    if config is not None:
+        for agent_name, agent_cfg in config.agents.items():
+            if agent_cfg.budget is None:
+                continue
+            expected_unit = runner_mod.EXPECTED_BUDGET_UNIT.get(agent_cfg.cost_model)
+            if agent_cfg.budget.unit != expected_unit:
+                report.fail(
+                    f"agents.{agent_name}.budget.unit is {agent_cfg.budget.unit!r}, which "
+                    f"cost_model {agent_cfg.cost_model!r} cannot produce (expected "
+                    f"{expected_unit!r})"
+                )
 
     db_path = muvue_dir / "muvue.db"
     if not db_path.exists():
