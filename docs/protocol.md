@@ -652,29 +652,32 @@ FTS5 tables are global, not scoped to a project.
 `core.queries.search_decisions`/`search_components` are the reusable
 query functions (also used by `core.pr.generate_pr_body`, below).
 
-### `muvue import --from github#N --node-id ID [--data PATH]`
+### `muvue import --from github#N --node-id ID [--data PATH] [--repo owner/name]`
 
 `core.imports.import_github_issue` (plan section 4/11). Human verb,
-never exposed over MCP. No live GitHub API access in this environment
-(plan working rule 2, no new HTTP-client dependency) — issue data comes
-from one of `data` (inline dict), `data_path`/`--data` (a local JSON
-file, `{"number", "title", "url", "body"}`), or an injected
-`fetch_fn(issue_number) -> dict` (the seam a real GitHub-API
-implementation plugs into later; not built here). Inserts one
-`external_refs` row (`system='github'`) and records
+never exposed over MCP. Fetches live via `core.github.fetch_issue_via_gh`
+(a real `gh issue view`/`gh pr view` subprocess call) by default;
+`data_path`/`--data` (a local JSON file, `{"number", "title", "url",
+"body"}`) still bypasses `gh` entirely, and the underlying `fetch_fn`
+seam remains swappable for a non-`gh`-based implementation later.
+Inserts one `external_refs` row (`system='github'`) and records
 `external_ref.added`. Also `POST /import` (session-token-gated; `data`
-is a required JSON body field, no file-path option over HTTP).
+is a required JSON body field, no file-path or live-fetch option over
+HTTP yet).
 
-### `muvue merge NODE_ID --pr`
+### `muvue merge NODE_ID --pr [--create] [--repo owner/name]`
 
-`core.pr.generate_pr_body` (plan section 4/6/11). No real `gh pr create`
-call (no network access here) — returns a markdown PR description body
-(`result["pr_body"]`) built from the node's own title/body_md,
+`core.pr.generate_pr_body` (plan section 4/6/11) builds a markdown PR
+description body (`result["pr_body"]`) from the node's own title/body_md,
 acceptance criteria (`criteria_json`), its notes, any relevant decisions
 (same FTS5 search `brief` uses), and any linked `external_refs`.
-Independent of the merge outcome itself (works the same in light mode,
-where `attempt_merge` returns `"no_worktree"`). Also `POST
-/nodes/{id}/merge?pr=true` (session-token-gated).
+`--pr` alone returns that text only, no GitHub write, independent of the
+merge outcome itself (works the same in light mode, where `attempt_merge`
+returns `"no_worktree"`). `--pr --create` additionally opens a real PR
+via `core.github.create_pr_via_gh` (`gh pr create --head node-<id> --base
+main`), returned as `result["pr"] = {"url": ...}`. Also `POST
+/nodes/{id}/merge?pr=true` (session-token-gated; `--create`'s live PR
+creation is CLI-only for now).
 
 ## Drift loop, `audit`, lesson decay, real `drift_pct`/timeline (P7)
 

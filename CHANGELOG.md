@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - real GitHub API wiring for `import`/`merge --pr --create`
+
+Post-P8 remediation: fills the network-free stubs P6/P8 documented as
+needing future work, now that a real authenticated `gh` CLI is available.
+
+### Added
+- `src/muvue/core/github.py`: `fetch_issue_via_gh`/`create_pr_via_gh`,
+  real `gh issue view`/`gh pr view`/`gh pr create` subprocess wrappers
+  (muvue never touches GitHub credentials directly -- relies on `gh`'s
+  own login, same posture as the vendor-agent drivers).
+- `muvue import --from github#N` fetches live via `gh` by default now
+  (`--data PATH` still available to bypass it); new `--repo owner/name`
+  option.
+- `muvue merge --pr --create` opens a real PR via `gh pr create`;
+  `--pr` alone is unchanged (body text only, no write). New `--repo`
+  option.
+- `tests/test_github_live_fetch.py`: mocked-subprocess unit coverage
+  for both success and failure paths of all three `gh` calls.
+
+### Verified
+- Live end-to-end against a real (throwaway, created-and-closed-during-
+  verification) GitHub issue: `core.github.fetch_issue_via_gh` and the
+  full `muvue project create -> spec -> approve -> decompose -> import`
+  CLI loop both fetched and linked the real issue correctly.
+- `create_pr_via_gh` verified via its mocked unit tests only, not a live
+  throwaway PR (see docs/decisions.md #69 for why).
+
 ## [Unreleased] - P8 (thin VS Code extension: webview + command bridge)
 
 Final phase of the handoff plan (plan section 11 row P8).

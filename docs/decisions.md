@@ -872,3 +872,25 @@ reading here. Real `decisions` table entries start once dogfooding begins
     not subject to browser CORS at all. Plan working rule 3 says to fix a
     genuine CORS gap minimally if one is found; none was found, so
     `app.py` is unchanged in this phase.
+
+69. **Real GitHub API wiring for `import`/`merge --pr --create` (post-P8,
+    remediation pass).** P6/P8 built `import`'s `fetch_fn` seam and
+    `merge --pr`'s body generation as network-free stubs because those
+    build sessions had no network access. This environment's session
+    does have an already-authenticated `gh` CLI, so the seam is filled
+    for real: `core/github.py` shells out to `gh issue view`/`gh pr
+    view`/`gh pr create` (never touching GitHub credentials directly --
+    plan section 1 principle 7, same posture as the vendor-agent
+    drivers in `core.drivers`). `muvue import --from github#N` now
+    fetches live by default (`--data PATH` still available to bypass
+    `gh` entirely); `muvue merge --pr --create` opens a real PR
+    (`--pr` alone still only returns body text, no write). Verified
+    live end-to-end against a real throwaway GitHub issue (created and
+    closed during verification, not left open) and a real CLI-driven
+    `project create -> spec -> approve -> decompose -> import` loop;
+    `gh pr create` itself was left to its existing mocked-subprocess
+    unit tests rather than opening a real throwaway PR, since a PR is a
+    more externally-visible artifact than an issue and the two `gh`
+    call shapes (`issue view`/`pr view` vs `pr create`) are structurally
+    identical subprocess wrappers, so the live issue-fetch verification
+    already covers the mechanism.

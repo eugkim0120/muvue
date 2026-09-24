@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 from pathlib import Path
@@ -769,8 +770,15 @@ def merge(
     ),
     pr: bool = typer.Option(
         False, "--pr", help="also generate a PR description body (plan section 6/11, P6) -- "
-        "criteria + relevant decisions/notes/linked issues; requires a single NODE_ID, no real "
-        "`gh pr create` call (no network access here)",
+        "criteria + relevant decisions/notes/linked issues; requires a single NODE_ID",
+    ),
+    create: bool = typer.Option(
+        False, "--create", help="with --pr: actually open the PR via a real `gh pr create` "
+        "call (default: body text only, no GitHub write)",
+    ),
+    repo: str = typer.Option(
+        None, "--repo", help="'owner/name' for --create's `gh` call; omit to use the current "
+        "directory's gh-detected repo",
     ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
@@ -778,9 +786,13 @@ def merge(
     node branch(es) onto the airlock's main. On conflict: the node ->
     blocked(conflict), attempts + 1, and a "rebase onto main" subtask is
     created. Light-mode / never-started-strict nodes are a documented
-    no-op (see core/merge.py)."""
+    no-op (see core/merge.py). `--pr --create` opens a real PR via `gh`
+    (see core/github.py); `--pr` alone only returns the body text."""
     if pr and node_id is None:
         typer.echo("--pr requires a single NODE_ID", err=True)
+        raise typer.Exit(1)
+    if create and not pr:
+        typer.echo("--create requires --pr", err=True)
         raise typer.Exit(1)
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
@@ -788,7 +800,18 @@ def merge(
         if node_id is not None:
             result = core.merge.attempt_merge(conn, node_id, repo_root)
             if pr:
-                result["pr_body"] = core.pr.generate_pr_body(conn, node_id)
+                node = core.nodes.get_node(conn, node_id)
+                body = core.pr.generate_pr_body(conn, node_id)
+                result["pr_body"] = body
+                if create:
+                    try:
+                        result["pr"] = core.github.create_pr_via_gh(
+                            head=f"node-{node_id}", base="main",
+                            title=node["title"], body=body, repo=repo,
+                        )
+                    except core.github.GithubError as exc:
+                        typer.echo(f"gh pr create failed: {exc}", err=True)
+                        raise typer.Exit(1) from exc
         else:
             result = core.merge.merge_pending(conn, repo_root)
     finally:
@@ -860,17 +883,20 @@ def import_(
     ),
     node_id: int = typer.Option(..., "--node-id", help="node to link the issue to"),
     data: Path = typer.Option(
-        None, "--data", help="local JSON file with the issue's data (no live GitHub API access "
-        "in this environment -- plan section 11/working rule 2; shape: "
-        '{"number": N, "title": ..., "url": ..., "body": ...}',
+        None, "--data", help="local JSON file with the issue's data, instead of a real `gh` "
+        'fetch; shape: {"number": N, "title": ..., "url": ..., "body": ...}',
+    ),
+    repo: str = typer.Option(
+        None, "--repo", help="'owner/name' for the `gh` fetch; omit to use the current "
+        "directory's gh-detected repo",
     ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 4/11): link NODE_ID to a GitHub issue/PR
-    in `external_refs`. `--from github#N` names the issue; `--data PATH`
-    supplies its data locally (see core/imports.py -- the real GitHub
-    fetch is a documented, injectable seam, not wired to a live API
-    here)."""
+    in `external_refs`. `--from github#N` names the issue. Fetches the
+    issue's data via a real `gh issue view`/`gh pr view` call unless
+    `--data PATH` supplies it locally instead (see core/imports.py,
+    core/github.py)."""
     system, _, rest = from_.partition("#")
     if system != "github" or not rest.isdigit():
         typer.echo(f"unsupported --from {from_!r}; expected 'github#N'", err=True)
@@ -879,9 +905,19 @@ def import_(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.imports.import_github_issue(
-            conn, node_id, issue_number, data_path=data,
-        )
+        if data is not None:
+            result = core.imports.import_github_issue(
+                conn, node_id, issue_number, data_path=data,
+            )
+        else:
+            fetch_fn = functools.partial(core.github.fetch_issue_via_gh, repo=repo)
+            try:
+                result = core.imports.import_github_issue(
+                    conn, node_id, issue_number, fetch_fn=fetch_fn,
+                )
+            except core.github.GithubError as exc:
+                typer.echo(f"gh fetch failed: {exc}", err=True)
+                raise typer.Exit(1) from exc
     finally:
         conn.close()
     _echo_json(result)
