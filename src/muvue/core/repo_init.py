@@ -72,16 +72,20 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
     content = path.read_text() if path.exists() else ""
     if begin in content:
         return
-    lines = [
-        begin,
+    entries = [
         ".muvue/muvue.db",
         ".muvue/muvue.db-wal",
         ".muvue/muvue.db-shm",
         ".muvue/session",
         ".muvue/current_node",
-        end,
-        "",
     ]
+    # A repo may already ignore one of these as a plain (unmarked) line --
+    # don't duplicate it inside the marker block (dogfood-gate follow-up,
+    # docs/decisions.md #40). Exact-line match only: substring matching
+    # would also skip ".muvue/muvue.db" against ".muvue/muvue.db-wal".
+    existing_lines = set(content.splitlines())
+    entries = [e for e in entries if e not in existing_lines]
+    lines = [begin, *entries, end, ""]
     sep = "" if content == "" or content.endswith("\n") else "\n"
     path.write_text(content + sep + "\n".join(lines))
 
