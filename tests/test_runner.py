@@ -91,6 +91,15 @@ def test_five_tasks_run_unattended_end_to_end(conn, project, config, db_path, re
     # real usage rows recorded per node (plan section 6: "usage recorded to node_usage")
     usage_rows = conn.execute("SELECT COUNT(*) c FROM node_usage").fetchone()["c"]
     assert usage_rows == 5
+    # v4 section 2/6: every node_usage row also accrues to `agent_spend`,
+    # in the unit this driver's cost_model ("tokens") actually produces.
+    from muvue.core import spend as spend_mod
+
+    total_tokens = conn.execute(
+        "SELECT COALESCE(SUM(in_tokens + out_tokens), 0) c FROM node_usage"
+    ).fetchone()["c"]
+    assert spend_mod.get_spend(conn, project["id"], "fake", "tokens") == total_tokens
+    assert total_tokens > 0
 
 
 def test_run_spawns_a_fresh_subprocess_per_node_not_shared_state(conn, project, config, db_path, repo_root):

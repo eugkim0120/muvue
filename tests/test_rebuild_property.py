@@ -214,3 +214,68 @@ def test_rebuild_matches_live_through_handoff(conn):
     nodes.start(conn, task["id"], owner="agent-A")
     nodes.handoff(conn, task["id"], new_owner="human-jane")
     assert rebuild.diff_state(conn) == {}
+
+
+# --------------------------------------------------------------------------
+# v4 section 3: replay-scope redefinition. v3's P0 acceptance ("replay
+# equals live DB") was false as written -- `lease_until` is wall-clock and
+# can never be reproduced by replaying events recorded at a different
+# real time. These two tests prove the *narrowed* comparison
+# (`rebuild.diff_state`, now projecting both sides down to the
+# replayable columns) still does its job: a genuine replayable-field
+# discrepancy is still caught, and a discrepancy confined to a
+# non-replayable field is no longer flagged.
+# --------------------------------------------------------------------------
+
+
+def test_diff_state_still_catches_a_genuine_replayable_discrepancy(conn):
+    """A live-only mutation to a *replayable* column (here: `status`,
+    written directly with no corresponding event -- simulating a bug
+    where some future code path forgets to call through `core.nodes`)
+    must still be caught. This is the "narrower comparison still catches
+    real bugs" half of the v4 section 3 redefinition."""
+    project = _executing_project(conn, "replay-scope genuine bug")
+    node = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
+    assert rebuild.diff_state(conn) == {}
+
+    # Simulate a hypothetical bug: a direct SQL write that bypasses
+    # `core.nodes` and its event log entirely.
+    conn.execute("UPDATE nodes SET status = 'blocked' WHERE id = ?", (node["id"],))
+    conn.commit()
+
+    mismatches = rebuild.diff_state(conn)
+    assert "nodes" in mismatches
+    assert node["id"] in mismatches["nodes"]
+    assert mismatches["nodes"][node["id"]]["live"]["status"] == "blocked"
+    assert mismatches["nodes"][node["id"]]["replayed"]["status"] == "ready"
+
+
+def test_diff_state_does_not_flag_a_non_replayable_lease_until_difference(conn):
+    """`lease_until` is wall-clock (v4 section 3: "Not replayable...
+    lease_until"). Simulate real time having passed between the live
+    snapshot and the replay by writing a `lease_until` value directly
+    (no event, exactly as if the clock had simply moved on since the
+    event carrying the original value was recorded) -- `diff_state` must
+    NOT flag this, because `lease_until` is excluded from the equality
+    check entirely, not merely tolerated by chance. This is the
+    "non-replayable field difference no longer flagged" half of the v4
+    section 3 redefinition; before this session's narrowing, this would
+    have been (spuriously) reported as a mismatch."""
+    project = _executing_project(conn, "replay-scope non-replayable field")
+    node = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
+    nodes.start(conn, node["id"], owner="agent-1", lease_minutes=60)
+    assert rebuild.diff_state(conn) == {}
+
+    # Simulate real time passing: the live row's lease_until now differs
+    # from what the last node.start event's payload recorded, with no
+    # new event at all (a plain clock tick, not a state change).
+    conn.execute(
+        "UPDATE nodes SET lease_until = '2099-01-01T00:00:00.000000Z' WHERE id = ?",
+        (node["id"],),
+    )
+    conn.commit()
+
+    assert rebuild.diff_state(conn) == {}, (
+        "lease_until is non-replayable (v4 section 3) and must be excluded "
+        "from the equality check, not merely happen to match"
+    )

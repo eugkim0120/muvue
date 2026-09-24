@@ -22,7 +22,12 @@ def project(conn):
     return projects.set_phase(conn, p["id"], "executing")
 
 
-def test_reconcile_reverts_expired_lease_to_ready_with_attempts_incremented(conn, project):
+def test_reconcile_reverts_expired_lease_to_ready_with_lease_expiries_incremented(conn, project):
+    """v4 section 3/5 (changed from v3): a daemon-reclaimed expired lease
+    increments `lease_expiries`, not `attempts` -- "v3 conflated them, so
+    a daemon restart could burn a node's retries." `attempts` (the
+    *agent*-failure counter `core.nodes.fail` owns) must be untouched by
+    a lease reclaim."""
     task = nodes.create_node(
         conn, project_id=project["id"], kind="task", title="t", status="ready", max_attempts=3,
     )
@@ -35,17 +40,42 @@ def test_reconcile_reverts_expired_lease_to_ready_with_attempts_incremented(conn
     assert row["status"] == "ready"
     assert row["owner"] is None
     assert row["lease_until"] is None
-    assert row["attempts"] == 1
+    assert row["attempts"] == 0
+    assert row["lease_expiries"] == 1
+    # The consequence of the clock (a lease got reclaimed) is replayable
+    # even though the clock itself (lease_until) is not -- v4 section 3.
+    events = [dict(e) for e in conn.execute("SELECT * FROM events ORDER BY id")]
+    assert any(e["type"] == "node.lease_expired" for e in events)
 
 
-def test_reconcile_moves_to_failed_once_max_attempts_exhausted(conn, project):
+def test_reconcile_never_moves_to_failed_no_matter_how_many_times_it_runs(conn, project):
+    """v4 section 3: "lease_expiries counts crash/timeout reclaims and
+    never drives failed." Regression test for the v3 bug this session
+    fixes: repeatedly reclaiming the same node's expired lease -- even
+    past what would have been `max_attempts` if it were counted as
+    `attempts` -- must never route it to `failed`. Only `core.nodes.fail`
+    (an agent failure) may do that, and it only ever looks at
+    `attempts`, never `lease_expiries`."""
     task = nodes.create_node(
         conn, project_id=project["id"], kind="task", title="t", status="ready", max_attempts=1,
     )
-    nodes.start(conn, task["id"], owner="agent-1", lease_minutes=-1)
-    daemon.reconcile_leases(conn)
+    for _ in range(5):
+        nodes.start(conn, task["id"], owner="agent-1", lease_minutes=-1)
+        daemon.reconcile_leases(conn)
+        row = nodes.get_node(conn, task["id"])
+        assert row["status"] == "ready", "a lease reclaim must never drive failed"
+        assert row["attempts"] == 0
+    assert nodes.get_node(conn, task["id"])["lease_expiries"] == 5
+
+    # A *real* agent failure, by contrast, still counts against attempts
+    # and still drives failed once max_attempts is hit (max_attempts=1
+    # here) -- lease_expiries and attempts are independent counters.
+    nodes.start(conn, task["id"], owner="agent-1", lease_minutes=60)
+    nodes.fail(conn, task["id"], owner="agent-1", lesson="genuine agent failure")
     row = nodes.get_node(conn, task["id"])
     assert row["status"] == "failed"
+    assert row["attempts"] == 1
+    assert row["lease_expiries"] == 5
 
 
 def test_reconcile_leaves_unexpired_leases_alone(conn, project):

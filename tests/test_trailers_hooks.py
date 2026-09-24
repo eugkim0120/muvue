@@ -196,3 +196,48 @@ def test_post_commit_hook_cli_links_node_from_a_real_squashed_commit(tmp_path: P
     finally:
         conn.close()
     assert linked == {task_a["id"], task_b["id"]}
+
+
+# -- v4 section 3: actual_touches (written from commits) --------------------
+
+
+def test_handle_post_commit_writes_actual_touches_for_every_linked_node(conn, project):
+    """v4 section 3: "actual_touches -- written from commits; drift vs
+    predicted is a KPI." One row per (node, file path) for every file the
+    commit touched, for every node the trailer resolved -- the drift-vs-
+    predicted KPI computation itself is out of scope this phase (see
+    docs/decisions.md); this only asserts the raw data lands correctly."""
+    n = nodes.create_node(conn, project_id=project["id"], kind="task", title="a", status="ready")
+    hooks.handle_post_commit(
+        conn, commit_sha="c2", message=f"Muvue-Node: {n['id']}\n",
+        files=["src/a.py", "src/b.py"],
+    )
+    rows = conn.execute(
+        "SELECT node_id, path FROM actual_touches WHERE node_id = ? ORDER BY path", (n["id"],)
+    ).fetchall()
+    assert [dict(r) for r in rows] == [
+        {"node_id": n["id"], "path": "src/a.py"},
+        {"node_id": n["id"], "path": "src/b.py"},
+    ]
+
+
+def test_handle_post_commit_writes_no_actual_touches_for_an_unresolved_trailer(conn, project):
+    hooks.handle_post_commit(
+        conn, commit_sha="c3", message="Muvue-Node: 999999\n", files=["src/a.py"],
+    )
+    count = conn.execute("SELECT COUNT(*) c FROM actual_touches").fetchone()["c"]
+    assert count == 0
+
+
+def test_handle_post_commit_dedupes_actual_touches_on_reprocessing(conn, project):
+    """`INSERT OR IGNORE` on the (node_id, path) primary key -- reprocessing
+    the same commit (e.g. a hook re-run) must not raise or duplicate rows."""
+    n = nodes.create_node(conn, project_id=project["id"], kind="task", title="a", status="ready")
+    for _ in range(2):
+        hooks.handle_post_commit(
+            conn, commit_sha="c4", message=f"Muvue-Node: {n['id']}\n", files=["src/a.py"],
+        )
+    count = conn.execute(
+        "SELECT COUNT(*) c FROM actual_touches WHERE node_id = ?", (n["id"],)
+    ).fetchone()["c"]
+    assert count == 1

@@ -82,7 +82,11 @@ def test_kill_daemon_mid_task_reverts_node_to_ready_on_restart(tmp_path: Path):
         assert row["status"] == "ready"
         assert row["owner"] is None
         assert row["lease_until"] is None
-        assert row["attempts"] == 1
+        # v4 section 3/5: a daemon-restart lease reclaim increments
+        # lease_expiries, never attempts (v3 conflated the two, so a
+        # daemon restart could burn a node's retries).
+        assert row["attempts"] == 0
+        assert row["lease_expiries"] == 1
     finally:
         proc.terminate()
         try:

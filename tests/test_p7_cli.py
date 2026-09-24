@@ -89,6 +89,6 @@ def test_migrate_adds_archived_at_column_to_pre_existing_db(tmp_path: Path):
         version = conn2.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()["value"]
-        assert version == "3"
+        assert version == "4"
     finally:
         conn2.close()
