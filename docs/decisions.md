@@ -277,3 +277,153 @@ reading here. Real `decisions` table entries start once dogfooding begins
     section 4's human-verb list and section 8's dashboard views ("pause
     button"), and the mechanism P2 does own (refusing `start`) is a
     faithful, minimal slice of the full "emergency stop" behavior.
+
+
+## P3 decisions
+
+27. **Fixed a pre-existing rebuild bug found while adding P3's new node.\*
+    events, not introduced by P3.** `core.rebuild.rebuild_state` assumed
+    every `node.*` event's payload *is* the row (`payload["id"]`), but
+    P1's `core.gates.edit_criteria` already emitted `node.criteria_edited`
+    with a nested `{"node": <row>, "re_approval_required": bool}` payload
+    -- `payload["id"]` raised `KeyError` the moment anything ran
+    `rebuild.diff_state` after a criteria edit. No P0/P1/P2 test happened
+    to combine the two. Fixed by unwrapping a nested `"node"` key when
+    present (`tests/test_gates.py::test_rebuild_matches_live_after_
+    criteria_edit` pins it) rather than renaming the event (which would
+    be a wire-format change with no benefit) -- exactly the "P1/P2 had to
+    fix parity bugs" pattern the P3 prompt warned to not skip.
+
+28. **`node.version_bumped`, `commit.linked`, `anchor.hash_requested`,
+    `staleness.flagged`, `review.manual_criteria`,
+    `review.external_flagged`, `review.auto_check_failed` are new event
+    types.** `node.version_bumped` is `node.`-prefixed and carries a full
+    row snapshot (like the vast majority of `node.*` events), so it
+    replays correctly without special-casing. The rest deliberately are
+    *not* `node.`-prefixed (same reasoning as P2's `review.auto_approved`/
+    `review.awaiting`, decision #22): their payloads are metadata, not
+    row snapshots, and a `node.`-prefixed name would break `rebuild`.
+
+29. **Lease enforcement at `start`-time is an explicit pre-check, not a
+    new state-machine edge.** The state machine already refuses a second
+    `start` on an `in_progress` node (no `(in_progress, in_progress)`
+    edge exists), so acceptance criterion 1 technically already held
+    before any P3 change. Added an explicit check anyway, ahead of the
+    state-machine call, so the error message says *why* ("leased by X
+    until Y") instead of a generic "illegal transition" -- useful for a
+    real agent deciding whether to retry, back off, or pick a different
+    node, and makes the acceptance criterion's intent ("refused, not
+    silently reassigned") legible in the error itself rather than only
+    provable by reading `state_machine.TRANSITIONS`.
+
+30. **`nodes.version` bumps on `add_note(actor="human")` and
+    `gates.edit_criteria` (any actor), not on every mutation.** The plan
+    says "bump on human-visible edits". Read narrowly: an agent's own
+    notes/transitions on a node it holds the lease for aren't edits *by
+    someone else* (nothing for a version check to protect against); a
+    human comment/note or a criteria change landing while the node is
+    leased out is exactly the race `expected_version` exists to catch.
+    Chose not to bump on every `nodes.*` mutation (e.g. `block`, `fail`)
+    since those are already lease-owner-gated by the state machine
+    (`NotLeaseOwner`) -- version mismatch is for content drift a human
+    caused mid-task, not for lease-ownership races, which already have
+    their own, older, more precise error.
+
+31. **`done`/`fail`'s `expected_version` is opt-in (default `None` = no
+    check), not mandatory.** Every P0-P2 call site (and most of P3's own
+    new tests) never captured a version at `start` time. Making the
+    check opt-in preserves every existing test/call site unchanged and
+    matches the pattern `request_id` idempotency already established
+    (present -> stricter behavior; absent -> old behavior).
+
+32. **Trailer values are read as plain integers (`nodes.id`), not the
+    plan's illustrative `"T3.2"`-style label.** No phase before P3 built
+    a human-readable task-numbering scheme (that would be a structure-
+    layer/naming decision, out of scope); `nodes.id` is the schema's only
+    existing node identifier, so it's what a trailer can actually
+    resolve against today. A non-numeric trailer token is read as
+    unresolvable (silently skipped), not an error -- consistent with
+    "trailers are labels, not trusted for binding in light mode": if a
+    future phase adds a label scheme, old commits' plain-integer
+    trailers keep working and new-format trailers just don't resolve yet
+    rather than crashing the hook.
+
+33. **Squashed commits: take every id from every matching trailer line,
+    de-duplicated, not just the first or last.** `core.hooks.
+    handle_post_commit` only uses this for bookkeeping (`node_commits`
+    links + no-op anchor/staleness signals) -- nothing security- or
+    approval-relevant reads it. Keeping only one match because a squash
+    concatenated several commits' trailers would silently drop real
+    links for no safety benefit; taking all of them costs nothing since
+    unresolvable/duplicate ids are already handled.
+
+34. **No YAML-aware `.pre-commit-config.yaml` rewriting.** The P3 prompt
+    asks to "register with Husky or pre-commit when present" for the
+    post-commit hook's *real* behavior. P0 already handles Husky (writes
+    into `.husky/post-commit` when `.husky/` exists). Safely rewriting an
+    existing `.pre-commit-config.yaml` to add a `repo: local` hook entry
+    at the correct list depth needs a real YAML parser -- no such
+    dependency exists in this stack (working rule 2: no deps beyond the
+    plan's), and hand-editing YAML with string ops risks corrupting a
+    user's config for a framework-integration nicety, not a functional
+    requirement. `init`/`doctor --repair` still install the shim directly
+    into `.git/hooks/post-commit` regardless of whether
+    `.pre-commit-config.yaml` exists, so the hook runs either way; it
+    just isn't visible inside the pre-commit framework's own hook list.
+    Documented here rather than silently skipped; a real implementation
+    needs either a PyYAML dependency (a plan-stack decision, not mine to
+    make unilaterally) or a hand-rolled YAML-subset writer scoped
+    tightly enough to trust.
+
+35. **Core-enforced `HumanOnly`, separate classes in `core.gates` and
+    `core.nodes`.** The plan's "never exposed over MCP" was previously
+    "enforced by the CLI layer, not here" (P1-era docstrings, literally).
+    P3 acceptance #4 requires an adversarial agent script calling a human
+    verb *directly against core* to be refused by core. Two identically-
+    named `HumanOnly` exceptions (one per module) rather than one shared
+    class: `core.nodes` and `core.gates` would otherwise need a new
+    cross-import (`nodes` already has no dependency on `gates`; `gates`
+    already depends on `nodes`), and a shared exceptions module for two
+    call sites is unneeded structure for a single-phase change --
+    duplication over the wrong abstraction (working rule/CLAUDE.md: "No
+    speculative abstraction").
+
+36. **The MCP server is hand-rolled JSON-RPC over stdio, no MCP SDK
+    dependency.** `pyproject.toml` ships no MCP client/server library.
+    The P3 prompt explicitly allows adding one "if no MCP SDK dependency
+    was pre-approved," but the actual wire protocol MCP's stdio
+    transport uses (one JSON-RPC 2.0 message per line, each direction,
+    no framing) is simple enough to implement directly and exactly,
+    without pulling in a dependency whose exact API surface can't be
+    verified against live docs in this environment. `handle_request` is
+    pure (request-in/response-out) specifically so its correctness is
+    testable without trusting an unverified third-party client library
+    to drive it.
+
+37. **Claude Code's hook JSON contract, and Codex/Gemini/Cursor's config
+    file formats, are reproduced from memory, not verified.** No network
+    access in this environment (see memory: "No network access tools").
+    Implemented the most standard/documented-as-remembered shape for
+    each, isolated behind `core.claude_hooks`/`core.adapters` so a later
+    correction only touches those modules, and flagged explicitly in
+    `docs/providers.md` and the P3 handoff report as needing human
+    verification before v0.1 ships for real.
+
+38. **Light-mode `auto`-criteria checks are opt-in (`run_checks`
+    parameter), not auto-wired into CLI/API.** Plan section 5 says light
+    mode's `auto` criteria "run in the checkout" -- taken literally, that
+    means actually executing `checks.test`. But wiring that
+    unconditionally into every `done` call (CLI/API, which pass `config`
+    on every invocation already) would run the project's real test
+    command as a side effect of `done`, including against `tests/
+    test_api.py`'s fixture repo (a bare tmp dir, not a real pytest
+    project, using `criteria_mode="auto"`) -- which would have started
+    failing non-deterministically depending on what `pytest -q` does
+    when run against an unrelated directory. Chose: build and test the
+    real mechanism (`core.review.dispatch`, `core.review.
+    default_run_checks`) fully, but leave CLI/API passing no
+    `run_checks` (preserving P0-P2's exact behavior: risk tier alone
+    decides an auto-criteria node). Wiring a safe, explicit opt-in (e.g.
+    a CLI flag, or always-on once the CLI's own working directory is
+    guaranteed to be a real checkout rather than a test fixture) is left
+    for a follow-up -- flagged in the P3 handoff report.

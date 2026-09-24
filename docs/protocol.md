@@ -245,6 +245,114 @@ written to `<repo>/.muvue/session`) and printed once.
 `nodes.start` now refuses while `project.phase` is `planning` **or**
 `paused` (plan section 5 "Emergency stop... refuses start").
 
+## Leases and optimistic version (P3, ships v0.1)
+
+- `start` refuses a second owner on an already-leased, unexpired
+  `in_progress` node with a precise `NodeError` ("leased by X until Y"),
+  in addition to the state machine's implicit refusal (no
+  `(in_progress, in_progress)` edge). `planning.lease_minutes` (config,
+  default 60) sets the lease length; CLI/API `start` read it instead of
+  a hardcoded default.
+- `nodes.version` (already in the P0 schema) is bumped by
+  `add_note(actor="human")` and `core.gates.edit_criteria` (records
+  `node.version_bumped`). `done`/`fail` accept `expected_version`
+  (`--version` on the CLI): a mismatch raises `VersionMismatch` (a
+  `NodeError` subclass) instead of overwriting a human's edit made
+  between `start` and `done`. Omitting it preserves prior behavior.
+- Expired leases still revert to `ready` (`attempts + 1`) only on
+  `core.daemon.reconcile_on_start` (P2) -- unchanged.
+
+## Post-commit hook (P3)
+
+`muvue hook post-commit [PATH]` (invoked by the shim `init` installs)
+parses every `Muvue-Node:`/`Refs:` trailer line in `HEAD`'s commit
+message (`core.trailers.parse_node_ids`), de-duplicated across *all*
+matching lines -- this is what makes it survive a squash-merge commit
+that concatenates several original commits' trailers. Every resolvable
+node id (exists, not soft-deleted) gets linked into `node_commits`
+(`commit.linked` event); unresolvable ids are silently skipped
+("trailers are labels, not trusted for binding" -- plan section 5).
+Linked commits also enqueue `anchor.hash_requested`/`staleness.flagged`
+no-op events (P2's documented no-op-queue-consumer pattern; real anchor
+hashing/staleness is structure-layer, P6+). Husky/pre-commit-framework-
+aware YAML rewriting is out of scope for P3 (see `docs/decisions.md`);
+the shim still installs straight into `.git/hooks/post-commit` (or
+`.husky/post-commit`) either way, so the hook runs regardless.
+
+## Human-verb enforcement in core (P3)
+
+`core.gates.approve_spec`/`approve_node`/`approve_gate2`,
+`core.revisions.approve_revision`, `core.nodes.approve_review`/
+`reject_review` now raise `HumanOnly` (a `GateError`/`NodeError`
+subclass) themselves when `actor != "human"`, instead of relying only on
+the CLI/API/MCP surface never routing an agent to them.
+
+## MCP stdio server (P3)
+
+`muvue mcp [PATH]`: hand-rolled JSON-RPC 2.0 over stdio (no MCP SDK
+dependency), one message per line each direction. Exposes exactly the
+agent verbs as MCP tools -- `brief`, `show`, `start`, `done`, `fail`,
+`note`, `ask`, `wait`, `replan`, `status` -- never the human verbs (plan
+section 4). `tools/call` errors surface as JSON-RPC error objects
+(`-32601` unknown tool, `-32602` missing argument, `-32000` a
+`core`-raised error), never a raised exception across the wire.
+
+## Real agent-verb implementations (P3)
+
+`brief NODE_ID`, `show NODE_ID`, `note NODE_ID --text TEXT [--kind
+KIND] [--pinned]`, `status [--project-id ID]` are real now (`core.
+queries`), no longer P0 stubs. `brief` returns the node, its
+lesson/pinned notes, and open questions; `show` returns the node, all
+notes, linked commits, and predicted touches; `status` returns node
+counts by status.
+
+## Claude Code / Codex / Gemini / Cursor adapters (P3)
+
+`muvue adapter install <name>`:
+
+- `claude-code`: merges a `hooks` section into `.claude/settings.json`
+  (idempotent -- re-running replaces only muvue's own entries, detected
+  by `-m muvue hook` in the command string; preserves unrelated keys and
+  other tools' hook entries) for `SessionStart`, `PreToolUse`,
+  `PreCompact`, `Stop`, plus a `_muvue.protocol_version` marker.
+  `core.doctor` warns if that marker no longer matches the repo's
+  current `protocol_version`.
+- `codex` / `gemini` / `cursor`: config writers only
+  (`AGENTS.md`/`GEMINI.md`/`.cursor/rules/muvue.mdc`), best-effort and
+  **unverified** against live vendor docs -- see `docs/providers.md`.
+
+`muvue hook session-start|pre-tool-use|pre-compact|stop [PATH]` (what
+the installed Claude Code config invokes): reads hook-specific JSON from
+stdin, resolves the active node id from the payload or
+`.muvue/current_node` (written by `start`, cleared by `done`/`fail` --
+`core.adapters.set_current_node`/`get_current_node`/
+`clear_current_node`), and prints a JSON decision (`core.claude_hooks`)
+to stdout: `session-start` -> `brief` as `additionalContext`;
+`pre-tool-use` -> blocks `Edit`/`Write` with no `in_progress` node or an
+`awaiting_approval` one, blocks a `git commit` `Bash` call with no
+`Muvue-Node:`/`Refs:` trailer; `pre-compact` -> requires a summary;
+`stop` -> blocks ending the turn with an `in_progress` node that has
+zero notes logged. A `"decision": "block"` response exits 2 (Claude
+Code's documented convention).
+
+## Light-mode `review` dispatch (P3)
+
+On top of P2's risk-tier/test-touch gate, `core.review.dispatch`
+(called from `nodes.done` when `config.mode == "light"`) adds a
+criteria-mode-specific flag: `manual` always waits for a human;
+`external` is always flagged (core can't verify an external criterion
+in-process); `auto` runs an injectable `run_checks(cmd, cwd) -> bool` in
+the checkout -- omitted (every current CLI/API call), it's a no-op and
+`core.risk` alone decides, preserving P0-P2 behavior exactly.
+`core.review.default_run_checks` is a real subprocess runner, available
+but not yet auto-wired into CLI/API (see `docs/decisions.md`).
+
+## `replan` (P1, confirmed complete in P3)
+
+`replan PARENT_TASK_ID --title TEXT [--body TEXT]`
+(`core.revisions.replan_add_subtask`) and `POST /nodes/{id}/replan` were
+both already real as of P1; P3 found no gap to close here.
+
 ## Idempotency
 
 `--request-id` dedupe window: 24 hours, scoped per (verb, request_id).

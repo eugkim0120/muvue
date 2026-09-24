@@ -2,6 +2,80 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P3 (ships v0.1, light mode)
+
+### Added
+- **Leases enforced at `start`-time**: a second owner racing an
+  `in_progress` node gets a precise "leased by X until Y" `NodeError`
+  (`core.nodes.start`), on top of the state machine's existing implicit
+  refusal. `planning.lease_minutes` config field (default 60) now drives
+  CLI/API `start` instead of a hardcoded module constant.
+- **Optimistic `nodes.version`**: `core.nodes.bump_version` (+
+  `node.version_bumped` event) is called by `add_note(actor="human")`
+  and `core.gates.edit_criteria`. `done`/`fail` take `expected_version`;
+  a mismatch raises `VersionMismatch` (a `NodeError` subclass) instead of
+  overwriting a human edit made mid-task. CLI `done`/`fail` gained
+  `--version`.
+- **`core.trailers.parse_node_ids`**: extracts every `Muvue-Node:`/
+  `Refs:` trailer's node id from a commit message, de-duplicated across
+  *all* matching lines -- survives a squash-merge message that
+  concatenates several original commits' trailers.
+- **`core.hooks.handle_post_commit`**: links a commit's resolvable node
+  ids into `node_commits`, records `commit.linked`, and enqueues
+  `anchor.hash_requested`/`staleness.flagged` no-op events (P2's
+  documented no-op-consumer pattern; real anchor hashing/staleness is
+  structure-layer, P6+). `muvue hook post-commit` now runs it for real.
+- **`core.gates.HumanOnly` / `core.nodes.HumanOnly`**: `approve_spec`,
+  `approve_node`, `approve_gate2`, `revisions.approve_revision`,
+  `nodes.approve_review`, `nodes.reject_review` now refuse a non-`human`
+  actor themselves, not only via the CLI/API/MCP surface never routing
+  to them (plan section 4: human verbs "never exposed over MCP").
+- **`tests/fake_agent.py`**: scripted cooperative/lazy/adversarial
+  behaviours (plan section 10) exercised against `muvue.core` directly;
+  every adversarial behaviour is asserted blocked/flagged by core, not
+  by the script.
+- **`src/muvue/mcp_server.py`**: hand-rolled JSON-RPC-over-stdio MCP
+  server (`muvue mcp [PATH]`), no new dependency. Exposes exactly
+  `brief/show/start/done/fail/note/ask/wait/replan/status` -- never the
+  human verbs.
+- **`core.queries`**: real `show_node`/`brief_node`/`status_summary`
+  backing the CLI's previously-stubbed `brief`/`show`/`status` (and
+  `note`, wired to the existing `add_note`) -- the MCP server needed
+  real implementations for the full agent-verb set.
+- **Claude Code adapter**: `muvue adapter install claude-code` writes/
+  merges `.claude/settings.json`'s `hooks` (idempotent, preserves
+  unrelated config, embeds `protocol_version`). `core.claude_hooks` +
+  `muvue hook session-start|pre-tool-use|pre-compact|stop` implement
+  SessionStart -> `brief`, PreToolUse -> block Edit/Write with no
+  `in_progress`/an `awaiting_approval` node and block `git commit`
+  without a trailer, PreCompact -> require a summary, Stop -> block
+  ending the turn with unlogged `in_progress` work.
+  `core.adapters.set_current_node`/`get_current_node` (`.muvue/
+  current_node`, gitignored) bridge `start`/`done`/`fail` to the hooks.
+- **Codex/Gemini/Cursor adapters**: `muvue adapter install
+  codex|gemini|cursor` write best-effort, **unverified** instruction
+  files (`AGENTS.md`/`GEMINI.md`/`.cursor/rules/muvue.mdc`) pointing at
+  the CLI/MCP surface -- see `docs/providers.md`.
+- **`core.doctor`**: warns when an installed adapter's embedded
+  `protocol_version` no longer matches the repo's current one.
+- **`core.review.dispatch`**: light-mode-only criteria-mode gate on top
+  of P2's tier/flag gate -- `manual` always waits for a human, `external`
+  is always flagged, `auto` runs an injectable `run_checks` (opt-in;
+  `core.review.default_run_checks` is a real subprocess runner, not yet
+  auto-wired into CLI/API -- see `docs/decisions.md`).
+
+### Scope notes (see `docs/decisions.md`)
+- Strict mode, the worktree-per-node airlock, the real runner/drivers
+  (spawning vendor CLIs), the structure/drift layer, and the VS Code
+  extension remain out of scope for P3 (ships P4+).
+- `default_run_checks` exists and is tested but is not auto-invoked by
+  CLI/API `done` yet (would run the project's real test command as a
+  side effect of every `done` call) -- flagged as needing a decision
+  before v0.1 truly ships.
+- Codex/Gemini/Cursor adapter file formats are best-effort guesses, not
+  verified against live vendor docs (no network access in this
+  environment).
+
 ## [Unreleased] - P2
 
 ### Added
