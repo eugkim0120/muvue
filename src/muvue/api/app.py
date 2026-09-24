@@ -368,15 +368,21 @@ def create_app(
             nodes_with_usage = conn.execute(
                 "SELECT COUNT(DISTINCT node_id) c FROM node_usage"
             ).fetchone()["c"]
-            budget = core.runner.budget_state(conn, config)
+            # v4 section 2: no single global budget number any more --
+            # each driver has its own. `spend_vs_budget` becomes the
+            # worst-case (max) pct across every driver that has a
+            # `[agents.<x>.budget]` configured; 0.0 if none do (see
+            # docs/decisions.md).
+            driver_states = core.runner.driver_budget_states(conn, config)
             drift = core.drift.drift_pct(conn, repo_root)
         rubber_stamp_rate = (rubber_stamps / total_reviewed) if total_reviewed else 0.0
         tokens_per_node = (total_tokens / nodes_with_usage) if nodes_with_usage else 0.0
+        spend_vs_budget = max((s["pct"] for s in driver_states.values()), default=0.0)
         return {
             "drift_pct": drift,
             "rubber_stamp_rate": rubber_stamp_rate,
             "tokens_per_node": tokens_per_node,
-            "spend_vs_budget": budget["pct"],
+            "spend_vs_budget": spend_vs_budget,
         }
 
     # ------------------------------------------------------------------

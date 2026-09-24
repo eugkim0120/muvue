@@ -19,7 +19,7 @@ import pytest
 
 from muvue.core import db as core_db
 from muvue.core import gates, nodes, projects, runner as runner_mod
-from muvue.core.config import AgentConfig, MuvueConfig, RoutingConfig
+from muvue.core.config import AgentBudgetConfig, AgentConfig, MuvueConfig, RoutingConfig
 
 FAKE_AGENT_AVAILABLE = shutil.which("muvue-fake-agent") is not None
 pytestmark = pytest.mark.skipif(
@@ -254,7 +254,11 @@ def test_reconcile_rate_limits_unblocks_once_retry_at_has_passed(conn, project, 
     assert nodes.get_node(conn, task["id"])["status"] == "ready"
 
 
-# -- acceptance #6: budget stops the runner at 100%, warns at 80% -----------
+# -- acceptance #6 (v4 section 2/6): PER-DRIVER budget stops the
+# offending driver at 100%, warns at 80% -- there is no single global
+# budget number any more (v4 changelog item 5; see docs/decisions.md for
+# the tests this replaces, previously against the removed global
+# `config.budget.unit`/`limit`). --------------------------------------
 
 
 def test_budget_stops_runner_at_100_percent(conn, project, config, db_path, repo_root):
@@ -262,12 +266,14 @@ def test_budget_stops_runner_at_100_percent(conn, project, config, db_path, repo
     # cooperative fake usage is 1200 in + 400 out = 1600 tokens/node; a
     # limit under one node's worth trips "exhausted" after exactly one
     # node runs, before any further node is scheduled.
-    config.budget.unit = "tokens"
-    config.budget.limit = 100
+    config.agents["fake"].budget = AgentBudgetConfig(unit="tokens", limit=100)
     result = runner_mod.run(db_path, config, repo_root)
-    assert result["paused"]["reason"] == "budget_exhausted"
+    # v4 section 6: an exhausted driver with no alternative route just
+    # leaves nothing left to schedule -- not a distinct "paused" reason
+    # (no separate "no path left" detection is built, per the plan).
+    assert result["paused"] is None
     assert len(result["processed"]) == 1
-    assert result["budget"]["exhausted"] is True
+    assert result["budget"]["fake"]["exhausted"] is True
     # the remaining nodes were never scheduled
     remaining = [
         nodes.get_node(conn, t["id"])["status"] for t in tasks
@@ -278,22 +284,121 @@ def test_budget_stops_runner_at_100_percent(conn, project, config, db_path, repo
 
 def test_budget_stops_after_the_node_that_crosses_the_limit(conn, project, config, db_path, repo_root):
     _ready_tasks(conn, project, 3, predicted_touches=[])
-    config.budget.unit = "tokens"
-    config.budget.limit = 1600  # exactly one cooperative node's worth
+    config.agents["fake"].budget = AgentBudgetConfig(unit="tokens", limit=1600)  # exactly one node's worth
     result = runner_mod.run(db_path, config, repo_root)
     assert len(result["processed"]) == 1
-    assert result["paused"]["reason"] == "budget_exhausted"
+    assert result["budget"]["fake"]["exhausted"] is True
 
 
 def test_budget_warns_at_80_percent(conn, project, config, db_path, repo_root):
     _ready_tasks(conn, project, 2, predicted_touches=[])
-    config.budget.unit = "tokens"
-    config.budget.limit = 1700  # one node (1600) is >= 80% of 1700
+    config.agents["fake"].budget = AgentBudgetConfig(unit="tokens", limit=1700)  # one node (1600) is >= 80%
     runner_mod.run(db_path, config, repo_root)
     warnings = conn.execute(
-        "SELECT * FROM events WHERE type = 'runner.budget_warning'"
+        "SELECT * FROM events WHERE type = 'runner.driver_budget_warning'"
     ).fetchall()
     assert len(warnings) >= 1
+
+
+def test_driver_with_no_budget_configured_is_never_exhausted(conn, project, config, db_path, repo_root):
+    """`[agents.<x>.budget]` is optional -- no config means unlimited,
+    never exhausted, never warned (v4 section 2)."""
+    _ready_tasks(conn, project, 2, predicted_touches=[])
+    result = runner_mod.run(db_path, config, repo_root)
+    assert len(result["processed"]) == 2
+    assert result["budget"] == {}
+
+
+def test_one_driver_exhausted_other_driver_keeps_scheduling(conn, project, db_path, repo_root):
+    """v4 section 6: "Runner stops the offending driver at 100% ...
+    other drivers continue unless [routing] leaves no path." Two
+    drivers, routing sends `task` kind to a tight-budget driver and
+    `subtask` kind to a generous one; once the tight one is exhausted,
+    its nodes stop getting scheduled while the generous one's nodes keep
+    completing, and the run doesn't halt overall."""
+    cfg = MuvueConfig(
+        agents={
+            "tight": AgentConfig(
+                command="muvue-fake-agent", usage_parser="fake", cost_model="tokens",
+                budget=AgentBudgetConfig(unit="tokens", limit=1600),  # one node's worth
+            ),
+            "generous": AgentConfig(
+                command="muvue-fake-agent", usage_parser="fake", cost_model="tokens",
+                budget=AgentBudgetConfig(unit="tokens", limit=100_000),
+            ),
+        },
+        routing=RoutingConfig(spec="tight", task="tight", subtask="generous"),
+    )
+    # 2 "task"-kind nodes routed to "tight" (only 1 will get a chance to
+    # run before it's exhausted), 2 "subtask"-kind nodes routed to
+    # "generous" (both should complete).
+    for i in range(2):
+        nodes.create_node(
+            conn, project_id=project["id"], kind="task", title=f"tight{i}", status="ready",
+            criteria_mode="auto", criteria=["ok"], predicted_touches=[],
+        )
+    for i in range(2):
+        nodes.create_node(
+            conn, project_id=project["id"], kind="subtask", title=f"gen{i}", status="ready",
+            criteria_mode="auto", criteria=["ok"], predicted_touches=[],
+        )
+    result = runner_mod.run(db_path, cfg, repo_root)
+
+    assert result["paused"] is None  # never halted -- "generous" always had routable work
+    by_agent = {}
+    for r in result["processed"]:
+        by_agent.setdefault(r["agent"], 0)
+        by_agent[r["agent"]] += 1
+    assert by_agent.get("tight", 0) == 1  # stopped after exhausting its own budget
+    assert by_agent.get("generous", 0) == 2  # both of its nodes completed regardless
+    assert result["budget"]["tight"]["exhausted"] is True
+    assert result["budget"]["generous"]["exhausted"] is False
+
+    tight_nodes = conn.execute(
+        "SELECT status FROM nodes WHERE title LIKE 'tight%'"
+    ).fetchall()
+    assert sorted(r["status"] for r in tight_nodes) == ["done", "ready"]
+    gen_nodes = conn.execute("SELECT status FROM nodes WHERE title LIKE 'gen%'").fetchall()
+    assert all(r["status"] == "done" for r in gen_nodes)
+
+
+# -- v4 section 2 `[budget]`: unit-free max_wall_clock_minutes / -----------
+# -- max_nodes_per_run stop conditions, independent of any driver budget ---
+
+
+def test_max_nodes_per_run_stops_independent_of_driver_budget(conn, project, config, db_path, repo_root):
+    _ready_tasks(conn, project, 3, predicted_touches=[])
+    config.budget.max_nodes_per_run = 2
+    result = runner_mod.run(db_path, config, repo_root)
+    assert len(result["processed"]) == 2
+    assert result["paused"]["reason"] == "max_nodes_per_run"
+
+
+def test_max_wall_clock_minutes_stops_independent_of_driver_budget(conn, project, config, db_path, repo_root):
+    """Injectable clock, not a real wall-clock sleep (matches the
+    ask_timeout / idle-session-timeout convention)."""
+    from datetime import datetime, timedelta, timezone
+
+    _ready_tasks(conn, project, 3, predicted_touches=[])
+    config.budget.max_wall_clock_minutes = 10
+
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    calls = {"n": 0}
+
+    def fake_now():
+        # `run` calls `now_fn()` twice before the loop body's own elapsed
+        # check (once for reconcile_rate_limits, once for
+        # run_started_at) -- both must still return `start` so the
+        # baseline is real; the first in-loop elapsed check then jumps
+        # forward far enough to be past max_wall_clock_minutes.
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return start
+        return start + timedelta(minutes=20)
+
+    result = runner_mod.run(db_path, config, repo_root, now_fn=fake_now)
+    assert result["paused"]["reason"] == "max_wall_clock_minutes"
+    assert len(result["processed"]) < 3
 
 
 # -- routing ([routing] kind -> agent) ---------------------------------------
@@ -329,6 +434,11 @@ def test_agent_override_beats_routing(conn, project, db_path, repo_root):
 
 
 def test_parallel_schedules_disjoint_touches_concurrently(conn, project, config, db_path, repo_root):
+    """v4 section 6 Delta C: --parallel > 1 only proceeds when
+    worktree_mode = "per_node" -- this test's `config` fixture must opt
+    in explicitly (the default is "branch", refused; see
+    test_parallel_refused_outside_per_node below)."""
+    config.worktree_mode = "per_node"
     config.agents["fake"].max_concurrency = 5
     nodes.create_node(
         conn, project_id=project["id"], kind="task", title="a", status="ready",
@@ -341,6 +451,35 @@ def test_parallel_schedules_disjoint_touches_concurrently(conn, project, config,
     result = runner_mod.run(db_path, config, repo_root, parallel=2)
     assert len(result["processed"]) == 2
     assert result["cycles"] == 1  # both scheduled in the same cycle
+
+
+# -- v4 section 6 Delta C: --parallel N > 1 refused outside worktree_mode
+# = "per_node" ---------------------------------------------------------
+
+
+def test_parallel_refused_in_default_branch_mode(conn, project, config, db_path, repo_root):
+    assert config.worktree_mode == "branch"  # the documented default (v4 section 2)
+    nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="a", status="ready",
+        predicted_touches=["a.py"],
+    )
+    with pytest.raises(runner_mod.ParallelismRefused):
+        runner_mod.run(db_path, config, repo_root, parallel=2)
+    # refused before doing anything -- the node was never touched
+    assert nodes.get_node(conn, 1)["status"] == "ready"
+
+
+def test_parallel_1_works_in_either_worktree_mode(conn, project, config, db_path, repo_root):
+    for mode in ("branch", "per_node"):
+        config.worktree_mode = mode
+        task = nodes.create_node(
+            conn, project_id=project["id"], kind="task", title=f"t-{mode}", status="ready",
+            criteria_mode="auto", criteria=["ok"],
+        )
+        result = runner_mod.run(db_path, config, repo_root, parallel=1)
+        assert result["paused"] is None
+        assert len(result["processed"]) == 1
+        assert nodes.get_node(conn, task["id"])["status"] == "done"
 
 
 def test_parallel_serializes_overlapping_touches(conn):
