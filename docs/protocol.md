@@ -857,15 +857,36 @@ category**:
 
 On `--yes`/`confirm=True`: inserts the diff's rows into `components`/
 `decisions` (each recording a `component.created`/`decision.created`
-event), dumps the **full current** `components`/`decisions` tables to
-`.muvue/components.json`/`.muvue/decisions.json`, commits those two
-files on the repo's checked-out `main` (muvue is "the single writer" of
-these files — a plain `git add`/`git commit` on `repo_root`, muvue
-committer identity, same pattern as `core.merge`'s `_run_git_as_muvue`;
-not a strict-mode airlock merge — there is no per-project git branch for
-structure metadata), sets `projects.phase = 'closed'`, and exports the
-project's event history (below). Also `POST /projects/{id}/close`
-(session-token-gated).
+event), then builds a commit updating the **full current**
+`components`/`decisions` tables as `.muvue/components.json`/
+`.muvue/decisions.json`. **v4 §9 (changelog item 7): this commit never
+touches `repo_root`'s checked-out branch directly** — it lands on a
+dedicated `refs/heads/muvue/structure` ref, built entirely through a
+temporary index (`GIT_INDEX_FILE`, `core.close._write_structure_commit`)
+so `repo_root`'s real `.git/index` and working tree are never read from
+or written to. muvue is still "the single writer" of these two files'
+*content* (unchanged from v3); only the git mechanism that gets a new
+version of them into the user's repo changed. `close_project` then calls
+`core.close._maybe_fast_forward_main`, which fast-forwards `main` (`git
+merge --ff-only refs/heads/muvue/structure` — chosen over a raw `git
+update-ref` because it updates HEAD/index/working-tree together and
+doubles as the ancestry check, decision #101) **only when** `main` is
+`repo_root`'s checked-out branch *and* `git status --porcelain` is
+empty. Otherwise `main` and the working tree are left completely
+untouched and an unacked `inbox.structure_update_ready` event is
+recorded (`ref`, `sha`, `reason`, `message`) pointing at
+`refs/heads/muvue/structure` for the user to merge or PR by hand — no
+`gh pr create` wiring was added in this session (decision #104). Sets
+`projects.phase = 'closed'`, and exports the project's event history
+(below). Also `POST /projects/{id}/close` (session-token-gated).
+
+`close_project`'s result dict carries `structure_ref`
+(`"refs/heads/muvue/structure"`), `structure_sha`, `fast_forwarded`
+(bool), and `inbox_event_id` (`None` when fast-forwarded) alongside the
+existing `components_path`/`decisions_path` — those two paths are the
+*intended* `repo_root/.muvue/...` locations, but the files only actually
+exist on disk there when `fast_forwarded` is `True`; the diff content
+itself is always available from `diff_committed` regardless.
 
 ### History archive: `.muvue/history/<project-id>.jsonl.gz`
 

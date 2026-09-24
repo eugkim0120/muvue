@@ -1453,3 +1453,109 @@ reading here. Real `decisions` table entries start once dogfooding begins
     presence) and reads as "the most urgent budget signal right now" --
     the worst-case driver, not an average or a sum across incompatible
     units.
+
+100. **v4 §9 structure commits: kept the git plumbing local to
+    `core/close.py` (`_write_structure_commit`, `_maybe_fast_forward_main`),
+    not factored into `core.gitutil` or a new module.** `core.gitutil`
+    is explicitly scoped to the branch-coherence check's single `git
+    rev-parse` call (its own docstring: "a small git subprocess helper
+    for the branch-coherence check"); `core.strict`/`core.merge` each
+    already keep their own local `_run_git*` wrapper for their own
+    single call site rather than centralizing, and this session's
+    `_write_structure_commit` is close.py's only caller. `current_branch`
+    itself *is* reused from `core.gitutil` inside `_maybe_fast_forward_main`,
+    per the prompt's explicit instruction to reuse it if suitable.
+    (Coordination note: this session started numbering at #100, the
+    next free number as of branch time off `main`'s #99. A parallel v4
+    §7 session (trailer-enforcement relocation) shares this same
+    checkout -- no worktree isolation was available for either session
+    -- and also landed entries starting at #100 on its own branch,
+    `feat/v4-trailer-enforcement-relocation`; a stray `git stash pop`
+    during a branch mixup even carried this exact entry range onto that
+    branch's own commit 56ad367 as a byproduct. Both branches' #100+
+    entries will need renumbering when they merge; left to whoever
+    reconciles the two.)
+
+101. **`git merge --ff-only`, not a raw `git update-ref refs/heads/main
+    <sha>`, for the fast-forward.** `main` is the branch `repo_root`'s
+    own `HEAD` is actually checked out on in the safe case (branch ==
+    `main`, clean tree) -- a raw ref move advances the branch pointer
+    without touching the index or working-tree files, which would leave
+    `git status` reporting every file changed by the structure commit as
+    locally modified (a false-dirty tree) until the user next ran
+    `checkout`/`reset` themselves. `merge --ff-only` updates `HEAD`, the
+    index and the working tree together as one real git operation and
+    refuses outright, with no partial effect, if a fast-forward genuinely
+    isn't possible -- which doubles as the ancestry check, so no separate
+    `git merge-base --is-ancestor` call was added.
+
+102. **Parent/base-tree selection for a `muvue/structure` commit: the
+    ref's own current tip if it exists, else the repo's current `HEAD`.**
+    v4 §9 says exactly this ("using... whatever `muvue/structure`'s
+    current tree looks like... or the repo's current HEAD"), read
+    literally as choosing the *commit* (not just its tree) as the new
+    commit's parent -- giving `muvue/structure` real, continuous ancestry
+    back to a point on the branch that first created it. This is what
+    makes `_maybe_fast_forward_main`'s `git merge --ff-only` succeed
+    without extra bookkeeping when a project closes on a repo whose
+    `main` has already fast-forwarded past a prior structure commit, and
+    what makes it correctly *refuse* (falling through to the inbox path)
+    when `main` picked up commits of its own since the last close that
+    never made it into `muvue/structure`'s lineage.
+
+103. **Single-writer safety on `refs/heads/muvue/structure` itself: a
+    compare-and-swap `git update-ref refs/heads/muvue/structure <new>
+    <old>`** (old = the exact value `_write_structure_commit` read
+    moments earlier, or `""` if the ref didn't exist yet), not a bare
+    `git update-ref <ref> <new>`. The prompt only required *confirming*
+    the temp-index-per-call design is race-safe and noting it explicitly;
+    this is that note plus the concrete mechanism: even if two
+    `close_project` calls (or a `close_project` racing a manual `git
+    branch -f muvue/structure ...`) raced past the point of reading the
+    ref, only the first `update-ref` to land wins and the second fails
+    loudly (`CloseError`) instead of silently clobbering the first
+    commit off the ref.
+
+104. **No `gh pr create` wiring in this session; the required minimum
+    (an unacked `inbox.structure_update_ready` event) is what ships.**
+    v4 §9 offers PR-or-inbox and the P6 prompt explicitly marks the PR
+    path optional ("this is optional/your call"). `core.github.
+    create_pr_via_gh` (built in a prior ad-hoc session, decision-noted
+    there) would need a real GitHub remote and an authenticated `gh` --
+    neither is guaranteed for an arbitrary repo a `close` runs against,
+    and wiring it in means every non-fast-forward `close` either needs a
+    `--pr`-style flag (new CLI surface, out of this session's requested
+    scope: "no unrequested features") or silently attempts a network call
+    on every close. Left for a future session that actually wants
+    `close --pr`, matching how `merge --pr` already treats PR creation as
+    an opt-in flag rather than automatic (`core/merge.py`, `cli/main.py`).
+
+105. **Test-fixture change: `tests/test_close.py`'s `repo` fixture now
+    commits a `.muvue/.gitignore` (ignoring `muvue.db`/`muvue.db-*`/
+    `queue.jsonl`) in the repo's *initial* commit, instead of creating a
+    bare untracked `.muvue/` directory after that commit.** Needed once
+    `_maybe_fast_forward_main` started gating on a genuinely clean `git
+    status --porcelain` (v3's commit-straight-onto-`main` implementation
+    never checked cleanliness at all): an untracked `.muvue/` directory
+    made every fixture repo look dirty from the very first commit, which
+    would make the "clean main -> fast-forward" case untestable with this
+    fixture. A real `muvue init` already commits `.muvue/config.toml`
+    plus a `.gitignore` for exactly this reason (plan §2's file-layout
+    table); the fixture now mirrors that instead of only mirroring the
+    file layout's tracked/untracked split for `components.json`/
+    `decisions.json`.
+
+106. **`tests/test_close.py`'s new working-tree-untouched assertions
+    filter `.muvue/history/` out of the `git status --porcelain` they
+    compare.** `close_project`'s event-history export (`core/history.py`,
+    P6, unrelated to this session's scope) unconditionally writes
+    `.muvue/history/<id>.jsonl.gz` on every confirmed close and this
+    fixture's `.gitignore` doesn't cover it, so it shows up as a new
+    untracked path on *every* scenario, including the two "untouched"
+    ones. That's a real, pre-existing gap in P6's history-export/close
+    integration (nothing commits or gitignores the history archive it
+    writes) -- out of scope to fix here ("smallest correct change"); the
+    filter keeps this session's tests asserting only what they're
+    actually testing (the structure-ref mechanism), not silently passing
+    by asserting something weaker than intended, nor failing on an
+    unrelated pre-existing gap.

@@ -1,19 +1,35 @@
 """`close` (plan section 9 "Structure layer and drift", P6, human verb):
 "`close` proposes a structure diff (new/changed components, decisions,
 promoted lessons), capped per close, reviewed in the dashboard or as the
-PR diff of `components.json`/`decisions.json`, which muvue commits on
-`main` as the single writer. Project events exported to `.muvue/history/`."
+PR diff of `components.json`/`decisions.json`."
 
 Two-phase: `preview_close` (also `close_project(..., confirm=False)`,
 the CLI/API dry-run) computes the diff without mutating anything;
 `close_project(..., confirm=True)` commits it -- writes the new
-`components`/`decisions` rows, dumps the full current tables to
-`.muvue/components.json`/`.muvue/decisions.json`, commits those two
-files on the repo's checked-out `main` (muvue is "the single writer" of
-these files, plan section 2/9 -- not a strict-mode airlock merge; there
-is no per-project git branch for structure metadata to land on, only the
-repo the human already has open), flips the project to `closed`, and
-exports its event history (`core/history.py`).
+`components`/`decisions` rows, then builds a commit updating
+`.muvue/components.json`/`.muvue/decisions.json` to the full current
+tables.
+
+**v4 section 9: "Structure commits never touch a checked-out branch
+directly."** v3 (P6) had this commit land straight onto whatever branch
+`repo_root` had checked out ("on `main`"), racing the user's own working
+tree and index lock. Instead: the commit is built with a temporary git
+index (`GIT_INDEX_FILE`, see `_write_structure_commit`) onto a dedicated
+`STRUCTURE_REF` (`refs/heads/muvue/structure`), never touching
+`repo_root`'s real `.git/index` or working tree. Only *after* that
+commit exists does `close_project` decide whether it's safe to move
+`main`: `_maybe_fast_forward_main` fast-forwards `main` (via `git merge
+--ff-only`, which updates HEAD, the index and the working tree together)
+when `main` is the checked-out branch *and* the tree is clean; otherwise
+it leaves `main` and the working tree completely untouched and records
+an unacked `inbox.structure_update_ready` event describing where the
+structure commit landed, for the user to merge/PR by hand. Single-writer
+invariant preserved -- muvue is still the only thing that ever writes
+`components`/`decisions` content; only *how* the git commit reaches the
+user's checkout changed (see docs/decisions.md).
+
+Finally flips the project to `closed` and exports its event history
+(`core/history.py`).
 """
 
 from __future__ import annotations
@@ -22,12 +38,21 @@ import json
 import os
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import db as db_mod
 from . import events as events_mod
+from . import gitutil as gitutil_mod
 from . import history as history_mod
 from . import projects as projects_mod
+
+# v4 section 9's dedicated structure ref. A plain branch (not a tag or a
+# detached commit floating with no ref) so `git log`/`git merge --ff-only`
+# and every other ordinary git command a human runs against their own repo
+# just works against it, the same way `core.strict`'s per-node `node-<id>`
+# branches do.
+STRUCTURE_REF = "refs/heads/muvue/structure"
 
 # "capped per close" (plan section 9) -- one project's close proposes at
 # most this many new rows per category (decisions / promoted lessons /
@@ -192,16 +217,136 @@ def preview_close(conn: sqlite3.Connection, project_id: int) -> dict:
     }
 
 
-def _write_structure_json(conn: sqlite3.Connection, repo_root: Path) -> tuple[Path, Path]:
+def _structure_file_contents(conn: sqlite3.Connection) -> dict[str, str]:
+    """The full current `components`/`decisions` tables, serialized to the
+    same JSON text `.muvue/components.json`/`.muvue/decisions.json` have
+    always held -- but purely in memory. Unlike the v3-era
+    `_write_structure_json` this replaces, nothing here touches disk:
+    writing these paths into `repo_root`'s actual working tree before
+    knowing whether a fast-forward will happen would itself be exactly
+    the kind of surprise mutation v4 section 9 is calling out (a
+    just-created-and-abandoned untracked/modified file if the ff turns
+    out to be unsafe). `_write_structure_commit` blobs this content
+    straight into git's object database instead (`git hash-object -w
+    --stdin`)."""
     components = [dict(r) for r in conn.execute("SELECT * FROM components ORDER BY id").fetchall()]
     decisions = [dict(r) for r in conn.execute("SELECT * FROM decisions ORDER BY id").fetchall()]
-    muvue_dir = Path(repo_root) / ".muvue"
-    muvue_dir.mkdir(parents=True, exist_ok=True)
-    comp_path = muvue_dir / "components.json"
-    dec_path = muvue_dir / "decisions.json"
-    comp_path.write_text(json.dumps(components, indent=2, default=str) + "\n")
-    dec_path.write_text(json.dumps(decisions, indent=2, default=str) + "\n")
-    return comp_path, dec_path
+    return {
+        ".muvue/components.json": json.dumps(components, indent=2, default=str) + "\n",
+        ".muvue/decisions.json": json.dumps(decisions, indent=2, default=str) + "\n",
+    }
+
+
+def _resolve(repo_root: Path, revision: str) -> str | None:
+    result = _run_git_as_muvue("rev-parse", "--verify", revision, cwd=repo_root)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _write_structure_commit(repo_root: Path, files: dict[str, str], message: str) -> str:
+    """Build a commit that updates exactly `files` (repo-relative path ->
+    new full text content) relative to whatever was already there,
+    landing it on `STRUCTURE_REF` -- entirely through a temporary index
+    (`GIT_INDEX_FILE`), so `repo_root`'s real `.git/index` and working
+    tree are never read from or written to by this function. Returns the
+    new commit sha.
+
+    Base tree / parent commit: `STRUCTURE_REF`'s current tip if the ref
+    already exists, else `repo_root`'s current `HEAD` (the first-ever
+    structure commit). Choosing the *commit*, not just the tree, as the
+    parent gives `STRUCTURE_REF` real ancestry back to a point on the
+    branch that created it -- which is exactly what later lets
+    `_maybe_fast_forward_main`'s `git merge --ff-only` succeed without
+    any separate `merge-base --is-ancestor` bookkeeping here.
+
+    `GIT_INDEX_FILE` points at a fresh `tempfile.mkstemp()` path, unique
+    per call, removed again once (successfully or not) it's no longer
+    needed -- never a shared fixed path -- so two concurrent calls (or
+    one racing a manual git operation) never share, and can't corrupt,
+    the same temporary index. The single-writer invariant on
+    `STRUCTURE_REF` itself is then enforced by `update-ref`'s own
+    compare-and-swap (old value = whatever this call read `STRUCTURE_REF`
+    as, moments before) rather than assumed.
+    """
+    head_sha = _resolve(repo_root, "HEAD")
+    if head_sha is None:
+        raise CloseError(f"{repo_root} has no HEAD commit to base a structure commit on")
+    structure_sha = _resolve(repo_root, STRUCTURE_REF)
+    parent_sha = structure_sha or head_sha
+    base_tree = f"{parent_sha}^{{tree}}"
+
+    fd, tmp_index = tempfile.mkstemp(prefix="muvue-structure-index-")
+    os.close(fd)
+    os.remove(tmp_index)  # must not pre-exist: `read-tree` writes a fresh index file itself
+    env = {**os.environ, **_CLOSE_COMMIT_ENV, "GIT_INDEX_FILE": tmp_index}
+
+    def _git(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", *args], cwd=repo_root, capture_output=True, text=True,
+            env=env, input=input_text,
+        )
+
+    try:
+        read = _git("read-tree", base_tree)
+        if read.returncode != 0:
+            raise CloseError(f"failed to seed temporary index from {base_tree}: {read.stderr}")
+
+        for path, content in files.items():
+            hash_obj = _git("hash-object", "-w", "--stdin", input_text=content)
+            if hash_obj.returncode != 0:
+                raise CloseError(f"failed to write blob for {path}: {hash_obj.stderr}")
+            blob_sha = hash_obj.stdout.strip()
+            update = _git("update-index", "--add", "--cacheinfo", f"100644,{blob_sha},{path}")
+            if update.returncode != 0:
+                raise CloseError(f"failed to stage {path} in temporary index: {update.stderr}")
+
+        write_tree = _git("write-tree")
+        if write_tree.returncode != 0:
+            raise CloseError(f"failed to write structure tree: {write_tree.stderr}")
+        new_tree_sha = write_tree.stdout.strip()
+
+        commit = _git("commit-tree", new_tree_sha, "-p", parent_sha, "-m", message)
+        if commit.returncode != 0:
+            raise CloseError(f"failed to create structure commit: {commit.stderr}")
+        new_commit_sha = commit.stdout.strip()
+    finally:
+        if os.path.exists(tmp_index):
+            os.remove(tmp_index)
+
+    old_value = structure_sha if structure_sha else ""
+    update_ref = _run_git_as_muvue(
+        "update-ref", STRUCTURE_REF, new_commit_sha, old_value, cwd=repo_root,
+    )
+    if update_ref.returncode != 0:
+        raise CloseError(f"failed to advance {STRUCTURE_REF} to {new_commit_sha}: {update_ref.stderr}")
+    return new_commit_sha
+
+
+def _maybe_fast_forward_main(repo_root: Path, structure_sha: str) -> dict:
+    """v4 section 9: fast-forward `main` only when it's the checked-out
+    branch *and* the working tree is clean -- otherwise `main` and the
+    working tree are left completely untouched (see `close_project`'s
+    inbox-item fallback). `git merge --ff-only`, not a raw `git
+    update-ref refs/heads/main <sha>`: `main` is the branch `repo_root`'s
+    own HEAD is actually pointing at here, so a raw ref move would
+    advance the branch pointer while leaving the checked-out files and
+    index stale against the new tip (an instant false-dirty `git
+    status`). `merge --ff-only` updates HEAD, the index and the working
+    tree together as one real git operation, and refuses outright (exit
+    nonzero, no partial effect) if fast-forwarding isn't actually
+    possible -- which also means it's the ancestry check, no separate
+    `merge-base --is-ancestor` needed (docs/decisions.md)."""
+    branch = gitutil_mod.current_branch(repo_root)
+    if branch != "main":
+        return {"fast_forwarded": False, "reason": f"checked-out branch is {branch!r}, not main"}
+    status = _run_git_as_muvue("status", "--porcelain", cwd=repo_root)
+    if status.stdout.strip() != "":
+        return {"fast_forwarded": False, "reason": "working tree is dirty"}
+    merge = _run_git_as_muvue("merge", "--ff-only", STRUCTURE_REF, cwd=repo_root)
+    if merge.returncode != 0:
+        return {"fast_forwarded": False, "reason": f"not a fast-forward: {merge.stderr.strip()}"}
+    return {"fast_forwarded": True, "sha": structure_sha}
 
 
 def close_project(
@@ -256,17 +401,33 @@ def close_project(
                 type_="decision.created", payload=dict(row),
             )
 
-    comp_path, dec_path = _write_structure_json(conn, repo_root)
+    files = _structure_file_contents(conn)
+    comp_path = repo_root / ".muvue" / "components.json"
+    dec_path = repo_root / ".muvue" / "decisions.json"
 
-    add = _run_git_as_muvue("add", "--", str(comp_path), str(dec_path), cwd=repo_root)
-    if add.returncode != 0:
-        raise CloseError(f"failed to stage structure diff: {add.stderr}")
-    commit = _run_git_as_muvue(
-        "commit", "-q", "-m", f"muvue: close project {project_id} structure diff",
-        cwd=repo_root,
+    structure_sha = _write_structure_commit(
+        repo_root, files, f"muvue: close project {project_id} structure diff",
     )
-    if commit.returncode != 0 and "nothing to commit" not in (commit.stdout + commit.stderr):
-        raise CloseError(f"failed to commit structure diff: {commit.stderr}")
+    ff_result = _maybe_fast_forward_main(repo_root, structure_sha)
+
+    inbox_event_id = None
+    if not ff_result["fast_forwarded"]:
+        with db_mod.write_txn(conn):
+            inbox_event_id = events_mod.record_event(
+                conn, project_id=project_id, node_id=None, actor=actor, actor_evidence=actor_evidence,
+                type_="inbox.structure_update_ready",
+                payload={
+                    "ref": STRUCTURE_REF,
+                    "sha": structure_sha,
+                    "reason": ff_result["reason"],
+                    "message": (
+                        f"structure update for project {project_id} committed on "
+                        f"{STRUCTURE_REF} ({structure_sha[:12]}); not fast-forwarded onto "
+                        f"main ({ff_result['reason']}) -- merge it manually "
+                        f"(e.g. `git merge {STRUCTURE_REF}`) or open a PR"
+                    ),
+                },
+            )
 
     project_row = projects_mod.set_phase(conn, project_id, "closed", actor=actor, actor_evidence=actor_evidence)
 
@@ -278,5 +439,9 @@ def close_project(
         "diff_committed": preview["diff"],
         "components_path": str(comp_path),
         "decisions_path": str(dec_path),
+        "structure_ref": STRUCTURE_REF,
+        "structure_sha": structure_sha,
+        "fast_forwarded": ff_result["fast_forwarded"],
+        "inbox_event_id": inbox_event_id,
         "history_path": str(history_path),
     }
