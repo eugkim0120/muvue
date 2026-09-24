@@ -72,6 +72,8 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 core.state_machine.InvalidTransition,
                 core.state_machine.NotLeaseOwner,
                 core.merge.MergeError,
+                core.close.CloseError,
+                core.imports.ImportError_,
             ),
         ):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -534,14 +536,21 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return dict(row)
 
     @app.post("/nodes/{node_id}/merge")
-    def merge_node(node_id: int, authorization: str | None = Header(default=None)) -> dict:
+    def merge_node(
+        node_id: int, pr: bool = False, authorization: str | None = Header(default=None),
+    ) -> dict:
         """Plan section 6 "Merging" (P5): attempt to merge this node's
         strict-mode branch onto the airlock's main. Light-mode / never
-        strict-started nodes are a documented no-op (`core.merge`)."""
+        strict-started nodes are a documented no-op (`core.merge`).
+        `?pr=true` (P6, plan section 4/11): also include a generated PR
+        description body (`core.pr.generate_pr_body`) in the response --
+        no real `gh pr create` call, no network access here."""
         _require_session(authorization)
         with _conn() as conn:
             try:
                 result = core.merge.attempt_merge(conn, node_id, repo_root)
+                if pr:
+                    result["pr_body"] = core.pr.generate_pr_body(conn, node_id)
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -563,19 +572,53 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/import")
-    def import_(authorization: str | None = Header(default=None)) -> dict:
-        _require_session(authorization)
-        return {"status": "not implemented in P2 (github import ships P6)"}
-
-    @app.post("/projects/{project_id}/close")
-    def close_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:
+    def import_(
+        node_id: int = Body(...),
+        issue_number: int = Body(...),
+        data: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        """Plan section 4/11 (P6): link `node_id` to `github#issue_number`
+        in `external_refs`. No live GitHub API call here (plan working
+        rule 2) -- `data` is the issue payload the caller already has
+        (see `core/imports.py`)."""
         _require_session(authorization)
         with _conn() as conn:
             try:
-                row = core.projects.set_phase(conn, project_id, "closed")
+                result = core.imports.import_github_issue(
+                    conn, node_id, issue_number, data=data, actor="human",
+                )
             except Exception as e:
                 _handle_core_error(e)
-        return dict(row)
+        return result
+
+    @app.get("/projects/{project_id}/close-preview")
+    def close_preview(project_id: int, authorization: str | None = Header(default=None)) -> dict:
+        """P6: the dashboard-reviewable structure diff `close` would
+        propose, without committing anything (`core.close.preview_close`)."""
+        _require_session(authorization)
+        with _conn() as conn:
+            try:
+                result = core.close.preview_close(conn, project_id)
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
+    @app.post("/projects/{project_id}/close")
+    def close_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:
+        """Plan section 9 (P6): commit the project's structure diff
+        (`.muvue/components.json`/`.muvue/decisions.json`, committed on
+        `main`), flip the project to `closed`, and export its event
+        history (`core.close.close_project`, `confirm=True`)."""
+        _require_session(authorization)
+        with _conn() as conn:
+            try:
+                result = core.close.close_project(
+                    conn, project_id, repo_root, actor="human", confirm=True,
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
 
     @app.post("/projects/{project_id}/pause")
     def pause_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:

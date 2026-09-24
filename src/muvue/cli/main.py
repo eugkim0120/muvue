@@ -107,12 +107,34 @@ def migrate(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
 
 
 @app.command()
-def rebuild(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
-    """Replay `events` and report whether it reproduces the live DB."""
+def rebuild(
+    path: Path = typer.Argument(Path("."), help="Repo root"),
+    project_id: int = typer.Option(
+        None, "--project-id", help="scope to one project, replayed from its exported archive"
+    ),
+    from_archive: Path = typer.Option(
+        None, "--from-archive",
+        help="replay this .jsonl.gz archive instead of the default "
+        ".muvue/history/<project-id>.jsonl.gz (requires --project-id)",
+    ),
+) -> None:
+    """Replay `events` and report whether it reproduces the live DB.
+
+    With `--project-id` (P6 acceptance #3): replay only that project's
+    exported `.jsonl.gz` history archive (`core.history`) and compare
+    against that project's live state instead of the whole DB.
+    """
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        mismatches = core.rebuild.diff_state(conn)
+        if project_id is not None:
+            archive = from_archive or core.history.archive_path(repo_root, project_id)
+            if not archive.exists():
+                typer.echo(f"no archive found at {archive}", err=True)
+                raise typer.Exit(1)
+            mismatches = core.rebuild.diff_project_from_archive(conn, project_id, archive)
+        else:
+            mismatches = core.rebuild.diff_state(conn)
     finally:
         conn.close()
     if mismatches:
@@ -122,17 +144,30 @@ def rebuild(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
 
 
 @app.command()
-def export(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
-    """Minimal event export to .muvue/history/ (full jsonl.gz export ships P6)."""
+def export(
+    path: Path = typer.Argument(Path("."), help="Repo root"),
+    project_id: int = typer.Option(
+        None, "--project-id", help="export only this project to .muvue/history/<id>.jsonl.gz"
+    ),
+) -> None:
+    """Event export. With `--project-id` (P6): the real per-project
+    `.jsonl.gz` archive (`core.history.export_project`) `close` also
+    writes. Without it: the whole-DB flat dump `export` has always done
+    (P0)."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        rows = [dict(r) for r in core.events.all_events(conn)]
+        if project_id is not None:
+            out = core.history.export_project(conn, project_id, repo_root)
+            count = len(core.history.export_project_events(conn, project_id))
+        else:
+            rows = [dict(r) for r in core.events.all_events(conn)]
+            out = repo_root / ".muvue" / "history" / "events.json"
+            out.write_text(json.dumps(rows, default=str, indent=2))
+            count = len(rows)
     finally:
         conn.close()
-    out = repo_root / ".muvue" / "history" / "events.json"
-    out.write_text(json.dumps(rows, default=str, indent=2))
-    typer.echo(f"exported {len(rows)} events to {out}")
+    typer.echo(f"exported {count} events to {out}")
 
 
 @app.command()
@@ -716,6 +751,11 @@ def merge(
         None, help="merge this done node's branch onto main; omit to merge every "
         "pending done node in dependency order"
     ),
+    pr: bool = typer.Option(
+        False, "--pr", help="also generate a PR description body (plan section 6/11, P6) -- "
+        "criteria + relevant decisions/notes/linked issues; requires a single NODE_ID, no real "
+        "`gh pr create` call (no network access here)",
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 6 "Merging"): attempt to merge strict-mode
@@ -723,11 +763,16 @@ def merge(
     blocked(conflict), attempts + 1, and a "rebase onto main" subtask is
     created. Light-mode / never-started-strict nodes are a documented
     no-op (see core/merge.py)."""
+    if pr and node_id is None:
+        typer.echo("--pr requires a single NODE_ID", err=True)
+        raise typer.Exit(1)
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         if node_id is not None:
             result = core.merge.attempt_merge(conn, node_id, repo_root)
+            if pr:
+                result["pr_body"] = core.pr.generate_pr_body(conn, node_id)
         else:
             result = core.merge.merge_pending(conn, repo_root)
     finally:
@@ -736,8 +781,27 @@ def merge(
 
 
 @app.command()
-def close() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def close(
+    project_id: int = typer.Argument(...),
+    yes: bool = typer.Option(
+        False, "--yes", help="commit the proposed structure diff and close the project "
+        "(default: dry-run preview only)",
+    ),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb (plan section 9): with `--yes`, commit the project's
+    proposed structure diff (new/changed components, decisions, promoted
+    lessons) to `.muvue/components.json`/`.muvue/decisions.json` (committed
+    on `main`), flip the project to `closed`, and export its event
+    history to `.muvue/history/<id>.jsonl.gz`. Without `--yes`: a
+    dry-run preview of that same diff, no mutation (see core/close.py)."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.close.close_project(conn, project_id, repo_root, confirm=yes)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
@@ -774,8 +838,37 @@ def handoff(
 
 
 @app.command(name="import")
-def import_() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def import_(
+    from_: str = typer.Option(
+        ..., "--from", help="'github#N', e.g. 'github#123'",
+    ),
+    node_id: int = typer.Option(..., "--node-id", help="node to link the issue to"),
+    data: Path = typer.Option(
+        None, "--data", help="local JSON file with the issue's data (no live GitHub API access "
+        "in this environment -- plan section 11/working rule 2; shape: "
+        '{"number": N, "title": ..., "url": ..., "body": ...}',
+    ),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb (plan section 4/11): link NODE_ID to a GitHub issue/PR
+    in `external_refs`. `--from github#N` names the issue; `--data PATH`
+    supplies its data locally (see core/imports.py -- the real GitHub
+    fetch is a documented, injectable seam, not wired to a live API
+    here)."""
+    system, _, rest = from_.partition("#")
+    if system != "github" or not rest.isdigit():
+        typer.echo(f"unsupported --from {from_!r}; expected 'github#N'", err=True)
+        raise typer.Exit(1)
+    issue_number = int(rest)
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.imports.import_github_issue(
+            conn, node_id, issue_number, data_path=data,
+        )
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 def main() -> None:
