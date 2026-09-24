@@ -2,6 +2,66 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P7 (drift loops, `audit`, lesson decay, real `drift_pct`, timeline scrubber)
+
+### Added
+- `core.drift` (plan section 9): the structure layer's drift machinery.
+  `create_anchored_component` writes a real `{file_path: content_hash}`
+  `anchors_json` (P6 left it at the `'[]'` schema default). Symbol-level/
+  tree-sitter anchors stay explicitly deferred.
+- **Drift loop item 1 (real, not P3's no-op signal):**
+  `mark_stale_for_commit`, called from
+  `core.hooks.handle_post_commit_from_git`, recomputes anchor content
+  hashes on every commit and flips `components.status -> 'stale'` when
+  an anchored file's content actually changed. Git rename detection
+  (`git diff-tree -M`) retargets an anchor to a renamed file's new path
+  instead of marking it stale on a pure rename. `component.updated`
+  events carry the full row (rebuild-replayable, same convention as
+  `node.*`/`project.*`).
+- **Drift loop item 2:** `flag_unattributed_commit` -- a commit with no
+  `Muvue-Node:`/`Refs:` trailer that touches an anchored file's path
+  records an unacked `inbox.unattributed_commit` event, surfaced at `GET
+  /inbox`'s new `"signals"`.
+- **Drift loop item 3 ("reconcile-on-touch"):** `core.review.dispatch`
+  now blocks/flags `done` (`review.stale_component_touched`) when a
+  node's `predicted_touches` overlap a `stale` component's anchors,
+  before any light/strict-mode-specific check runs.
+- **Drift loop item 4:** `muvue audit [--n N]` (`core.drift.run_audit`),
+  replacing the P0 `NOT IMPLEMENTED` stub -- samples the oldest-verified
+  (or never-verified) components and drafts a proposed diff for each
+  into the inbox (`inbox.audit_drift_signal`, `GET /inbox`'s
+  `"audit_items"`). Also runs a lesson-decay pass each run.
+- **Drift loop item 5:** `core.drift.drift_pct` -- the real `drift_pct`
+  KPI (plan section 9: "% components verified within last K commits"),
+  replacing the 0.0 stub `GET /kpis` shipped since P2.
+- **Lesson decay:** `core.drift.record_lesson_retrieval` (called from
+  `core.queries.brief_node` on every lesson surfaced) and
+  `decay_lessons` -- a lesson note not retrieved by enough distinct
+  projects is archived (`notes.archived_at`, a new `SCHEMA_VERSION 3`
+  column) unless `pinned`. Archived lessons are excluded from `brief`.
+- `core.migrate.run_migrate` now does a real `ALTER TABLE` step
+  (idempotent via `PRAGMA table_info`, not error-catching) for
+  `notes.archived_at` on a pre-existing database -- the first schema
+  change since P0/P6 that isn't just a new `CREATE TABLE IF NOT EXISTS`.
+- `core.rebuild`/`core.rebuild.diff_state` now also cover `components`/
+  `notes` replay (previously projects/nodes only) -- P7 is the first
+  phase to mutate either table outside `close`'s one-shot writes.
+- `GET /events` gained `since`/`until` query params (an `events.ts`
+  window, independent of the existing `since_id` cursor). The
+  dashboard's timeline tab (`static/index.html`) got a client-side
+  range-slider scrubber over its fetched event window.
+
+### Scope notes (see `docs/decisions.md` #59-#65)
+- `node_touches` (the real per-node structure-graph join table) still
+  has no populated writer; reconcile-on-touch reuses `predicted_touches`
+  instead, as the plan's own prompt names as the fallback.
+- `components` has no creation/verification timestamp column; `audit`'s
+  "oldest-verified" ordering is `(verified_sha IS NULL) DESC, id ASC` as
+  a documented proxy.
+- `drift_pct`'s formula is implemented exactly as plan section 9 states
+  it ("% components verified"), even though that reads as a freshness
+  metric under a field named for drift.
+
 ## [Unreleased] - P6 (close, structure layer, history archive, brief-reads-structure)
 
 ### Added

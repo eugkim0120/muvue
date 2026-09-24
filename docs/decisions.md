@@ -745,3 +745,90 @@ reading here. Real `decisions` table entries start once dogfooding begins
     suite), which is a worse default than describing a node's own
     criteria/decisions/notes regardless of whether a separate,
     strict-mode-only git operation happened to succeed.
+
+59. **`notes.archived_at`, a real `ALTER TABLE` migration step, not just
+    a `CREATE TABLE IF NOT EXISTS` column.** P0-P6's `SCHEMA_VERSION`
+    bumps only ever added new tables (`CREATE TABLE IF NOT EXISTS` is a
+    no-op-safe way to introduce those into a pre-existing DB for free).
+    P7 needs a new column on an existing table (`notes`, for lesson-decay
+    soft delete). `core.migrate.run_migrate` gained
+    `_add_column_if_missing`, an idempotent-by-inspection (`PRAGMA
+    table_info`, not catch-the-duplicate-column-error) `ALTER TABLE`
+    step, run only when `current < SCHEMA_VERSION`. A dedicated column
+    rather than overloading `pinned`/`last_retrieved_at` with a sentinel,
+    matching `nodes.deleted_at`'s existing `*_at` soft-delete convention.
+
+60. **Anchor content hashing is `sha256` of `git show <sha>:<path>`'s
+    output, not git's own blob object hash (`git hash-object`).** Both
+    are valid "content hash" readings of plan section 9's "file path +
+    content hash". `git hash-object`'s output is already directly
+    queryable via `git ls-tree`/`git rev-parse <sha>:<path>` without a
+    `git show` round-trip, which would be the more "native" choice --
+    but `core.drift.blob_hash` sticks to plain `sha256(content)` so the
+    comparison never depends on git's own object-hashing implementation
+    detail (e.g. a future git defaulting to SHA-256 repos instead of
+    SHA-1 would silently change every stored anchor hash's meaning if it
+    *was* git's object hash; a content hash computed by this module
+    stays stable regardless of the repo's own object-hash algorithm).
+
+61. **Reconcile-on-touch (drift loop item 3) matches on
+    `predicted_touches` globs against `stale` components' anchor paths,
+    not `node_touches`.** The P7 prompt itself names this as the
+    documented fallback: `node_touches` (the real per-node
+    structure-graph join table) has no populated writer anywhere in the
+    codebase as of P7 -- populating it would be its own scope (a
+    static-analysis pass mapping a node's actual diff to component ids),
+    unrequested by this phase's numbered drift-loop list. `predicted_touches`
+    has been populated since P0 and is already what `core.risk` uses for
+    every other touch-based signal, so `core.review._stale_touched_component_ids`
+    reuses the exact same `risk.touches_globs` overlap check (anchor
+    paths as the "touches", the node's globs as the "globs") rather than
+    inventing a second overlap primitive.
+
+62. **`audit`'s "oldest-verified" ordering, given `components` has no
+    creation/verification timestamp column.** `components.verified_sha`
+    is a sha string, not a timestamp -- there's no column to `ORDER BY`
+    that means "longest since last verified" directly. `core.drift.run_audit`
+    orders by `(verified_sha IS NULL) DESC, id ASC`: never-verified
+    components sample first (maximally overdue, no verification signal
+    at all), then ascending `id` as a proxy for insertion order among the
+    rest (autoincrement ids are monotonic with creation time). Adding a
+    real `verified_at`/`created_at` column would be a schema change
+    broader than what P7's numbered list asks for; documented here as
+    the judgment call instead.
+
+63. **Lesson-decay's "K projects" is counted from `note.retrieved`
+    events' distinct `project_id`s, not a dedicated junction table.**
+    `core.drift.record_lesson_retrieval` (called from
+    `core.queries.brief_node` every time a lesson is surfaced) already
+    appends an event with `{note_id, project_id}`; `decay_lessons`
+    counts `COUNT(DISTINCT json_extract(payload, '$.project_id'))` over
+    those events per note via SQLite's built-in `json1` extension
+    (`json_extract`), rather than adding a new `lesson_retrievals(note_id,
+    project_id)` table. Consistent with "the events log is the source of
+    truth" (plan section 3) and avoids a second write path for what's
+    fundamentally an events-log query.
+
+64. **`drift_pct`'s KPI formula is read literally from plan section 9
+    ("% components verified within last K commits") even though it reads
+    as a *freshness* metric slotted into a field named `drift_pct`.** A
+    plausible alternative reading is "the inverse" (fraction *stale*, or
+    1 - freshness) so the name and the value's sense agree. The plan
+    text gives the formula verbatim, though, and inventing an inverted
+    metric under the same name the plan already defined precisely would
+    be a bigger judgment call than following the literal text -- kept as
+    written, documented here so the naming/sense mismatch is a known,
+    deliberate choice rather than a latent bug.
+
+65. **`GET /inbox`'s new drift signals (`"signals"` for unattributed
+    commits, `"audit_items"` for `audit`'s drafted diffs) reuse the
+    unacked-`events`-row convention, not a new dedicated inbox table.**
+    `POST /events/{id}/ack` already exists and already means "remove
+    this from whatever inbox-shaped view surfaces it"; `inbox.
+    unattributed_commit`/`inbox.audit_drift_signal` are just two more
+    event types filtered by `acked_at IS NULL`, the same shape `/inbox`'s
+    pre-existing `questions`/`review`/`blocked` slots already follow
+    (`questions` filters `status = 'open'` instead, but the "still
+    outstanding" framing is the same). A new table would duplicate what
+    `events` (append-only, already replayable, already ack-able) already
+    provides.

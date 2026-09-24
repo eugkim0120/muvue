@@ -256,18 +256,56 @@ function loadSpec() {
   });
 }
 
+// Timeline scrubber (P7, plan section 8 "event timeline"): fetches the
+// full window once, then scrubs/filters client-side against a range
+// slider over event index -- re-fetching against `/events`' `since`/
+// `until` on every drag would spam the daemon, and 100 events is small
+// enough to hold in memory and slice locally.
+let timelineEvents = [];
+
+function renderTimelineList(view, events) {
+  const list = el("div", {id: "timeline-list"});
+  events.slice().reverse().forEach(function (ev) {
+    list.appendChild(el("div", {class: "card"}, [
+      el("div", {class: "muted", text: ev.ts + " - " + ev.actor}),
+      el("div", {text: ev.type + (ev.node_id ? " (node #" + ev.node_id + ")" : "")}),
+    ]));
+  });
+  if (!events.length) list.appendChild(el("p", {class: "muted", text: "no events in range"}));
+  const existing = view.querySelector("#timeline-list");
+  if (existing) existing.replaceWith(list);
+  else view.appendChild(list);
+}
+
 function loadTimeline() {
   const view = document.getElementById("view-timeline");
   view.textContent = "loading...";
   api("/events?limit=100").then(function (events) {
+    timelineEvents = events;
     view.textContent = "";
-    events.slice().reverse().forEach(function (ev) {
-      view.appendChild(el("div", {class: "card"}, [
-        el("div", {class: "muted", text: ev.ts + " - " + ev.actor}),
-        el("div", {text: ev.type + (ev.node_id ? " (node #" + ev.node_id + ")" : "")}),
-      ]));
+    if (!events.length) {
+      view.appendChild(el("p", {class: "muted", text: "no events yet"}));
+      return;
+    }
+    const scrubber = el("div", {class: "card"});
+    const label = el("div", {class: "muted", id: "timeline-scrub-label"});
+    const slider = el("input", {
+      type: "range", min: "0", max: String(events.length - 1), value: "0", id: "timeline-scrub",
     });
-    if (!events.length) view.appendChild(el("p", {class: "muted", text: "no events yet"}));
+    function updateFromScrub() {
+      const startIdx = Number(slider.value);
+      const windowed = events.slice(startIdx);
+      label.textContent = windowed.length
+        ? "showing from " + windowed[0].ts + " (" + windowed.length + " of " + events.length + " events)"
+        : "no events in range";
+      renderTimelineList(view, windowed);
+    }
+    slider.addEventListener("input", updateFromScrub);
+    scrubber.appendChild(el("div", {class: "muted", text: "scrub to the oldest event shown:"}));
+    scrubber.appendChild(slider);
+    scrubber.appendChild(label);
+    view.appendChild(scrubber);
+    updateFromScrub();
   });
 }
 

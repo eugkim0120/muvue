@@ -149,16 +149,40 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                     "SELECT * FROM nodes WHERE status = 'blocked' AND deleted_at IS NULL"
                 ).fetchall()
             )
-        return {"questions": questions, "review": review, "blocked": blocked}
+            # P7 drift loop items 2/4: unattributed commits and audit's
+            # drafted diffs are unacked `events` rows (same "unacked ==
+            # still in the inbox" convention `/events/{id}/ack` already
+            # established) rather than a new dedicated table.
+            signals = _rows_to_list(
+                conn.execute(
+                    "SELECT * FROM events WHERE type = 'inbox.unattributed_commit' "
+                    "AND acked_at IS NULL ORDER BY id"
+                ).fetchall()
+            )
+            audit_items = _rows_to_list(
+                conn.execute(
+                    "SELECT * FROM events WHERE type = 'inbox.audit_drift_signal' "
+                    "AND acked_at IS NULL ORDER BY id"
+                ).fetchall()
+            )
+        return {
+            "questions": questions,
+            "review": review,
+            "blocked": blocked,
+            "signals": signals,
+            "audit_items": audit_items,
+        }
 
     @app.get("/kpis")
     def kpis() -> dict:
-        """Drift % requires the structure layer (P6+) -- still stubbed at
-        zero. Rubber-stamp rate is real: it's a ratio over events this
-        phase already logs (`metric.rubber_stamp` vs total `node.done`
+        """Rubber-stamp rate is real: it's a ratio over events this phase
+        already logs (`metric.rubber_stamp` vs total `node.done`
         approvals via `nodes.approve_review`). `tokens_per_node` /
         `spend_vs_budget` are real as of P5: `node_usage` is now populated
-        by `core.runner`, so these read it directly instead of stubbing."""
+        by `core.runner`, so these read it directly instead of stubbing.
+        `drift_pct` is real as of P7: `core.drift.drift_pct` (plan
+        section 9 item 5, "% components verified within last K
+        commits")."""
         with _conn() as conn:
             total_reviewed = conn.execute(
                 "SELECT COUNT(*) c FROM events WHERE type = 'node.done'"
@@ -173,10 +197,11 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 "SELECT COUNT(DISTINCT node_id) c FROM node_usage"
             ).fetchone()["c"]
             budget = core.runner.budget_state(conn, config)
+            drift = core.drift.drift_pct(conn, repo_root)
         rubber_stamp_rate = (rubber_stamps / total_reviewed) if total_reviewed else 0.0
         tokens_per_node = (total_tokens / nodes_with_usage) if nodes_with_usage else 0.0
         return {
-            "drift_pct": 0.0,  # P6+: structure layer not built yet
+            "drift_pct": drift,
             "rubber_stamp_rate": rubber_stamp_rate,
             "tokens_per_node": tokens_per_node,
             "spend_vs_budget": budget["pct"],
@@ -216,20 +241,36 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return out
 
     @app.get("/events")
-    def list_events(since_id: int = 0, project_id: int | None = None, limit: int = 200) -> list[dict]:
-        """Event timeline (plan section 8 dashboard view)."""
+    def list_events(
+        since_id: int = 0,
+        project_id: int | None = None,
+        limit: int = 200,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict]:
+        """Event timeline (plan section 8 dashboard view). `since`/`until`
+        (P7, timeline scrubber): an optional inclusive `events.ts` window
+        (`strftime('%Y-%m-%dT%H:%M:%fZ', ...)` strings, the same format
+        every `ts` column already stores/sorts lexicographically as) --
+        independent of `since_id`, which is the pre-existing "poll for
+        anything newer than this row id" cursor, not a time filter."""
         with _conn() as conn:
+            clauses = ["id > ?"]
+            params: list = [since_id]
             if project_id is not None:
-                rows = conn.execute(
-                    "SELECT * FROM events WHERE id > ? AND project_id = ? "
-                    "ORDER BY id ASC LIMIT ?",
-                    (since_id, project_id, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
-                    (since_id, limit),
-                ).fetchall()
+                clauses.append("project_id = ?")
+                params.append(project_id)
+            if since is not None:
+                clauses.append("ts >= ?")
+                params.append(since)
+            if until is not None:
+                clauses.append("ts <= ?")
+                params.append(until)
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY id ASC LIMIT ?",
+                params,
+            ).fetchall()
         return _rows_to_list(rows)
 
     @app.get("/nodes")

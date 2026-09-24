@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
+from . import drift as drift_mod
 from . import nodes as nodes_mod
 
 STRUCTURE_SEARCH_LIMIT = 3
@@ -102,7 +103,22 @@ def brief_node(conn: sqlite3.Connection, node_id: int) -> dict:
     Claude Code adapter's SessionStart hook calls (see
     adapters.claude_code)."""
     detail = show_node(conn, node_id)
-    lessons = [n for n in detail["notes"] if n["kind"] == "lesson" or n["pinned"]]
+    # Archived lessons (P7 lesson decay) are excluded from what's
+    # surfaced -- an archived, unpinned lesson is exactly the one that
+    # wasn't retrieved enough to earn a spot in a fresh brief either.
+    lessons = [
+        n for n in detail["notes"]
+        if (n["kind"] == "lesson" or n["pinned"]) and not n.get("archived_at")
+    ]
+    # P7 lesson decay (plan section 9): every lesson note surfaced here
+    # counts as one retrieval by this node's project --
+    # `core.drift.decay_lessons` archives a lesson not retrieved by
+    # enough distinct projects, unless pinned.
+    for n in lessons:
+        if n["kind"] == "lesson":
+            drift_mod.record_lesson_retrieval(conn, n["id"], detail["node"]["project_id"])
+    if any(n["kind"] == "lesson" for n in lessons):
+        conn.commit()
     open_questions = _rows_to_list(
         conn.execute(
             "SELECT * FROM questions WHERE node_id = ? AND status = 'open'", (node_id,)

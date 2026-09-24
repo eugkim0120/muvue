@@ -245,9 +245,25 @@ def mcp(path: Path = typer.Argument(Path("."), help="Repo root to serve")) -> No
 
 
 @app.command()
-def audit() -> None:
-    """Structure-graph drift audit. Ships P7."""
-    typer.echo(NOT_IMPLEMENTED)
+def audit(
+    path: Path = typer.Option(Path("."), "--path"),
+    n: int = typer.Option(
+        core.drift.DEFAULT_AUDIT_SAMPLE, "--n",
+        help="How many oldest-verified components to sample per run.",
+    ),
+) -> None:
+    """Structure-graph drift audit (plan section 9, P7): samples the `n`
+    oldest-verified (or never-verified) components and drafts a proposed
+    diff for each into the inbox (`core.drift.run_audit`), then runs a
+    lesson-decay pass that may archive lessons not retrieved by enough
+    distinct projects."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.drift.run_audit(conn, n=n)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()

@@ -2,9 +2,13 @@
 
 Process graph tables per plan section 3, plus empty structure-graph tables
 (created now, no logic yet, needed from P6 onward).
+
+- SCHEMA_VERSION 2 -> 3 (P7): `notes.archived_at` (lesson decay soft
+  delete). `core.migrate.run_migrate` `ALTER TABLE`s it into pre-existing
+  databases; new databases get it straight from this `CREATE TABLE`.
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -70,6 +74,10 @@ CREATE TABLE IF NOT EXISTS notes (
     content_hash TEXT NOT NULL,
     pinned INTEGER NOT NULL DEFAULT 0,
     last_retrieved_at TEXT,
+    -- P7 lesson decay (plan section 9): a lesson note not retrieved by
+    -- enough distinct projects gets archived unless pinned. Soft-delete,
+    -- same `*_at` convention as `nodes.deleted_at` -- see docs/decisions.md.
+    archived_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

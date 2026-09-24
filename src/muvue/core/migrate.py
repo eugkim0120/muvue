@@ -6,10 +6,24 @@ plus a version bump record; future phases add real migration steps here.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from . import db as core_db
 from .schema import SCHEMA_VERSION
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """`CREATE TABLE IF NOT EXISTS` (re-applied by `core_db.init_db` on
+    every migrate) only creates a table that doesn't exist yet -- it
+    never adds a column to a table that already exists without it. A
+    real `ALTER TABLE` step is needed for a pre-existing database, same
+    idempotent-by-inspection pattern as everything else in this module:
+    check `PRAGMA table_info` first rather than relying on catching
+    sqlite3's "duplicate column name" error."""
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def run_migrate(repo_root: Path) -> int:
@@ -19,6 +33,8 @@ def run_migrate(repo_root: Path) -> int:
     try:
         current = core_db.get_schema_version(conn)
         if current < SCHEMA_VERSION:
+            # SCHEMA_VERSION 2 -> 3 (P7): notes.archived_at.
+            _add_column_if_missing(conn, "notes", "archived_at", "TEXT")
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

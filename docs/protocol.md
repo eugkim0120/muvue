@@ -675,3 +675,98 @@ acceptance criteria (`criteria_json`), its notes, any relevant decisions
 Independent of the merge outcome itself (works the same in light mode,
 where `attempt_merge` returns `"no_worktree"`). Also `POST
 /nodes/{id}/merge?pr=true` (session-token-gated).
+
+## Drift loop, `audit`, lesson decay, real `drift_pct`/timeline (P7)
+
+`core.drift` (plan section 9) is the first phase to actually write
+`components.anchors_json` -- a `{file_path: content_hash}` dict (P6 left
+it at the schema default `'[]'`). `core.drift.create_anchored_component`
+creates a component anchored to a real file at HEAD, hashing its content
+via `git show <sha>:<path>` (sha256 of the blob, not git's own object
+hash, so no git-internals dependency in the comparison logic).
+Symbol-level/tree-sitter anchors stay explicitly deferred (plan section
+9), same as P6.
+
+### 1. Post-commit staleness marking (real, not a no-op signal)
+
+`muvue hook post-commit`'s CLI entry point
+(`core.hooks.handle_post_commit_from_git`) now also calls
+`core.drift.mark_stale_for_commit(conn, repo_root, commit_sha, files)`
+after its existing trailer-linking/no-op-signal work: for every
+non-deprecated component whose `anchors_json` names a file this commit
+touched, it recomputes the blob hash. A pure rename (detected via `git
+diff-tree -M`, real git rename-detection semantics) retargets the
+anchor to the new path without marking the component stale; any other
+content change flips `components.status` to `'stale'` and records a
+`component.updated` event carrying the full row (replayable, same
+last-write-wins convention `node.*`/`project.*` events already use --
+see `core.rebuild`). `core.hooks.handle_post_commit` itself (the
+pure-data function, no git access, used directly by unit tests) is
+unchanged; the real git-blob-hashing work lives only in the
+`_from_git` entry point, which is what the installed shim actually
+calls. The P3-era `anchor.hash_requested`/`staleness.flagged` no-op
+events are still recorded (nothing removed), now alongside the real
+work they used to just announce.
+
+### 2. Unattributed commits touching an anchor -> inbox
+
+`core.drift.flag_unattributed_commit` (called from
+`core.hooks.handle_post_commit`, DB-only, no git access needed): a
+commit with no `Muvue-Node:`/`Refs:` trailer at all whose touched files
+overlap any tracked component's anchor paths records an unacked
+`inbox.unattributed_commit` event. `GET /inbox` surfaces every unacked
+one of these under `"signals"`.
+
+### 3. Reconcile-on-touch
+
+`core.review.dispatch` now checks, before its existing light/strict-mode
+branching, whether the node's `predicted_touches` globs overlap any
+`stale` component's anchor paths (`node_touches`, the real per-node
+structure-graph join table, has no populated writer yet anywhere in the
+codebase, so `predicted_touches` is the overlap signal used, as the P7
+scope itself allows). A hit always flags to `review`
+(`review.stale_component_touched`), overriding whatever
+tier/criteria-mode would otherwise have auto-approved `done`.
+
+### 4. `muvue audit [--n N]` (real, replacing the P0 stub)
+
+`core.drift.run_audit`: samples the `n` (default
+`core.drift.DEFAULT_AUDIT_SAMPLE`, 5) oldest-verified (or
+never-verified) non-deprecated components -- `components` carries no
+creation timestamp, so "oldest" is read as never-verified first, then
+ascending `id` as a proxy for insertion order -- and drafts a proposed
+diff for each into the inbox as an unacked `inbox.audit_drift_signal`
+event (`GET /inbox`'s `"audit_items"`). Also runs a lesson-decay pass
+(below) as part of the same run -- "`audit` may prune" (plan section 9).
+
+### 5. `drift_pct` KPI (real, replacing the P2/P6 0.0 stub)
+
+`core.drift.drift_pct(conn, repo_root, k=DEFAULT_DRIFT_WINDOW_COMMITS)`:
+"% components verified within last K commits" (plan section 9), read
+literally -- the fraction of non-deprecated components whose
+`verified_sha` is among `HEAD`'s last `k` (default 50) commits. 0.0 with
+no non-deprecated components, or a repo with no usable git history.
+Wired into `GET /kpis`.
+
+### Lesson decay
+
+`core.drift.record_lesson_retrieval` is called from
+`core.queries.brief_node` every time a lesson note is surfaced,
+recording a `note.retrieved` event (`{note_id, project_id}`) and
+bumping `notes.last_retrieved_at`. `core.drift.decay_lessons(k=
+DEFAULT_LESSON_DECAY_K)` (default 3) archives any `kind='lesson'`,
+unpinned note whose `note.retrieved` events span fewer than `k`
+distinct `project_id`s: sets `notes.archived_at` (P7's `SCHEMA_VERSION
+3` addition, a dedicated soft-delete column rather than overloading
+`pinned`/`last_retrieved_at`) and records a `note.archived` event.
+Archived, unpinned lessons are excluded from what `brief_node` surfaces.
+Pinned lessons are never decayed regardless of retrieval count.
+
+### Timeline scrubber
+
+`GET /events` gained `since`/`until` query params (`events.ts` window,
+inclusive, independent of the pre-existing `since_id` row-id cursor).
+The dashboard's timeline tab (`static/index.html`) fetches its usual
+100-event window once, then scrubs it client-side with a range slider
+(`<input type=range>`, `addEventListener`, no inline handlers, no CDN)
+over "oldest event shown" rather than re-fetching per drag.

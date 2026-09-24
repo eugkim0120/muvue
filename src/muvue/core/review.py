@@ -37,6 +37,7 @@ time-dependent logic without sleeping for real.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sqlite3
 from typing import Callable
@@ -92,6 +93,35 @@ def _criteria_mode_result(node: sqlite3.Row, config: MuvueConfig, *, run_checks,
     return {"flag": False, "event_type": None, "payload": {}}
 
 
+def _stale_touched_component_ids(conn: sqlite3.Connection, node: sqlite3.Row) -> list[int]:
+    """P7 drift loop item 3 (plan section 9): "Reconcile-on-touch" --
+    a node whose `predicted_touches` globs overlap any file a currently
+    `stale` component is anchored to must not sail through to `done`
+    unreviewed. `node_touches` (the real per-node structure-graph join
+    table) has no populated writer yet anywhere in the codebase, so
+    `predicted_touches` (already populated since P0) is the overlap
+    signal used here, same fallback the P7 prompt itself names -- see
+    docs/decisions.md."""
+    globs = [
+        row["path_glob"]
+        for row in conn.execute(
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (node["id"],)
+        )
+    ]
+    if not globs:
+        return []
+    hits = []
+    for row in conn.execute("SELECT id, anchors_json FROM components WHERE status = 'stale'"):
+        try:
+            anchors = json.loads(row["anchors_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            anchors = {}
+        paths = list(anchors.keys()) if isinstance(anchors, dict) else []
+        if paths and risk_mod.touches_globs(paths, globs):
+            hits.append(row["id"])
+    return hits
+
+
 def dispatch(
     conn: sqlite3.Connection,
     node: sqlite3.Row,
@@ -104,6 +134,14 @@ def dispatch(
     """Returns {"flag": bool, "event_type": str | None, "payload": dict}.
     `flag=True` means: this node must stop at `review` even if
     `core.risk` alone would have auto-approved it."""
+    stale_ids = _stale_touched_component_ids(conn, node)
+    if stale_ids:
+        return {
+            "flag": True,
+            "event_type": "review.stale_component_touched",
+            "payload": {"node_id": node["id"], "component_ids": stale_ids},
+        }
+
     if config.mode == "light":
         return _criteria_mode_result(node, config, run_checks=run_checks, cwd=cwd)
 
