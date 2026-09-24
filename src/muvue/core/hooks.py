@@ -5,17 +5,26 @@ trailers (core.trailers), links the commit to any resolvable node in
 unattributed commit that touches an anchored file straight to the
 inbox. Real anchor-hash recompute/staleness marking (drift loop item 1)
 needs actual git access to hash blobs at the commit, so it lives in
-`handle_post_commit_from_git` (below) rather than here -- see that
-function's docstring and `core.drift.mark_stale_for_commit`. P3 shipped
-this hook enqueueing no-op `anchor.hash_requested`/`staleness.flagged`
-signals for a future consumer to drain; those events are still recorded
-(nothing here removes a previously-shipped event type) but P7 makes the
-staleness marking they described real, not stubbed.
+`handle_post_commit_from_git`/`handle_post_commit_from_git_sha` (below)
+rather than here -- see those functions' docstrings and
+`core.drift.mark_stale_for_commit`. P3 shipped this hook enqueueing
+no-op `anchor.hash_requested`/`staleness.flagged` signals for a future
+consumer to drain; those events are still recorded (nothing here
+removes a previously-shipped event type) but P7 makes the staleness
+marking they described real, not stubbed.
 
 Every mutation here goes through `muvue.core` only (working rule 3): this
 module issues its own SQL for `node_commits` (a table no other module
 owns yet) but always through `record_event`/`conn` the same way
 `nodes.py` does, never bypassing the events log.
+
+v4 section 4a (P0.5, hook fast path): `drain_queue` (bottom of this
+file) is the *other* end of `muvue._hook`'s `.muvue/queue.jsonl` spool.
+`muvue._hook` itself never imports this module (or anything else under
+`muvue.core` -- see its own docstring); this module is the normal
+`core` code the fast path's spooled lines get processed through later,
+by a plain CLI invocation or the daemon, both of which already pay for
+importing `muvue.core` anyway.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 from . import db as db_mod
@@ -115,15 +125,31 @@ def _git(repo_root: Path, *args: str) -> str:
 
 
 def handle_post_commit_from_git(conn: sqlite3.Connection, repo_root: Path) -> dict:
-    """Real entry point for the installed shim: read HEAD's sha/message/
-    touched files from git, delegate to `handle_post_commit` (trailer
-    parsing, `node_commits` linking, unattributed-commit inbox flag),
-    then (P7, drift loop item 1) recompute anchor hashes and mark stale
-    every component whose anchored file this commit changed
-    (`core.drift.mark_stale_for_commit`) -- the real git blob access
+    """Real entry point for the installed (pre-v4) full-CLI shim /
+    `muvue hook post-commit`: resolve HEAD's sha and delegate to
+    `handle_post_commit_from_git_sha`."""
+    commit_sha = _git(repo_root, "rev-parse", "HEAD").strip()
+    return handle_post_commit_from_git_sha(conn, repo_root, commit_sha)
+
+
+def handle_post_commit_from_git_sha(
+    conn: sqlite3.Connection, repo_root: Path, commit_sha: str
+) -> dict:
+    """Same as `handle_post_commit_from_git`, parameterized on an
+    explicit `commit_sha` instead of always reading HEAD -- what
+    `drain_queue` (v4 section 4a) needs, since a spooled `post-commit`
+    line only carries the sha the fast path captured at commit time
+    (v4 section 4a: "everything else about that commit's diff can be
+    re-derived from git when the queue is drained"), and by drain time
+    HEAD may have moved past it (several commits queued back to back).
+    Reads HEAD's/`commit_sha`'s message/touched files from git,
+    delegates to `handle_post_commit` (trailer parsing, `node_commits`
+    linking, unattributed-commit inbox flag), then (P7, drift loop item
+    1) recompute anchor hashes and mark stale every component whose
+    anchored file this commit changed (`core.drift.
+    mark_stale_for_commit`) -- the real git blob access
     `handle_post_commit` itself deliberately doesn't have, "within one
     commit" of the hand-edit landing (plan P7 acceptance #1)."""
-    commit_sha = _git(repo_root, "rev-parse", "HEAD").strip()
     message = _git(repo_root, "log", "-1", "--pretty=%B", commit_sha)
     files_raw = _git(repo_root, "diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha)
     files = [f for f in files_raw.splitlines() if f]
@@ -131,3 +157,108 @@ def handle_post_commit_from_git(conn: sqlite3.Connection, repo_root: Path) -> di
     newly_stale = drift_mod.mark_stale_for_commit(conn, repo_root, commit_sha, files)
     result["newly_stale_component_ids"] = newly_stale
     return result
+
+
+# --------------------------------------------------------------------------
+# v4 section 4a: bounded queue drain, the other end of `muvue._hook`'s
+# `.muvue/queue.jsonl` spool. "The daemon drains continuously; absent a
+# daemon, the next CLI call drains at most 200 items or 200 ms,
+# whichever comes first, then leaves the rest."
+# --------------------------------------------------------------------------
+
+QUEUE_RELPATH = ".muvue/queue.jsonl"
+DEFAULT_DRAIN_MAX_ITEMS = 200
+DEFAULT_DRAIN_MAX_SECONDS = 0.2
+
+
+def _drain_clock() -> float:
+    """Indirection point so tests can inject a deterministic clock
+    (`monkeypatch.setattr(hooks, "_drain_clock", fake_clock)`) instead
+    of racing a real 200ms wall-clock bound."""
+    return time.monotonic()
+
+
+def _process_queue_event(conn: sqlite3.Connection, repo_root: Path, event: dict) -> None:
+    """Dispatch one spooled line to the existing full handler for its
+    event type (working rule: reuse, don't reimplement). `post-commit`
+    is the only spooled event with real DB mutation work left to do
+    (`core.claude_hooks.session_start`/`pre_compact`/`stop` are
+    read-only advisory checks in the synchronous path they used to run
+    on -- nothing about them was ever a deferred *write*); the rest are
+    recorded as an audit-trail `hook.<event>` event (v4 principle 10:
+    "detection everywhere else") so a fast-path event that COULD have
+    mattered (e.g. a `hook_timeout`) stays visible even though nothing
+    else in `core` currently consumes it."""
+    etype = event.get("event")
+    if etype == "post-commit":
+        sha = event.get("sha")
+        if sha:
+            handle_post_commit_from_git_sha(conn, repo_root, sha)
+        return
+
+    node_id = event.get("node_id")
+    project_id = None
+    if node_id is not None:
+        # Boundary validation: the queue file is untrusted (a hand-edit
+        # or a stale node_id from a since-deleted node) -- don't pass a
+        # dangling node_id into a FK'd column.
+        row = conn.execute(
+            "SELECT project_id FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+        ).fetchone()
+        if row is None:
+            node_id = None
+        else:
+            project_id = row["project_id"]
+    with db_mod.write_txn(conn):
+        events_mod.record_event(
+            conn,
+            project_id=project_id,
+            node_id=node_id,
+            actor="hook",
+            actor_evidence="hook",
+            type_=f"hook.{etype}",
+            payload=event,
+        )
+
+
+def drain_queue(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    *,
+    max_items: int = DEFAULT_DRAIN_MAX_ITEMS,
+    max_seconds: float = DEFAULT_DRAIN_MAX_SECONDS,
+) -> dict:
+    """Process at most `max_items` lines from `.muvue/queue.jsonl`, or
+    stop early once `max_seconds` of wall-clock time has elapsed,
+    whichever comes first (v4 section 4a) -- then rewrite the file with
+    whatever's left, so the next call (or the daemon's continuous loop)
+    picks up where this one stopped. A malformed line (not valid JSON)
+    still counts against `max_items` and is dropped rather than
+    retried forever. Returns `{"drained": n, "remaining": n}`."""
+    repo_root = Path(repo_root)
+    queue_path = repo_root / QUEUE_RELPATH
+    if not queue_path.exists():
+        return {"drained": 0, "remaining": 0}
+
+    lines = queue_path.read_text().splitlines()
+    start = _drain_clock()
+    processed = 0
+    cursor = 0
+    for cursor, line in enumerate(lines):
+        if processed >= max_items or (_drain_clock() - start) > max_seconds:
+            break
+        processed += 1
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        _process_queue_event(conn, repo_root, event)
+    else:
+        cursor = len(lines)
+
+    remainder = lines[cursor:]
+    queue_path.write_text("".join(f"{ln}\n" for ln in remainder))
+    return {"drained": processed, "remaining": len(remainder)}
