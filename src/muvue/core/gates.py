@@ -11,6 +11,7 @@ import sqlite3
 from . import events
 from . import nodes as nodes_mod
 from . import projects as projects_mod
+from . import risk as risk_mod
 from .config import MuvueConfig
 
 
@@ -105,6 +106,18 @@ def approve_node(
         if config is not None and node["kind"] in ("task", "subtask")
         else []
     )
+    # Initial freeze only (criteria_hash was NULL): compute the diff-signal
+    # risk tier here, once (plan section 5's tier inputs -- see
+    # core.risk). A *re*-approval (criteria_hash already set, i.e. this
+    # node was frozen once before and is being re-approved after
+    # core.gates.edit_criteria pulled it back to pending) must never
+    # recompute tier here -- edit_criteria already forced it to `high`,
+    # and P2 acceptance #4 requires that a criteria edit is never
+    # auto-approved back down by a later recompute (docs/decisions.md).
+    if node["criteria_hash"] is None and config is not None and node["kind"] in ("task", "subtask"):
+        tier = risk_mod.compute_tier(conn, node, config)
+        conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
+        node = nodes_mod.get_node(conn, node_id)
     frozen_hash = _hash_criteria(node["criteria_json"])
     conn.execute("UPDATE nodes SET criteria_hash = ? WHERE id = ?", (frozen_hash, node_id))
     row = nodes_mod.ready(conn, node_id, actor=actor)
@@ -177,7 +190,11 @@ def edit_criteria(
 
     conn.execute("UPDATE nodes SET criteria_json = ? WHERE id = ?", (criteria_json, node_id))
     if changed:
-        conn.execute("UPDATE nodes SET risk_tier = 'high' WHERE id = ?", (node_id,))
+        # One source of truth for "criteria edit forces high" (plan
+        # section 5): routes through core.risk instead of special-casing
+        # the literal here, per the P2 prompt's formalization requirement.
+        forced_tier = risk_mod.compute_tier(conn, node, MuvueConfig(), criteria_edited=True)
+        conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (forced_tier, node_id))
 
     row = nodes_mod.get_node(conn, node_id)
     events.record_event(

@@ -6,6 +6,7 @@ it issues raw SQL against .muvue/muvue.db.
 
 from . import (
     asks,
+    daemon,
     db,
     doctor,
     events,
@@ -16,12 +17,14 @@ from . import (
     rebuild,
     repo_init,
     revisions,
+    risk,
     state_machine,
 )
 from .config import ConfigError, MuvueConfig, load_config
 
 __all__ = [
     "asks",
+    "daemon",
     "db",
     "doctor",
     "events",
@@ -32,6 +35,7 @@ __all__ = [
     "rebuild",
     "repo_init",
     "revisions",
+    "risk",
     "state_machine",
     "ConfigError",
     "MuvueConfig",

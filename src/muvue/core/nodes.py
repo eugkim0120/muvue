@@ -12,7 +12,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from . import events, state_machine
+from . import events, risk, state_machine
 
 DEFAULT_LEASE_MINUTES = 60
 
@@ -170,10 +170,11 @@ def start(
     project = conn.execute(
         "SELECT phase FROM projects WHERE id = ?", (node["project_id"],)
     ).fetchone()
-    if project is not None and project["phase"] == "planning":
+    if project is not None and project["phase"] in ("planning", "paused"):
         raise NodeError(
-            f"cannot start node {node_id}: project {node['project_id']} is still "
-            "in planning phase (Gate 2 not yet approved)"
+            f"cannot start node {node_id}: project {node['project_id']} is "
+            f"{project['phase']} (Gate 2 not yet approved, or paused -- plan "
+            "section 5 'Emergency stop': pause refuses start)"
         )
     lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -199,14 +200,24 @@ def done(
     owner: str,
     request_id: str | None = None,
     summary: str | None = None,
+    config=None,
 ) -> dict:
     """Mark a node done. Idempotent: a node already `done` is a no-op, and a
     duplicate request_id within the 24h dedupe window is a no-op (plan
     section 4 / working rule: request-id idempotency).
 
-    P0 simplification (see docs/decisions.md): drives in_progress -> review
-    -> done in a single call, since criteria evaluation and human review
-    (Gate machinery) ship in P1.
+    P0 drove in_progress -> review -> done unconditionally in one call
+    (criteria evaluation and human review were P1/P2 scope). P2 (plan
+    section 5, "done -> review") adds real gating, but only when `config`
+    is passed: with `config=None` (every P0/P1 call site, still exercised
+    by tests/test_idempotency.py and tests/test_rebuild_property.py), the
+    old unconditional in_progress -> review -> done behavior is preserved
+    byte-for-byte -- see docs/decisions.md. When `config` is given (the
+    CLI and API do, since both load config on every invocation), the node
+    is routed through core.risk: low-tier and unflagged auto-approves
+    straight to `done`; anything else (medium/high tier, or a diff that
+    touches test files) stops at `review` and needs a human
+    `nodes.approve_review`.
     """
     node = get_node(conn, node_id)
     if node["status"] == "done":
@@ -220,18 +231,134 @@ def done(
         conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
         event_type="node.review", request_id=None,
     )
-    row = _apply_transition(
+
+    if config is None:
+        row = _apply_transition(
+            conn,
+            reviewing,
+            to_status="done",
+            lease_actor=owner,
+            event_actor_role="agent",
+            event_type="node.done",
+            request_id=request_id,
+            extra_columns={"lease_until": None, "summary": summary},
+        )
+        conn.commit()
+        return {"noop": False, "node": dict(row), "auto_approved": True}
+
+    tier = risk.max_tier(risk.compute_tier(conn, reviewing, config), reviewing["risk_tier"])
+    flagged = risk.is_flagged(conn, reviewing, config)
+    conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
+    reviewing = get_node(conn, node_id)
+
+    if tier == "low" and not flagged:
+        row = _apply_transition(
+            conn,
+            reviewing,
+            to_status="done",
+            lease_actor=owner,
+            event_actor_role="agent",
+            event_type="node.done",
+            request_id=request_id,
+            extra_columns={"lease_until": None, "summary": summary},
+        )
+        events.record_event(
+            conn,
+            project_id=row["project_id"],
+            node_id=node_id,
+            actor="daemon",
+            type_="review.auto_approved",
+            payload={"tier": tier},
+        )
+        conn.commit()
+        return {"noop": False, "node": dict(row), "auto_approved": True}
+
+    conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
+    row = get_node(conn, node_id)
+    events.record_event(
         conn,
-        reviewing,
-        to_status="done",
-        lease_actor=owner,
-        event_actor_role="agent",
-        event_type="node.done",
+        project_id=row["project_id"],
+        node_id=node_id,
+        actor="agent",
+        type_="review.awaiting",
+        payload={"tier": tier, "flagged": flagged},
         request_id=request_id,
-        extra_columns={"lease_until": None, "summary": summary},
     )
     conn.commit()
-    return {"noop": False, "node": dict(row)}
+    return {"noop": False, "node": dict(row), "auto_approved": False}
+
+
+def approve_review(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> dict:
+    """Human approval of a node sitting in `review` (plan section 5,
+    "done -> review... manual waits for a human"). Transitions
+    review -> done. The state machine's `review -> done` edge requires the
+    actor to match `nodes.owner` (the agent's lease) -- a human approver is
+    verified by the dashboard/API session token instead (see
+    core.daemon.auth), so this passes the node's own `owner` as the
+    lease-check identity while recording the *event* under the real actor
+    (`actor`, default "human"). Same pattern `core.gates.approve_spec` /
+    `approve_node` already use via `nodes.ready`.
+
+    Logs a `metric.rubber_stamp` event when the elapsed time since the
+    node entered `review` is under 10 seconds (plan section 5: "Time-to-
+    approve under 10s is logged as a rubber-stamp signal")."""
+    node = get_node(conn, node_id)
+    if node["status"] != "review":
+        raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
+    review_event = conn.execute(
+        "SELECT ts FROM events WHERE node_id = ? AND type = 'node.review' "
+        "ORDER BY id DESC LIMIT 1",
+        (node_id,),
+    ).fetchone()
+    row = _apply_transition(
+        conn,
+        node,
+        to_status="done",
+        lease_actor=node["owner"] or "",
+        event_actor_role=actor,
+        event_type="node.done",
+        request_id=None,
+        extra_columns={"lease_until": None},
+    )
+    if review_event is not None:
+        entered = datetime.strptime(review_event["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+        elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
+        if elapsed < 10:
+            events.record_event(
+                conn,
+                project_id=row["project_id"],
+                node_id=node_id,
+                actor=actor,
+                type_="metric.rubber_stamp",
+                payload={"elapsed_seconds": elapsed},
+            )
+    conn.commit()
+    return {"node": dict(row)}
+
+
+def reject_review(
+    conn: sqlite3.Connection, node_id: int, *, feedback: str, actor: str = "human"
+) -> dict:
+    """Human rejection of a node in `review` (plan section 4 human verb
+    `reject --feedback`): review -> in_progress, feedback recorded as a
+    `feedback` note so the agent picks it up on its next `brief`/`show`."""
+    node = get_node(conn, node_id)
+    if node["status"] != "review":
+        raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
+    row = _apply_transition(
+        conn,
+        node,
+        to_status="in_progress",
+        lease_actor=node["owner"] or "",
+        event_actor_role=actor,
+        event_type="node.rejected",
+        request_id=None,
+    )
+    add_note(conn, node_id, kind="feedback", text=feedback, actor=actor)
+    conn.commit()
+    return {"node": dict(row)}
 
 
 def fail(
