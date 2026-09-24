@@ -2,18 +2,33 @@
 
 from __future__ import annotations
 
+import json
 import shlex
+import socket
+import subprocess
 import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import adapters as adapters_mod
 from . import db as core_db
 from .config import ConfigError, load_config
-from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim
+from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
 
 
 QUEUE_DEPTH_WARN_THRESHOLD = 1000
+
+# v4 section 8a control 7: live daemon-security probes. Matches
+# `cli.main.serve`'s own `--port` default so a `doctor` run with no
+# explicit port finds an already-running default-configured daemon.
+DEFAULT_DAEMON_PORT = 8765
+_PROBE_TIMEOUT_SECONDS = 2.0
+_THROWAWAY_STARTUP_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass
@@ -35,7 +50,198 @@ class DoctorReport:
         self.warnings.append(msg)
 
 
-def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _probe_request(
+    base_url: str, path: str, *, method: str = "GET",
+    headers: dict | None = None, json_body: dict | None = None, form_body: dict | None = None,
+) -> tuple[int | None, dict]:
+    """Stdlib-only (`urllib`, no new dependency) probe request. Returns
+    `(status_code, response_headers)`; `status_code` is `None` if the
+    daemon didn't answer at all (connection refused/timeout)."""
+    headers = dict(headers or {})
+    data = None
+    if json_body is not None:
+        data = json.dumps(json_body).encode()
+        headers.setdefault("Content-Type", "application/json")
+    elif form_body is not None:
+        data = urllib.parse.urlencode(form_body).encode()
+        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
+            return resp.status, dict(resp.headers.items())
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers.items()) if e.headers else {}
+    except OSError:
+        return None, {}
+
+
+def _daemon_reachable(base_url: str) -> bool:
+    status, _ = _probe_request(base_url, "/healthz")
+    return status == 200
+
+
+def run_security_probes(
+    repo_root: Path, *, port: int | None = None
+) -> tuple[list[str], list[str]]:
+    """v4 section 8a control 7: "`doctor` verifies 1-4 by issuing live
+    probe requests against a running daemon and fails loudly." Returns
+    `(issues, notes)`.
+
+    Controls 2 (Host), 3 (Origin) and 4 (JSON-content-type /
+    query-string-token halves) are verifiable *without* a valid session
+    token -- they reject before or independent of auth -- which is
+    exactly what makes probing an *already-running* daemon possible at
+    all: this process has no way to learn that daemon's in-memory-only
+    token (control 5's own point), so any probe strategy that required
+    one would only ever be able to test a daemon this same `doctor`
+    invocation started. Control 1 (bind) is enforced by `muvue serve`
+    itself at startup (a CLI-level refuse-to-start gate) and is not
+    independently re-probed here -- doctor has no way to observe how a
+    *different*, already-running daemon process was invoked. See
+    docs/decisions.md #87 for the "probe or spin up a throwaway" choice
+    documented below.
+    """
+    issues: list[str] = []
+    notes: list[str] = []
+    target_port = port or DEFAULT_DAEMON_PORT
+    base_url = f"http://127.0.0.1:{target_port}"
+    own_proc: subprocess.Popen | None = None
+    scratch_dir: tempfile.TemporaryDirectory | None = None
+
+    try:
+        if not _daemon_reachable(base_url):
+            # v4 section 8a control 7 explicitly leaves this choice to
+            # the implementer ("decide sensibly whether doctor should
+            # skip this check ... or start a throwaway daemon instance
+            # to test against and tear it down"). Decision (docs/
+            # decisions.md #87): spin up a throwaway daemon rather than
+            # skip -- a skip-only doctor would silently stop verifying
+            # this phase's own controls on any machine without a daemon
+            # already running, which is the common case right after
+            # `muvue init`. The throwaway daemon serves an isolated
+            # scratch repo (a fresh `init_repo` in a tempdir), never
+            # `repo_root` itself: `muvue serve` reconciles leases and
+            # drains the event queue on startup (plan section 8), and a
+            # read-only diagnostic command must never have that kind of
+            # side effect on the actual repo being checked.
+            scratch_dir = tempfile.TemporaryDirectory(prefix="muvue-doctor-probe-")
+            scratch_root = Path(scratch_dir.name)
+            init_repo(scratch_root)
+            free_port = _free_port()
+            own_proc = subprocess.Popen(
+                [sys.executable, "-m", "muvue", "serve", str(scratch_root), "--port", str(free_port)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            ready = False
+            deadline = time.monotonic() + _THROWAWAY_STARTUP_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                line = own_proc.stdout.readline()
+                if not line:
+                    if own_proc.poll() is not None:
+                        break
+                    continue
+                if "listening on" in line:
+                    ready = True
+                    break
+            if not ready:
+                issues.append(
+                    "doctor: could not start a throwaway daemon to verify daemon security "
+                    "controls (v4 section 8a control 7) -- check `muvue serve` starts cleanly"
+                )
+                return issues, notes
+            base_url = f"http://127.0.0.1:{free_port}"
+            notes.append(
+                f"doctor: no daemon was already running on port {target_port}; started a "
+                f"throwaway one (against a scratch repo, not this one) on port {free_port} "
+                "to verify security controls, and will tear it down when done"
+            )
+        else:
+            notes.append(f"doctor: probing the daemon already running on port {target_port}")
+
+        # Control 2: bad Host must 403.
+        status, _ = _probe_request(base_url, "/healthz", headers={"Host": "evil.example.com"})
+        if status != 403:
+            issues.append(
+                f"doctor: daemon did NOT reject a bad Host header (v4 section 8a control 2) "
+                f"-- got status {status}"
+            )
+
+        # Control 3: bad Origin must 403.
+        status, _ = _probe_request(
+            base_url, "/healthz", headers={"Origin": "http://evil.example.com"}
+        )
+        if status != 403:
+            issues.append(
+                f"doctor: daemon did NOT reject a bad Origin header (v4 section 8a control 3) "
+                f"-- got status {status}"
+            )
+
+        # Control 3 cont.: no CORS headers ever, even on a normal request.
+        _, headers_out = _probe_request(base_url, "/healthz")
+        cors_headers = [h for h in headers_out if h.lower().startswith("access-control-")]
+        if cors_headers:
+            issues.append(
+                f"doctor: daemon emitted CORS headers ({cors_headers}) -- v4 section 8a "
+                "control 3 requires none, ever"
+            )
+
+        # Control 4: form-encoded mutating POST must 403 (HTML-form CSRF).
+        status, _ = _probe_request(
+            base_url, "/nodes/999999999/start", method="POST",
+            form_body={"owner": "doctor-probe"},
+        )
+        if status != 403:
+            issues.append(
+                f"doctor: daemon did NOT reject a form-encoded mutating POST (v4 section 8a "
+                f"control 4) -- got status {status}"
+            )
+
+        # Control 4: missing token must 403.
+        status, _ = _probe_request(
+            base_url, "/nodes/999999999/start", method="POST",
+            json_body={"owner": "doctor-probe"},
+        )
+        if status != 403:
+            issues.append(
+                f"doctor: daemon did NOT reject a mutating POST with no session token (v4 "
+                f"section 8a control 4) -- got status {status}"
+            )
+
+        # Control 4: a token-shaped query string param must not be honored.
+        status, _ = _probe_request(
+            base_url, "/nodes/999999999/start?token=doctor-probe-fake-token", method="POST",
+            json_body={"owner": "doctor-probe"},
+        )
+        if status != 403:
+            issues.append(
+                f"doctor: daemon accepted a token-shaped query-string param as auth (v4 "
+                f"section 8a control 4 requires the Authorization header, never a query "
+                f"string) -- got status {status}"
+            )
+    finally:
+        if own_proc is not None:
+            own_proc.terminate()
+            try:
+                own_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                own_proc.kill()
+                own_proc.wait(timeout=5)
+        if scratch_dir is not None:
+            scratch_dir.cleanup()
+
+    return issues, notes
+
+
+def run_doctor(
+    repo_root: Path, *, repair: bool = False,
+    skip_security_probes: bool = False, daemon_port: int | None = None,
+) -> DoctorReport:
     repo_root = Path(repo_root)
     report = DoctorReport()
     muvue_dir = repo_root / ".muvue"
@@ -164,5 +370,16 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
                     f"node {row['id']}'s bound worktree is the main checkout {repo_root} "
                     "(strict mode must never point a node at main)"
                 )
+
+    # v4 section 8a control 7: live daemon-security probes. Only makes
+    # sense once config/DB are known-good (skipped above already fails
+    # the report for a broken install) -- there's nothing meaningful to
+    # spin a throwaway daemon up against otherwise.
+    if config is not None and db_path.exists() and not skip_security_probes:
+        probe_issues, probe_notes = run_security_probes(repo_root, port=daemon_port)
+        for issue in probe_issues:
+            report.fail(issue)
+        for note in probe_notes:
+            report.warn(note)
 
     return report

@@ -195,7 +195,7 @@ def test_doctor_flags_strict_node_missing_worktree(conn, project, strict_config,
     config_path = repo / ".muvue" / "config.toml"
     config_path.write_text(config_path.read_text().replace('mode = "light"', 'mode = "strict"'))
 
-    report = doctor_mod.run_doctor(repo)
+    report = doctor_mod.run_doctor(repo, skip_security_probes=True)
     assert report.ok is False
     assert any("worktree" in issue for issue in report.issues)
 

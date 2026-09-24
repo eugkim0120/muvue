@@ -2,7 +2,14 @@
 200 items or 200 ms" -- `cli/main.py`'s `@app.callback()` is the "next
 CLI call" catch-up point. Drives it through a real subprocess CLI
 invocation (no raw `core.*` calls), matching this repo's existing
-CLI-integration test convention (see tests/test_planning_cli.py)."""
+CLI-integration test convention (see tests/test_planning_cli.py).
+
+`--skip-security-probes` throughout: v4 section 8a control 7 added a
+live daemon-security probe pass to `muvue doctor` (a real, if scratch,
+`muvue serve` subprocess spin-up when nothing is already listening --
+see tests/test_doctor_security_probes.py), which is orthogonal to the
+bounded-drain behavior this file tests and would otherwise slow every
+test here down for no assertion benefit."""
 
 from __future__ import annotations
 
@@ -32,7 +39,7 @@ def test_any_cli_command_drains_the_queue_first(tmp_path: Path):
     init_repo(tmp_path)
     _spool(tmp_path, 5)
 
-    result = _run(tmp_path, "doctor")
+    result = _run(tmp_path, "doctor", "--skip-security-probes")
 
     assert result.returncode == 0, result.stderr
     queue_path = tmp_path / ".muvue" / "queue.jsonl"
@@ -43,7 +50,7 @@ def test_drain_callback_is_bounded_at_200(tmp_path: Path):
     init_repo(tmp_path)
     _spool(tmp_path, 250)
 
-    result = _run(tmp_path, "doctor")
+    result = _run(tmp_path, "doctor", "--skip-security-probes")
 
     assert result.returncode == 0, result.stderr
     queue_path = tmp_path / ".muvue" / "queue.jsonl"
@@ -57,7 +64,7 @@ def test_drain_failure_never_breaks_the_command(tmp_path: Path):
     init_repo(tmp_path)
     (tmp_path / ".muvue" / "queue.jsonl").write_text("not json\n")
 
-    result = _run(tmp_path, "doctor")
+    result = _run(tmp_path, "doctor", "--skip-security-probes")
 
     assert result.returncode == 0, result.stderr
 
