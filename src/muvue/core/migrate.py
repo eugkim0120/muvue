@@ -35,6 +35,16 @@ def run_migrate(repo_root: Path) -> int:
         if current < SCHEMA_VERSION:
             # SCHEMA_VERSION 2 -> 3 (P7): notes.archived_at.
             _add_column_if_missing(conn, "notes", "archived_at", "TEXT")
+            # SCHEMA_VERSION 3 -> 4 (v4 txn/schema foundational slice):
+            # projects.closed_at, nodes.lease_expiries (split from
+            # attempts), events.actor_evidence. `agent_spend` and
+            # `actual_touches` are new tables, already covered by
+            # `init_db`'s `CREATE TABLE IF NOT EXISTS` re-apply above.
+            _add_column_if_missing(conn, "projects", "closed_at", "TEXT")
+            _add_column_if_missing(
+                conn, "nodes", "lease_expiries", "INTEGER NOT NULL DEFAULT 0"
+            )
+            _add_column_if_missing(conn, "events", "actor_evidence", "TEXT")
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

@@ -6,9 +6,21 @@ Process graph tables per plan section 3, plus empty structure-graph tables
 - SCHEMA_VERSION 2 -> 3 (P7): `notes.archived_at` (lesson decay soft
   delete). `core.migrate.run_migrate` `ALTER TABLE`s it into pre-existing
   databases; new databases get it straight from this `CREATE TABLE`.
+- SCHEMA_VERSION 3 -> 4 (v4 handoff plan section 3, foundational
+  txn/schema slice): `projects.closed_at` (`created_at` already
+  existed); new `agent_spend` table (per-driver budget accounting,
+  section 2/6); `nodes.attempts` split from the new `nodes.
+  lease_expiries` (a daemon-reclaim/crash-timeout counter that must
+  never drive `failed` -- see core.daemon.reconcile_leases and
+  docs/decisions.md); `events.actor_evidence` (how the actor was
+  determined -- `tty`/`dashboard_token`/`mcp`/`hook`/`subprocess`,
+  purely additive/observational this phase, see docs/decisions.md);
+  new `actual_touches` table (written from commits by
+  core.hooks.handle_post_commit, drift-vs-`predicted_touches` KPI is
+  future work).
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -19,7 +31,22 @@ CREATE TABLE IF NOT EXISTS projects (
     budget_unit TEXT NOT NULL DEFAULT 'usd',
     budget_limit REAL NOT NULL DEFAULT 0,
     spent REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    closed_at TEXT
+);
+
+-- v4 section 2/3: one row per (project, driver) -- "Budget is per driver,
+-- in that driver's unit." `unit` mirrors that driver's `[agents.<x>.
+-- budget].unit` (validated against `cost_model` at config-load time,
+-- future phase); this table only accumulates `spent`, it does not judge
+-- it against a limit (no budget-check logic lands this phase -- see
+-- docs/decisions.md).
+CREATE TABLE IF NOT EXISTS agent_spend (
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    agent TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    spent REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (project_id, agent, unit)
 );
 
 CREATE TABLE IF NOT EXISTS plan_revisions (
@@ -47,6 +74,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     owner TEXT,
     lease_until TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
+    lease_expiries INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     summary TEXT,
     worktree TEXT,
@@ -64,6 +92,18 @@ CREATE TABLE IF NOT EXISTS predicted_touches (
     node_id INTEGER NOT NULL REFERENCES nodes(id),
     path_glob TEXT NOT NULL,
     PRIMARY KEY (node_id, path_glob)
+);
+
+-- v4 section 3: "written from commits; drift vs predicted is a KPI."
+-- One row per (node, real file path) touched by a commit linked to that
+-- node -- core.hooks.handle_post_commit writes these alongside
+-- `node_commits`. The prediction-vs-actual drift KPI computation itself
+-- is future (P6/P7-scoped) work; this phase only gets the raw data
+-- flowing in.
+CREATE TABLE IF NOT EXISTS actual_touches (
+    node_id INTEGER NOT NULL REFERENCES nodes(id),
+    path TEXT NOT NULL,
+    PRIMARY KEY (node_id, path)
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -104,6 +144,14 @@ CREATE TABLE IF NOT EXISTS events (
     project_id INTEGER REFERENCES projects(id),
     node_id INTEGER REFERENCES nodes(id),
     actor TEXT NOT NULL CHECK (actor IN ('agent', 'human', 'hook', 'daemon')),
+    -- v4 section 3: "records how the actor was determined (tty,
+    -- dashboard_token, mcp, hook, subprocess) so a human verb issued by
+    -- a non-TTY process is visible rather than merely disallowed."
+    -- Purely additive/observational this phase -- nothing enforces on
+    -- it yet (see docs/decisions.md); nullable so an old row (pre-v4,
+    -- or a call site this phase missed) reads back as "unknown" rather
+    -- than a fabricated value.
+    actor_evidence TEXT,
     type TEXT NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
     request_id TEXT,
