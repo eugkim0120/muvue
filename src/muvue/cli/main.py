@@ -313,6 +313,11 @@ def done(
     version: int = typer.Option(
         None, "--version", help="expected nodes.version from start; mismatch fails the call"
     ),
+    run_checks: bool = typer.Option(
+        False, "--run-checks",
+        help="actually run config.checks.test for auto-criteria nodes (light mode, "
+        "opt-in -- see docs/decisions.md #38); default preserves risk-tier-only gating",
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
@@ -322,6 +327,8 @@ def done(
         result = core.nodes.done(
             conn, node_id, owner=owner, request_id=request_id, summary=summary,
             config=config, expected_version=version,
+            run_checks=core.review.default_run_checks if run_checks else None,
+            cwd=str(repo_root),
         )
     finally:
         conn.close()

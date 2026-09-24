@@ -1,0 +1,35 @@
+schema_version = 1
+protocol_version = 1
+mode = "light"
+worktree_mode = "branch"
+worktree_setup = "uv sync"
+
+[checks]
+test = "pytest -q"
+lint = "ruff check ."
+
+[risk]
+globs = ["migrations/**", "auth/**", "*.sql", "**/test_*"]
+max_diff_lines = 300
+
+[planning]
+max_files_per_task = 8
+max_subtasks = 6
+ask_timeout_minutes = 60
+lease_minutes = 60
+
+[notify]
+url = ""
+
+[budget]
+unit = "usd"
+limit = 25
+
+[agents.fake]
+command = "muvue-fake-agent"
+cost_model = "tokens"
+
+[routing]
+spec = "fake"
+task = "fake"
+subtask = "fake"

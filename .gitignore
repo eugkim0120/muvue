@@ -6,3 +6,10 @@ __pycache__/
 .muvue/muvue.db
 .muvue/muvue.db-wal
 .muvue/muvue.db-shm
+# >>> muvue >>>
+.muvue/muvue.db
+.muvue/muvue.db-wal
+.muvue/muvue.db-shm
+.muvue/session
+.muvue/current_node
+# <<< muvue <<<

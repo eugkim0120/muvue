@@ -339,12 +339,19 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         summary: str | None = Body(default=None),
         request_id: str | None = Body(default=None),
         version: int | None = Body(default=None),
+        run_checks: bool = Body(
+            default=False,
+            description="actually run config.checks.test for auto-criteria nodes "
+            "(opt-in -- see docs/decisions.md #38); default preserves risk-tier-only gating",
+        ),
     ) -> dict:
         with _conn() as conn:
             try:
                 result = core.nodes.done(
                     conn, node_id, owner=owner, summary=summary, request_id=request_id,
                     config=config, expected_version=version,
+                    run_checks=core.review.default_run_checks if run_checks else None,
+                    cwd=str(repo_root),
                 )
             except Exception as e:
                 _handle_core_error(e)

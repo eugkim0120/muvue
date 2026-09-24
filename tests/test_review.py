@@ -1,6 +1,9 @@
 """P2 acceptance #3/#4: low tier auto-approves at done -> review; a
 criteria edit never auto-approves, even post-recompute."""
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,7 @@ from muvue.core import db as core_db
 from muvue.core import gates, nodes, projects, rebuild
 from muvue.core.config import MuvueConfig
 from muvue.core.nodes import NodeError
+from muvue.core.repo_init import init_repo
 
 
 @pytest.fixture
@@ -139,3 +143,81 @@ def test_rebuild_matches_live_through_gated_review_flow(conn, project, config):
     nodes.approve_review(conn, high["id"])
 
     assert rebuild.diff_state(conn) == {}
+
+
+# -- opt-in `run_checks` wiring at the CLI/API layer (P3 decision #38) -----
+
+
+def _run_cli(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "muvue", *args],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+
+
+def _repo_with_check(tmp_path: Path, *, test_cmd: str) -> Path:
+    init_repo(tmp_path)
+    config_path = tmp_path / ".muvue" / "config.toml"
+    text = config_path.read_text().replace(
+        'test = "pytest -q"', f'test = "{test_cmd}"'
+    )
+    assert f'test = "{test_cmd}"' in text, "fixture assumes DEFAULT_CONFIG_TOML's checks.test literal"
+    config_path.write_text(text)
+    return tmp_path
+
+
+def _ready_task_via_cli(repo_root: Path, config) -> int:
+    conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
+    project = projects.create_project(conn, goal="run_checks cli test")
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t",
+        criteria=["passes"], criteria_mode="auto",
+        predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project["id"], config=config)
+    conn.close()
+    return task["id"]
+
+
+def test_done_without_run_checks_flag_ignores_a_failing_test_command(tmp_path):
+    """Default (flag omitted) preserves P0-P2 behavior exactly (decision
+    #38): risk tier alone decides, even though checks.test would fail."""
+    repo_root = _repo_with_check(tmp_path, test_cmd="false")
+    config = MuvueConfig()
+    node_id = _ready_task_via_cli(repo_root, config)
+    _run_cli(repo_root, "start", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
+    result = _run_cli(repo_root, "done", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["node"]["status"] == "done"
+    assert payload["auto_approved"] is True
+
+
+def test_done_with_run_checks_flag_flags_a_failing_test_command(tmp_path):
+    repo_root = _repo_with_check(tmp_path, test_cmd="false")
+    config = MuvueConfig()
+    node_id = _ready_task_via_cli(repo_root, config)
+    _run_cli(repo_root, "start", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
+    result = _run_cli(
+        repo_root, "done", str(node_id), "--owner", "agent-1", "--run-checks",
+        "--path", str(repo_root),
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["node"]["status"] == "review"
+    assert payload["auto_approved"] is False
+
+
+def test_done_with_run_checks_flag_passes_a_passing_test_command(tmp_path):
+    repo_root = _repo_with_check(tmp_path, test_cmd="true")
+    config = MuvueConfig()
+    node_id = _ready_task_via_cli(repo_root, config)
+    _run_cli(repo_root, "start", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
+    result = _run_cli(
+        repo_root, "done", str(node_id), "--owner", "agent-1", "--run-checks",
+        "--path", str(repo_root),
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["node"]["status"] == "done"
+    assert payload["auto_approved"] is True

@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - dogfood gate (plan section 11, post-v0.1)
+
+### Added
+- CLI `done --run-checks` and API `POST /nodes/{id}/done {"run_checks":
+  true}`: opt-in wiring of `core.review.default_run_checks` (P3 decision
+  #38's flagged follow-up). Omitted/false preserves risk-tier-only gating
+  exactly as before; set, a failing `config.checks.test` always flags the
+  node to `review` even at low risk tier.
+
 ## [Unreleased] - P3 (ships v0.1, light mode)
 
 ### Added

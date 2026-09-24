@@ -344,8 +344,11 @@ criteria-mode-specific flag: `manual` always waits for a human;
 in-process); `auto` runs an injectable `run_checks(cmd, cwd) -> bool` in
 the checkout -- omitted (every current CLI/API call), it's a no-op and
 `core.risk` alone decides, preserving P0-P2 behavior exactly.
-`core.review.default_run_checks` is a real subprocess runner, available
-but not yet auto-wired into CLI/API (see `docs/decisions.md`).
+`core.review.default_run_checks` is a real subprocess runner, wired into
+the CLI (`done --run-checks`) and API (`POST /nodes/{id}/done
+{"run_checks": true}`) as an explicit opt-in (default `false`/omitted
+preserves risk-tier-only gating byte-for-byte -- see `docs/decisions.md`
+#38 and its dogfood-gate follow-up).
 
 ## `replan` (P1, confirmed complete in P3)
 

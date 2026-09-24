@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from muvue.api import create_app
 from muvue.core import daemon, db as core_db, gates, nodes, projects
-from muvue.core.config import MuvueConfig
+from muvue.core.config import ChecksConfig, MuvueConfig
 from muvue.core.repo_init import init_repo
 
 
@@ -96,6 +96,55 @@ def test_start_done_via_api(client, ready_task):
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "done"
     assert r.json()["auto_approved"] is True
+
+
+# -- opt-in `run_checks` wiring at the API layer (P3 decision #38) ---------
+
+
+def test_done_without_run_checks_ignores_a_failing_test_command(repo):
+    config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
+    app = create_app(repo, config=config)
+    client = TestClient(app)
+    conn = core_db.connect(repo / ".muvue" / "muvue.db")
+    project = projects.create_project(conn, goal="api run_checks test")
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t",
+        criteria=["passes"], criteria_mode="auto",
+        predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project["id"], config=config)
+    node_id = task["id"]
+    conn.close()
+
+    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"})
+    assert r.status_code == 200
+    assert r.json()["node"]["status"] == "done"
+    assert r.json()["auto_approved"] is True
+
+
+def test_done_with_run_checks_flags_a_failing_test_command(repo):
+    config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
+    app = create_app(repo, config=config)
+    client = TestClient(app)
+    conn = core_db.connect(repo / ".muvue" / "muvue.db")
+    project = projects.create_project(conn, goal="api run_checks test")
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t",
+        criteria=["passes"], criteria_mode="auto",
+        predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project["id"], config=config)
+    node_id = task["id"]
+    conn.close()
+
+    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
+    r = client.post(
+        f"/nodes/{node_id}/done", json={"owner": "agent-1", "run_checks": True}
+    )
+    assert r.status_code == 200
+    assert r.json()["node"]["status"] == "review"
+    assert r.json()["auto_approved"] is False
 
 
 def test_start_with_agent_param_is_recorded_but_does_not_spawn(client, ready_task, conn):
