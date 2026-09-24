@@ -488,11 +488,19 @@ stdin, resolves the active node id from the payload or
 `clear_current_node`), and prints a JSON decision (`core.claude_hooks`)
 to stdout: `session-start` -> `brief` as `additionalContext`;
 `pre-tool-use` -> blocks `Edit`/`Write` with no `in_progress` node or an
-`awaiting_approval` one, blocks a `git commit` `Bash` call with no
-`Muvue-Node:`/`Refs:` trailer; `pre-compact` -> requires a summary;
-`stop` -> blocks ending the turn with an `in_progress` node that has
-zero notes logged. A `"decision": "block"` response exits 2 (Claude
-Code's documented convention).
+`awaiting_approval` one; `pre-compact` -> requires a summary; `stop` ->
+blocks ending the turn with an `in_progress` node that has zero notes
+logged. A `"decision": "block"` response exits 2 (Claude Code's
+documented convention).
+
+**v4 §7 note (changelog item 10):** `pre-tool-use` used to also block a
+`Bash` `git commit` call with no `Muvue-Node:`/`Refs:` trailer, by
+string-matching the command. That's removed -- see "Commit-trailer
+enforcement relocation (v4 §7, changelog item 10)" below -- not
+scope-narrowed, since the plan's objection is to shell-command string
+matching as a mechanism, not to any particular regex. `Bash` was also
+dropped from `muvue._hook`'s DB-reading tool-name set, since nothing
+else needed it there.
 
 ## Branch coherence (v4 §5, changelog item 12)
 
@@ -968,6 +976,22 @@ commit with no `Muvue-Node:`/`Refs:` trailer at all whose touched files
 overlap any tracked component's anchor paths records an unacked
 `inbox.unattributed_commit` event. `GET /inbox` surfaces every unacked
 one of these under `"signals"`.
+
+**v4 §7 addendum (changelog item 10) -- the general case:**
+`core.drift.flag_general_unattributed_commit`, called from the same
+`core.hooks.handle_post_commit`, generalizes this beyond
+component-anchor overlap: it fires for *every* commit whose trailer is
+missing or doesn't resolve to a real, non-deleted node, unconditionally
+(no anchored-component gate, no in-progress-node scoping). This is
+additive, not a replacement -- `flag_unattributed_commit` above keeps
+its own narrower firing condition and event type unchanged. Records a
+distinct, unacked `unattributed_commit` event; `GET /inbox` surfaces
+these under their own `"unattributed_commits"` list. This is also what
+replaced `PreToolUse`'s removed `git commit`-without-trailer
+string-match block (see the Claude Code adapter section above and
+docs/decisions.md #100) -- v3's pre-hoc block is now this post-hoc
+detection, plus strict mode's unaffected `pre-receive` barrier
+(`core.strict`).
 
 ### 3. Reconcile-on-touch
 

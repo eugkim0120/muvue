@@ -179,12 +179,15 @@ def test_pre_tool_use_reads_current_node_file_when_payload_has_none(repo, conn_a
     assert result == {"decision": "allow"}
 
 
-def test_pre_tool_use_bash_blocks_git_commit_without_trailer(repo, conn_and_project):
+def test_pre_tool_use_bash_no_longer_blocks_git_commit_without_trailer(repo, conn_and_project):
+    """v4 section 7 / changelog item 10: deliberate behavior *reduction*
+    (mirrors core.claude_hooks -- see test_adapters.py's equivalent
+    test). Trailer enforcement moved to post-hoc `post-commit`
+    detection; see tests/test_trailer_enforcement_relocation.py."""
     result = _hook.pre_tool_use(
         str(repo), {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'x'"}}
     )
-    assert result["decision"] == "block"
-    assert "trailer" in result["reason"]
+    assert result == {"decision": "allow"}
 
 
 def test_pre_tool_use_bash_allows_git_commit_with_trailer(repo, conn_and_project):

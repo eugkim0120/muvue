@@ -161,11 +161,18 @@ def test_pre_tool_use_blocks_edit_when_node_awaiting_approval(conn, project):
     assert result["decision"] == "block"
 
 
-def test_pre_tool_use_blocks_git_commit_without_trailer(conn):
+def test_pre_tool_use_no_longer_blocks_git_commit_without_trailer(conn):
+    """v4 section 7 / changelog item 10: deliberate behavior *reduction*.
+    v3's `PreToolUse` string-matched a `Bash` `git commit` call and
+    blocked it for a missing trailer; v4 removes that (defeated by
+    `git -C`, heredocs, chained commands, aliases, scripts, and
+    false-positives on any string containing "git commit") in favor of
+    post-hoc `post-commit` detection -- see
+    tests/test_trailer_enforcement_relocation.py."""
     result = claude_hooks.pre_tool_use(
         conn, tool_name="Bash", tool_input={"command": "git commit -m 'fix bug'"}, node_id=None,
     )
-    assert result["decision"] == "block"
+    assert result["decision"] == "allow"
 
 
 def test_pre_tool_use_allows_git_commit_with_trailer(conn):

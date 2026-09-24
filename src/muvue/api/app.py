@@ -337,12 +337,28 @@ def create_app(
                     "AND acked_at IS NULL ORDER BY id"
                 ).fetchall()
             )
+            # v4 section 7 / changelog item 10: the general (not
+            # component-anchor-scoped) unattributed-commit detection that
+            # replaced PreToolUse's removed git-commit-trailer string
+            # match -- see core.drift.flag_general_unattributed_commit
+            # and docs/decisions.md #100. Kept as its own list rather than
+            # folded into `signals` (which stays `inbox.unattributed_commit`
+            # only, P7's narrower anchored-component signal) since the two
+            # have different firing conditions and a client may want to
+            # distinguish them.
+            unattributed_commits = _rows_to_list(
+                conn.execute(
+                    "SELECT * FROM events WHERE type = 'unattributed_commit' "
+                    "AND acked_at IS NULL ORDER BY id"
+                ).fetchall()
+            )
         return {
             "questions": questions,
             "review": review,
             "blocked": blocked,
             "signals": signals,
             "audit_items": audit_items,
+            "unattributed_commits": unattributed_commits,
         }
 
     @app.get("/kpis")

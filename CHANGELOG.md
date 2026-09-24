@@ -2,6 +2,113 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §9: structure commits via a `muvue/structure` ref (changelog item 7)
+
+Branch `feat/v4-structure-ref-commits`, built on §1.2/§3, §4a, §8a, the
+§5 enforcement deltas, and the runner/budget deltas. v4 §9 / changelog
+item 7: "structure commits via `muvue/structure` ref and a temporary
+index instead of committing to a checked-out `main`."
+
+### Changed
+- **`core.close.close_project` no longer commits `.muvue/components.json`
+  / `.muvue/decisions.json` directly onto whatever branch `repo_root` has
+  checked out.** The P6/v3-era implementation ran a plain `git add` +
+  `git commit` on the repo's real working tree and index, which races the
+  user's own uncommitted work and index lock (v4 §9's own framing of the
+  defect). Instead, `close_project` now builds the structure commit with
+  `core.close._write_structure_commit`: a temporary index
+  (`GIT_INDEX_FILE`, a fresh `tempfile.mkstemp()` path per call) seeded
+  from `refs/heads/muvue/structure`'s current tree (or `HEAD`'s tree, on
+  the first-ever structure commit), with the two JSON files' new content
+  written straight into git's object database via `git hash-object -w
+  --stdin` -- `repo_root`'s real `.git/index` and working tree are never
+  read or written by this step. The resulting commit lands on
+  `refs/heads/muvue/structure` via a compare-and-swap `git update-ref`
+  (decision #103).
+- **`main` is fast-forwarded only when it's genuinely safe.**
+  `core.close._maybe_fast_forward_main` fast-forwards `main` (`git merge
+  --ff-only refs/heads/muvue/structure`, decision #101) only when
+  `repo_root`'s checked-out branch is literally `main` *and* `git status
+  --porcelain` is empty. In every other case (a different branch checked
+  out, or `main` but dirty), `main` and the working tree are left
+  completely untouched, and `close_project` records an unacked
+  `inbox.structure_update_ready` event (payload: `ref`, `sha`, `reason`,
+  a human-readable `message`) describing where the structure commit
+  landed and that it needs a manual `git merge refs/heads/muvue/structure`
+  or a PR.
+- **`close_project`'s return dict gained `structure_ref`, `structure_sha`,
+  `fast_forwarded`, and `inbox_event_id`** (the last `None` when a
+  fast-forward happened). `components_path`/`decisions_path` are still
+  returned (the intended `repo_root/.muvue/{components,decisions}.json`
+  paths) but the files at those paths now only actually exist on disk
+  when `fast_forwarded` is `True` -- callers that need the diff content
+  regardless of fast-forward outcome should read `diff_committed` from
+  the same result, or `git show refs/heads/muvue/structure:.muvue/components.json`.
+
+### Tests
+- `tests/test_close.py`: new `test_structure_commit_never_touches_real_index_or_working_tree`
+  (direct unit test of `_write_structure_commit` against a repo with real
+  staged *and* unstaged uncommitted changes, asserting byte-identical
+  `git status --porcelain` and file content before/after),
+  `test_close_project_clean_main_fast_forwards`,
+  `test_close_project_non_main_branch_leaves_inbox_item`,
+  `test_close_project_dirty_main_leaves_inbox_item_and_working_tree_untouched`.
+  The pre-existing P6 `test_close_project_confirmed_writes_and_commits`
+  is kept and still passes unchanged in outcome (its fixture repo is on
+  `main` with a clean tree, so it hits the fast-forward path), with
+  updated assertions/docstring making the mechanism change explicit
+  (decisions #105, #106 cover the fixture changes this required).
+
+## [Unreleased] - v4 §7: commit-trailer enforcement relocation (changelog item 10)
+
+Branch `feat/v4-trailer-enforcement-relocation`, built on §1.2/§3, §4a,
+§8a, the §5 enforcement deltas, and the runner/budget deltas. v4 §7 /
+changelog item 10: "commit-trailer enforcement moved from `PreToolUse`
+string matching to `post-commit` detection plus strict-mode
+`pre-receive`."
+
+### Removed
+- **`PreToolUse`'s `git commit`-without-trailer string-match block.**
+  `core.claude_hooks.pre_tool_use` and `muvue._hook._decide` no longer
+  block a `Bash` tool call for a missing/incorrect `Muvue-Node:`/`Refs:`
+  trailer. v4's position: matching a shell command's text is defeated by
+  `git -C`, heredocs, chained commands, aliases and scripts, and
+  produces false positives on any string merely containing "git commit"
+  -- this is removed as unsound, not fixed with a better regex. The
+  `Edit`/`Write` blocking behavior (no `in_progress` node, or an
+  `awaiting_approval` one) is unchanged. `Bash` was also dropped from
+  `muvue._hook._BLOCKING_TOOL_NAMES`, so a `Bash` `PreToolUse` call no
+  longer opens the DB at all (nothing else needed it). This is a
+  deliberate behavior *reduction* -- see
+  `tests/test_trailer_enforcement_relocation.py` and
+  `tests/test_adapters.py`/`tests/test_hook_fast_path.py`'s renamed
+  tests, which now assert the allow, not the block.
+
+### Added
+- **`core.drift.flag_general_unattributed_commit`.** Generalizes P7's
+  drift-loop-item-2 unattributed-commit signal
+  (`flag_unattributed_commit`, kept unchanged, component-anchor-scoped
+  only), fired unconditionally from `core.hooks.handle_post_commit` for
+  *every* commit whose `Muvue-Node:`/`Refs:` trailer is missing or
+  doesn't resolve to a real, non-deleted node -- not just commits that
+  touch an anchored structure component. Records a distinct, unacked
+  `unattributed_commit` event (separate from the existing
+  `inbox.unattributed_commit` type).
+- **`GET /inbox`'s new `"unattributed_commits"` list.** Surfaces unacked
+  `unattributed_commit` events, alongside the existing `"signals"`
+  (still `inbox.unattributed_commit` only).
+
+### Scope notes (see `docs/decisions.md` #100)
+- Strict mode's real barrier, `pre-receive` (`core.strict`), is
+  untouched -- confirmed unaffected by this change, remains the
+  load-bearing prevention mechanism in strict mode; the post-commit
+  detection added here is advisory/detection-only in both modes, same
+  as light mode always was.
+- Did not touch `core.close.py`, `.muvue/components.json`/
+  `.muvue/decisions.json` commit logic, structure snapshots, daemon
+  security, budgets, or `--parallel` -- out of scope, owned by other
+  (some concurrent) sessions.
+
 ## [Unreleased] - v4 §2/§6/P5: per-driver budgets, --parallel restriction, rate-limit wait timeout
 
 Branch `feat/v4-runner-budget-deltas`, built on §1.2/§3 (txn discipline,

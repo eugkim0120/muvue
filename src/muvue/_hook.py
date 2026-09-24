@@ -48,7 +48,15 @@ DB_RELPATH = os.path.join(".muvue", "muvue.db")
 # v4 section 4a: "a hard 150 ms deadline after which it fails open".
 PRE_TOOL_USE_DEADLINE_S = 0.150
 
-_BLOCKING_TOOL_NAMES = ("Edit", "Write", "Bash")
+# v4 section 7 / changelog item 10: `Bash` used to be here too, for the
+# `git commit`-without-trailer string-match block -- REMOVED, not
+# fixed, in favor of post-hoc `post-commit` detection (see
+# `_decide`'s old Bash branch, now gone, and docs/decisions.md #100).
+# With no decision logic left for `Bash`, it no longer needs the DB at
+# all -- dropping it here (not just short-circuiting inside `_decide`)
+# keeps every `Bash` PreToolUse call on the zero-DB-open fast path,
+# same as Read/Grep/Glob/etc.
+_BLOCKING_TOOL_NAMES = ("Edit", "Write")
 
 
 def _now_iso() -> str:
@@ -147,28 +155,6 @@ def _read_head_sha(repo_root: str) -> str | None:
     return None
 
 
-def _is_git_commit(command: str) -> bool:
-    """Cheap approximation of `core.claude_hooks._GIT_COMMIT_RE` without
-    importing `re` (not on this module's stdlib allow-list: sys, os,
-    json, time, sqlite3 lazily -- see module docstring): true if
-    "git commit" appears as its own shell command, i.e. at the start of
-    `command` or right after a `;`/`&`/`|` separator (with any amount of
-    whitespace in between on either side)."""
-    idx = command.find("git")
-    while idx != -1:
-        prefix = command[:idx].rstrip()
-        if idx == 0 or (prefix and prefix[-1] in ";&|"):
-            rest = command[idx + len("git"):]
-            stripped = rest.lstrip()
-            if len(stripped) != len(rest) or idx + len("git") == len(command):
-                if stripped.startswith("commit") and (
-                    len(stripped) == len("commit") or not stripped[len("commit")].isalnum()
-                ):
-                    return True
-        idx = command.find("git", idx + 1)
-    return False
-
-
 def pre_tool_use(
     repo_root: str,
     payload: dict,
@@ -206,7 +192,7 @@ def pre_tool_use(
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
-        decision = _decide(conn, tool_name=tool_name, payload=payload, node_id=node_id)
+        decision = _decide(conn, tool_name=tool_name, node_id=node_id)
     finally:
         if conn is not None:
             conn.close()
@@ -220,35 +206,28 @@ def pre_tool_use(
     return decision
 
 
-def _decide(conn, *, tool_name: str, payload: dict, node_id) -> dict:
-    if tool_name in ("Edit", "Write"):
-        if node_id is None:
-            return {
-                "decision": "block",
-                "reason": "no active muvue node -- run `muvue start NODE_ID --owner ...` first",
-            }
-        row = conn.execute(
-            "SELECT status FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
-        ).fetchone()
-        if row is None:
-            return {"decision": "block", "reason": f"no such muvue node: {node_id}"}
-        if row["status"] == "awaiting_approval":
-            return {"decision": "block", "reason": f"node {node_id} is awaiting_approval"}
-        if row["status"] != "in_progress":
-            return {
-                "decision": "block",
-                "reason": f"node {node_id} is {row['status']!r}, not in_progress",
-            }
-        return {"decision": "allow"}
-    if tool_name == "Bash":
-        command = (payload.get("tool_input") or {}).get("command", "")
-        if _is_git_commit(command) and "Muvue-Node:" not in command and "Refs:" not in command:
-            return {
-                "decision": "block",
-                "reason": "git commit needs a Muvue-Node:/Refs: trailer (plan section 5)",
-            }
-        return {"decision": "allow"}
-    return {"decision": "allow"}  # pragma: no cover - unreachable, tool_name already filtered
+def _decide(conn, *, tool_name: str, node_id) -> dict:
+    # `tool_name` is already filtered to `_BLOCKING_TOOL_NAMES` (Edit/Write
+    # only, as of v4 section 7 -- see that tuple's docstring) by the one
+    # caller, `pre_tool_use`, before this ever runs.
+    if node_id is None:
+        return {
+            "decision": "block",
+            "reason": "no active muvue node -- run `muvue start NODE_ID --owner ...` first",
+        }
+    row = conn.execute(
+        "SELECT status FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+    ).fetchone()
+    if row is None:
+        return {"decision": "block", "reason": f"no such muvue node: {node_id}"}
+    if row["status"] == "awaiting_approval":
+        return {"decision": "block", "reason": f"node {node_id} is awaiting_approval"}
+    if row["status"] != "in_progress":
+        return {
+            "decision": "block",
+            "reason": f"node {node_id} is {row['status']!r}, not in_progress",
+        }
+    return {"decision": "allow"}
 
 
 def main(argv: list[str] | None = None) -> int:

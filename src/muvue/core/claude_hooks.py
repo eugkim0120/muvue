@@ -2,10 +2,24 @@
 
 - SessionStart -> `brief`
 - PreToolUse -> block Edit/Write with no `in_progress` node, or a node
-  that's `awaiting_approval`; block a `git commit` shell call with no
-  `Muvue-Node:`/`Refs:` trailer.
+  that's `awaiting_approval`.
 - PreCompact -> require a summary first.
 - Stop -> block ending the turn with unlogged `in_progress` work.
+
+v4 section 7 / changelog item 10 (REMOVED, not fixed): `PreToolUse` used
+to also string-match a `Bash` tool call's command for something
+resembling `git commit` and block it for a missing `Muvue-Node:`/
+`Refs:` trailer. That match is defeated by `git -C`, heredocs, chained
+commands, aliases and scripts, and produces false positives on any
+string merely containing "git commit" (e.g. a commit message, or a
+comment). v4's position: string-matching a shell command is
+fundamentally unsound as an enforcement mechanism, not something a
+better regex fixes. The real enforcement moved post-hoc, to
+`core.hooks.handle_post_commit` / `core.drift.
+flag_general_unattributed_commit` -- see docs/decisions.md #100 and
+tests/test_trailer_enforcement_relocation.py. Strict mode's real
+barrier remains `pre-receive` (`core.strict`), untouched by this
+change.
 
 Every function here is pure with respect to Claude Code's own hook
 transport (stdin JSON in, decision dict out) -- `cli/main.py`'s `hook`
@@ -19,17 +33,10 @@ Code install -- see docs/providers.md and docs/decisions.md.
 
 from __future__ import annotations
 
-import re
 import sqlite3
 
 from . import nodes as nodes_mod
 from . import queries
-
-_GIT_COMMIT_RE = re.compile(r"(^|[;&|]\s*)git\s+commit\b")
-
-
-def _is_git_commit(command: str) -> bool:
-    return bool(_GIT_COMMIT_RE.search(command))
 
 
 def session_start(conn: sqlite3.Connection, *, node_id: int | None) -> dict:
@@ -62,13 +69,6 @@ def pre_tool_use(
             return {
                 "decision": "block",
                 "reason": f"node {node_id} is {node['status']!r}, not in_progress",
-            }
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        if _is_git_commit(command) and "Muvue-Node:" not in command and "Refs:" not in command:
-            return {
-                "decision": "block",
-                "reason": "git commit needs a Muvue-Node:/Refs: trailer (plan section 5)",
             }
     return {"decision": "allow"}
 

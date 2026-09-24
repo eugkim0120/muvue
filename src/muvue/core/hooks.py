@@ -113,6 +113,15 @@ def handle_post_commit(
         drift_mod.flag_unattributed_commit(
             conn, commit_sha=commit_sha, files=files or [], node_ids=node_ids,
         )
+        # v4 section 7 / changelog item 10 (relocation of the removed
+        # PreToolUse git-commit-trailer block, now post-hoc): the general
+        # case, unconditional on components existing or being touched --
+        # see core.drift.flag_general_unattributed_commit's docstring and
+        # docs/decisions.md #100.
+        drift_mod.flag_general_unattributed_commit(
+            conn, commit_sha=commit_sha, files=files or [], node_ids=node_ids,
+            resolved_node_ids=linked,
+        )
         unresolved = [n for n in node_ids if n not in linked]
         return {"commit_sha": commit_sha, "linked_node_ids": linked, "unresolved_ids": unresolved}
 

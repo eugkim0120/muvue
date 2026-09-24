@@ -223,6 +223,55 @@ def flag_unattributed_commit(
     )
 
 
+def flag_general_unattributed_commit(
+    conn: sqlite3.Connection,
+    *,
+    commit_sha: str,
+    files: list[str],
+    node_ids: list[int],
+    resolved_node_ids: list[int],
+    actor: str = "hook",
+) -> int | None:
+    """v4 section 7 / changelog item 10: commit-trailer enforcement moves
+    from `PreToolUse` string-matching (removed -- see
+    `core.claude_hooks`/`muvue._hook`) to post-hoc `post-commit`
+    detection. Broader than `flag_unattributed_commit` above (P7 drift
+    loop item 2, kept unchanged, additive not replaced -- see
+    docs/decisions.md #100): fires for *every* commit whose trailer is
+    missing entirely (`node_ids` empty) or present but doesn't resolve to
+    any real, non-deleted node (`resolved_node_ids` empty despite
+    `node_ids` not being), regardless of whether it touched a file any
+    tracked structure component happens to be anchored to.
+
+    Decision (docs/decisions.md #100): scope is unconditional -- not
+    limited to commits that touch a currently-`in_progress` node's
+    touches, and not gated on any node being leased at all. The plan's
+    own wording notes the old `PreToolUse`-scoped mechanism had a
+    tool-call context this post-hoc replacement doesn't have available,
+    and offers no single canonical narrower scoping rule; the simplest
+    reading, and the one that errs toward "detection everywhere else"
+    (plan principle 10) rather than silently missing real unattributed
+    work, is to flag every commit whose trailer doesn't resolve.
+
+    Records one unacked `unattributed_commit` event -- a distinct type
+    from `inbox.unattributed_commit` (P7's anchored-component-only
+    signal, which keeps its own name and its own narrower firing
+    condition). `GET /inbox` surfaces unacked `unattributed_commit`
+    events under `"unattributed_commits"`. Returns the new event id, or
+    None if this commit's trailer resolved to at least one real node."""
+    if resolved_node_ids:
+        return None
+    return events_mod.record_event(
+        conn, project_id=None, node_id=None, actor=actor, actor_evidence="hook",
+        type_="unattributed_commit",
+        payload={
+            "sha": commit_sha,
+            "files": sorted(set(files)),
+            "trailer_node_ids": node_ids,
+        },
+    )
+
+
 def run_audit(
     conn: sqlite3.Connection,
     *,
