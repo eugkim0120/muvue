@@ -269,7 +269,95 @@ written to `<repo>/.muvue/session`) and printed once.
 - Expired leases still revert to `ready` (`attempts + 1`) only on
   `core.daemon.reconcile_on_start` (P2) -- unchanged.
 
+## Hook fast path (P0.5, added after P3-P7 landed)
+
+v4 handoff plan section 4a: a cold `python -m muvue` import (Typer +
+Pydantic v2) costs ~150-400ms measured on this machine, tolerable for a
+git hook that fires once per commit but not for Claude Code's
+`PreToolUse`, which fires on every tool call. Every hook shim `init`/
+`muvue adapter install claude-code` writes now invokes
+`<abs-python> -S -m muvue._hook NAME` instead of `<abs-python> -m muvue
+hook NAME` -- `src/muvue/_hook.py`, a **stdlib-only** module (`sys`,
+`os`, `json`, `time` at module scope; `sqlite3` lazily, only inside
+`PreToolUse`'s DB-reading branch) that never imports `muvue.core` (that
+package's `__init__.py` eagerly imports every core submodule, including
+`core/config.py`'s Typer/Pydantic dependency) or anything from
+`muvue/__init__.py` beyond the bare package init.
+
+`-S` skips Python's `site` module initialization, which is most of the
+latency win -- but `site` is also what normally puts an installed
+`muvue` on `sys.path` (via a `src/`-layout editable install's finder,
+or a normal package's `.pth` processing). Skipping it without
+compensating breaks `import muvue._hook` outright. The shim command is
+therefore `PYTHONPATH=<dir> <abs-python> -S -m muvue._hook NAME`, where
+`<dir>` is `muvue.__file__`'s grandparent directory (computed once, at
+shim-write time, by `core.repo_init.hook_fast_path_command` -- the
+single source both the git-hook shim writer and the Claude Code adapter
+config writer call). `PYTHONPATH` is applied by the interpreter before
+`site` would run, so it still takes effect under `-S`.
+
+**Default action (every event except `PreToolUse`):** append one
+minimal JSON line to `.muvue/queue.jsonl` (gitignored, append-only) and
+exit — no DB open, no state-machine logic. Line shapes:
+`{"event": "post-commit", "ts": ..., "sha": <HEAD sha, read from
+`.git/HEAD` + refs, no `git` subprocess>}`; `{"event": "session-start"
+| "pre-compact" | "stop", "ts": ..., "node_id": <int | null>}`
+(`pre-compact` also carries `"summary"`); `{"event": "pre-push", "ts":
+...}`. This means `SessionStart`'s old synchronous `additionalContext`
+brief injection and `Stop`'s old synchronous "block ending the turn
+with unlogged `in_progress` work" check no longer happen inline --
+those `core.claude_hooks` functions were read-only advisory checks
+(never a deferred *write*), so what they used to block on is now only
+recorded, after the fact, as a `hook.<event>` audit event once
+something drains the queue. See docs/decisions.md #80.
+
+**`PreToolUse` is the one exception:** it must answer allow/deny, so it
+is the only event permitted to read the DB. It filters on `tool_name`
+first (`Read`/`Grep`/etc never open the DB at all); for `Edit`/`Write`/
+`Bash` it opens `.muvue/muvue.db` read-only
+(`sqlite3.connect("file:...?mode=ro", uri=True)`), runs the *same*
+decision logic `core.claude_hooks.pre_tool_use` always ran (unchanged),
+and checks elapsed wall-clock time against a hard 150ms deadline after
+the query returns. Over budget: fail open (allow the tool call) and
+append `{"event": "hook_timeout", "hook": "pre-tool-use", "node_id":
+...}` to the queue so the miss stays auditable.
+
+**Queue drain** (`core.hooks.drain_queue`, a normal `core` module --
+`muvue._hook` never imports it): processes at most 200 items or 200ms
+of wall-clock time, whichever comes first, then rewrites the file with
+whatever's left. `post-commit` lines are re-derived through the
+existing full handler (`handle_post_commit_from_git_sha`, parameterized
+on the spooled sha rather than always reading HEAD, since several
+commits may have queued back to back by drain time); every other event
+type is recorded as a `hook.<event>` audit event
+(`node_id`/`project_id` validated against the live `nodes` table first
+-- the queue file is untrusted input). Draining runs in two places:
+(1) a Typer app callback in `cli/main.py` that fires before every CLI
+command, best-effort and silent (no `.muvue/` yet, or any drain error,
+is not that command's problem); (2) the daemon's SSE loop
+(`api/app.py`'s `/events/stream`, the only continuous restart-safe loop
+that exists before P2a ships a dedicated daemon process) drains once
+per 100ms poll iteration, on a second connection distinct from the one
+polling `PRAGMA data_version` (a write committed by a connection is not
+reliably visible in that *same* connection's own next `data_version`
+read).
+
+`doctor` reports `.muvue/queue.jsonl`'s line count and warns (non-fatal
+-- `doctor.ok` stays true) above 1000 lines.
+
+**Latency budget:** p95 < 60ms, p99 < 120ms, cold subprocess
+(`tests/test_hook_latency_benchmark.py`, 60 fresh-interpreter
+iterations). Measured locally on this machine (no CI runner available
+in this environment): p95 ~20ms, p99 ~24ms -- well inside budget. See
+docs/decisions.md #79-#82 for the design decisions this phase made.
+
 ## Post-commit hook (P3)
+
+**P0.5 note:** the installed shim no longer invokes this command
+directly (see "Hook fast path (P0.5)" above) -- it invokes `muvue._hook
+post-commit`, which only spools the sha, and the logic below now runs
+at drain time via `handle_post_commit_from_git_sha`. `muvue hook
+post-commit [PATH]` itself is unchanged and still callable directly.
 
 `muvue hook post-commit [PATH]` (invoked by the shim `init` installs)
 parses every `Muvue-Node:`/`Refs:` trailer line in `HEAD`'s commit
@@ -327,6 +415,16 @@ counts by status.
 - `codex` / `gemini` / `cursor`: config writers only
   (`AGENTS.md`/`GEMINI.md`/`.cursor/rules/muvue.mdc`), best-effort and
   **unverified** against live vendor docs -- see `docs/providers.md`.
+
+**P0.5 note:** the installed `.claude/settings.json` config no longer
+invokes this command -- it invokes `muvue._hook NAME` (see "Hook fast
+path (P0.5)" above). Only `pre-tool-use`'s allow/deny decision logic
+described below still runs synchronously (re-executed against a
+read-only DB connection inside `muvue._hook` itself, decision logic
+unchanged); `session-start`/`pre-compact`/`stop`'s synchronous behavior
+below no longer happens -- those events are spooled and only recorded
+as an audit trail once drained. `muvue hook NAME [PATH]` itself is
+unchanged and still callable directly.
 
 `muvue hook session-start|pre-tool-use|pre-compact|stop [PATH]` (what
 the installed Claude Code config invokes): reads hook-specific JSON from

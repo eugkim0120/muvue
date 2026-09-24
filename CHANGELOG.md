@@ -2,6 +2,80 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §4a / P0.5: hook fast path
+
+Branch `feat/v4-p0.5-hook-fast-path`, built on the §1.2/§3 foundational
+slice below. Implements the phase described in v4 §4a and the P0.5 row
+of §11: a stdlib-only, per-tool-call-safe hook entry point, replacing
+the full Typer CLI (~150-400ms cold, measured on this machine) as the
+target of every installed git/Claude-Code hook shim.
+
+### Added
+- `src/muvue/_hook.py`: new top-level module (sibling to
+  `muvue/__init__.py`, not inside `core/`). Imports **only** `sys`,
+  `os`, `json`, `time` at module scope; `sqlite3` lazily, only inside
+  `PreToolUse`'s DB-reading branch. Never imports `muvue.core` or
+  anything from `muvue/__init__.py` beyond the bare package init.
+  Proven by a subprocess-based import-graph test
+  (`tests/test_hook_import_graph.py`), not a grep of its own imports.
+- Default action for every hook event except `PreToolUse`: append one
+  minimal JSON line to `.muvue/queue.jsonl` (gitignored, append-only
+  spool) and exit -- no DB open. `post-commit` resolves HEAD's sha by
+  reading `.git/HEAD`/refs directly (no `subprocess`, no `git`
+  invocation). `PreToolUse` remains the one DB-reading path: read-only
+  connection, same decision logic as before, hard 150ms wall-clock
+  deadline enforced by an elapsed-time check after the query, fail-open
+  plus a spooled `hook_timeout` line on overrun.
+- `core.hooks.drain_queue`: bounded queue drain (200 items or 200ms,
+  whichever first) reusing the existing full handlers
+  (`handle_post_commit_from_git_sha`, a new sha-parameterized sibling of
+  `handle_post_commit_from_git`); every other spooled event type is
+  recorded as a `hook.<event>` audit event. Wired into (a) a Typer app
+  callback in `cli/main.py` that runs before every CLI command
+  (best-effort, silent), and (b) the daemon's SSE loop
+  (`api/app.py`'s `/events/stream`, drained on a second connection
+  distinct from the one polling `PRAGMA data_version`).
+- `core.doctor`: reports `.muvue/queue.jsonl`'s line count, warns
+  (non-fatal, new `DoctorReport.warnings`) above 1000.
+- `core.repo_init.hook_fast_path_command`: the shared shim-command
+  builder (`PYTHONPATH=<dir> <abs-python> -S -m muvue._hook NAME`) used
+  by both the git-hook shim writer and the Claude Code adapter config
+  writer, so both stay in sync.
+- Latency benchmark (`tests/test_hook_latency_benchmark.py`): 60 real
+  cold-subprocess iterations, asserts p95 < 60ms / p99 < 120ms. Measured
+  on this machine (no CI runner available in this environment): p95
+  ~20ms, p99 ~24ms.
+
+### Changed
+- Every hook shim `init`/`doctor --repair` writes (`.git/hooks/*` or
+  `.husky/*`) and `muvue adapter install claude-code`'s
+  `.claude/settings.json` entries now invoke `muvue._hook NAME` instead
+  of the full `muvue hook NAME` CLI. `muvue hook NAME [PATH]` itself is
+  unchanged and still directly callable. `core.doctor`'s absolute-path
+  shim check and `core.adapters`'s idempotent-reinstall detection
+  updated to recognize both the new and the pre-v4 command shape.
+- `.gitignore` marker block `init` writes now also ignores
+  `.muvue/queue.jsonl`.
+
+### Fixed
+- The daemon's SSE loop (`/events/stream`) used one long-lived
+  connection for both the `PRAGMA data_version` poll and (this
+  session's new) periodic drain; a write committed by a connection is
+  not reliably visible in that *same* connection's own next
+  `data_version` read, so the drain-triggered write went undetected.
+  Fixed by giving the loop a second, dedicated write connection for the
+  drain task (caught by `tests/test_sse.py`'s new drain test).
+
+### Behavior change (documented, not a regression -- see
+docs/decisions.md #80)
+- Claude Code's `SessionStart` hook no longer injects `brief` as
+  synchronous `additionalContext`, and `Stop` no longer synchronously
+  blocks ending a turn with unlogged `in_progress` work. Both were
+  read-only advisory checks (no deferred *write* to lose); v4 §4a's
+  "every event except `PreToolUse` spools and exits" applies to them
+  literally, so what they used to check is now only visible after the
+  fact, as a `hook.<event>` audit event once the queue drains.
+
 ## [Unreleased] - v4 §1.2/§3 foundational slice: BEGIN IMMEDIATE transaction discipline, schema deltas, replay-scope redefinition
 
 First phase of the v4 handoff plan migration (branch

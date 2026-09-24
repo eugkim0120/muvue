@@ -1048,3 +1048,101 @@ reading here. Real `decisions` table entries start once dogfooding begins
     the event stream it needs already in place), but `rebuild.diff_state`
     does not yet compare them. Flagged prominently for whichever
     follow-up session extends replay coverage to `agent_spend`.
+
+79. **`PYTHONPATH=<dir>` prefix added to every hook shim command,
+    discovered empirically, not anticipated from the plan text alone.**
+    v4 §4a says `-S` (skip `site` init) is "part of the latency win";
+    testing the actual installed shim (not just an in-`src/`-directory
+    subprocess invocation) showed `-S` also breaks `import muvue._hook`
+    outright, because `site` is what normally puts an installed
+    `muvue` on `sys.path` (this dev venv's editable install; a real
+    `uvx muvue init` install would rely on it identically for a normal
+    site-packages install). Fix: `core.repo_init.
+    hook_fast_path_command` computes `muvue.__file__`'s grandparent
+    directory once (at shim-write time) and prefixes the shim command
+    with `PYTHONPATH=<dir>` -- PYTHONPATH is applied by the interpreter
+    before `site` would run, so it survives `-S` untouched, and this
+    still measures well within the p95/p99 budget (see
+    `tests/test_hook_latency_benchmark.py`). Single source of truth
+    shared by the git-hook shim writer (`core/repo_init.py`) and the
+    Claude Code adapter config writer (`core/adapters.py`) so they
+    can't drift apart.
+
+80. **`SessionStart`'s synchronous `additionalContext` brief injection
+    and `Stop`'s synchronous "block on unlogged in_progress work" check
+    are dropped, not preserved via some exemption.** v4 §4a's own text
+    is unambiguous: "Default action is append one JSON line to
+    `.muvue/queue.jsonl` and exit" for every event except `PreToolUse`,
+    with no carve-out for other events that happen to also do something
+    useful synchronously. Read literally (working rule 7's "simplest
+    reading" for an ambiguous item, though this one isn't very
+    ambiguous): both `core.claude_hooks.session_start` and `.stop` were
+    already read-only advisory checks with no DB *write* to defer in
+    the first place, so nothing about them was silently orphaned mid-
+    write; what's lost is purely a synchronous check that must now wait
+    for a drain to become visible (as a `hook.<event>` audit event),
+    which is too late to have blocked the turn it was about. This is a
+    real, deliberate reduction in enforcement strength for those two
+    checks in exchange for the fast path's latency guarantee. Flagged
+    for whichever follow-up session (daemon security, §8a, or a future
+    enforcement-relocation phase) wants to restore synchronous
+    enforcement for `Stop` specifically -- e.g. by having the daemon's
+    continuous drain surface a *blocking* notification back to the
+    client out-of-band, which is out of this phase's scope to design.
+
+81. **`post-commit`'s spooled queue line carries only `{"event",
+    "ts", "sha"}` -- no `message`/`files`.** v4 §4a: "everything else
+    about that commit's diff can be re-derived from git when the queue
+    is drained." `handle_post_commit_from_git_sha` (a new sha-
+    parameterized sibling of the pre-existing `handle_post_commit_from_
+    git`, sharing all its logic) re-reads the commit's message and
+    touched files from git at drain time, using the spooled sha rather
+    than always assuming HEAD -- drain may run after several commits
+    have queued back to back, by which point HEAD has moved past the
+    first one. `muvue._hook` itself resolves the sha by reading
+    `.git/HEAD` and its ref chain directly (with a `packed-refs`
+    fallback) rather than shelling out to `git rev-parse HEAD`:
+    `subprocess` is not on this module's stdlib allow-list (`sys`,
+    `os`, `json`, `time`, `sqlite3` lazily), and spawning a `git`
+    process on every commit would eat into the latency budget the fast
+    path exists to protect.
+
+82. **Non-`post-commit` spooled events (`session-start`, `pre-compact`,
+    `stop`, `pre-push`, `hook_timeout`) are recorded at drain time as a
+    generic `hook.<event>` audit event via `events.record_event`, not
+    given individual per-type drain handlers.** There is no existing
+    full handler for these to "reuse, don't reimplement" the way
+    `post-commit` has one (`core.claude_hooks.session_start`/
+    `pre_compact`/`stop` are read-only decision functions, not
+    mutations -- see decision #80): writing one now would be inventing
+    processing logic the plan doesn't ask for (working rule 8: "no
+    unrequested features"). A single generic audit-trail record
+    satisfies v4 principle 10 ("detection everywhere else") -- a
+    `hook_timeout`, for instance, stays visible in the events log even
+    though nothing currently blocks on it -- without guessing at
+    future per-type behavior. `node_id` is validated against the live
+    `nodes` table before use (dropped to `NULL` if it no longer
+    resolves) since the queue file is untrusted input a hand-edit or a
+    stale `.muvue/current_node` could corrupt.
+
+83. **The daemon's "continuous drain loop" (v4 §4a) rides the existing
+    SSE `/events/stream` generator in `api/app.py`, not a new
+    standalone loop.** No dedicated daemon process/background-task
+    loop exists yet -- that's P2a scope (§11: "Daemon core: ... queue
+    processing, process management, security controls of §8a"),
+    explicitly a separate follow-up session this phase must not touch.
+    The SSE generator is the only continuous, restart-safe loop the
+    daemon runs today, so the bounded drain (`core.hooks.drain_queue`)
+    rides along as another periodic task inside it per iteration
+    (~every 100ms), guarded by its own try/except so a drain failure
+    never breaks the SSE stream. Uses a *second* SQLite connection
+    distinct from the one polling `PRAGMA data_version`: a write
+    committed by a connection is not reliably visible in that same
+    connection's own subsequent `data_version` read (the same
+    single-long-lived-connection caveat already documented for the
+    `data_version` poll itself applies symmetrically to a writer on
+    that connection). Whichever P2a session builds the real daemon
+    process/task structure will likely want to move this drain call
+    into that structure instead; flagged here so that session knows
+    exactly where today's version lives and why it needs its own
+    connection.
