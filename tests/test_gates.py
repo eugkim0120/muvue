@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from muvue.core import db as core_db
-from muvue.core import gates, nodes, projects
+from muvue.core import gates, nodes, projects, rebuild
 from muvue.core.config import MuvueConfig
 from muvue.core.nodes import NodeError
 from muvue.core.state_machine import InvalidTransition
@@ -92,6 +92,20 @@ def test_criteria_edit_after_freeze_retiers_and_blocks_start(conn, project, conf
     # risk_tier stays 'high' until a human explicitly lowers it; re-approval
     # only re-freezes criteria and re-admits the node to 'ready'.
     assert started["node"]["risk_tier"] == "high"
+
+
+def test_rebuild_matches_live_after_criteria_edit(conn, project, config):
+    """P3 regression: `node.criteria_edited` nests its row snapshot under
+    payload["node"] instead of at the payload's top level (unlike every
+    other node.* event). `rebuild.rebuild_state` previously assumed every
+    node.* payload *is* the row (`payload["id"]`), which raised KeyError
+    the first time rebuild ran after a criteria edit -- no prior test
+    combined the two. Fixed in core/rebuild.py to unwrap the nested
+    "node" key; this pins that fix."""
+    task = _decompose_one_task(conn, project)
+    gates.approve_gate2(conn, project["id"], config=config)
+    gates.edit_criteria(conn, task["id"], criteria_json='["passes tests", "handles edge case"]')
+    assert rebuild.diff_state(conn) == {}
 
 
 def test_criteria_edit_without_change_does_not_retier(conn, project, config):

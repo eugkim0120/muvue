@@ -192,9 +192,13 @@ def start(
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
-        result = core.nodes.start(conn, node_id, owner=owner, request_id=request_id)
+        result = core.nodes.start(
+            conn, node_id, owner=owner, request_id=request_id,
+            lease_minutes=config.planning.lease_minutes,
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -206,12 +210,19 @@ def done(
     owner: str = typer.Option(..., "--owner"),
     request_id: str = typer.Option(None, "--request-id"),
     summary: str = typer.Option(None, "--summary"),
+    version: int = typer.Option(
+        None, "--version", help="expected nodes.version from start; mismatch fails the call"
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
-        result = core.nodes.done(conn, node_id, owner=owner, request_id=request_id, summary=summary)
+        result = core.nodes.done(
+            conn, node_id, owner=owner, request_id=request_id, summary=summary,
+            config=config, expected_version=version,
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -223,12 +234,18 @@ def fail(
     owner: str = typer.Option(..., "--owner"),
     lesson: str = typer.Option(..., "--lesson"),
     request_id: str = typer.Option(None, "--request-id"),
+    version: int = typer.Option(
+        None, "--version", help="expected nodes.version from start; mismatch fails the call"
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.nodes.fail(conn, node_id, owner=owner, lesson=lesson, request_id=request_id)
+        result = core.nodes.fail(
+            conn, node_id, owner=owner, lesson=lesson, request_id=request_id,
+            expected_version=version,
+        )
     finally:
         conn.close()
     _echo_json(result)

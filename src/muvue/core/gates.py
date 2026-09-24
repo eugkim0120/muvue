@@ -189,6 +189,11 @@ def edit_criteria(
     changed = was_frozen and new_hash != node["criteria_hash"]
 
     conn.execute("UPDATE nodes SET criteria_json = ? WHERE id = ?", (criteria_json, node_id))
+    # P3 acceptance #2: a criteria edit is a human-visible edit regardless
+    # of whether it changes the frozen hash, so it bumps `nodes.version`
+    # -- an agent mid-`in_progress` that captured `version` at `start` and
+    # later calls `done(expected_version=...)` must see the mismatch.
+    nodes_mod.bump_version(conn, node_id, actor=actor)
     if changed:
         # One source of truth for "criteria edit forces high" (plan
         # section 5): routes through core.risk instead of special-casing

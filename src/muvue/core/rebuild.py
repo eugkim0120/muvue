@@ -32,7 +32,15 @@ def rebuild_state(conn: sqlite3.Connection) -> dict:
         if etype.startswith("project."):
             projects[payload["id"]] = payload
         elif etype.startswith("node."):
-            nodes[payload["id"]] = payload
+            # Most `node.*` events carry the full row as the payload
+            # itself. `node.criteria_edited` (core.gates.edit_criteria,
+            # P1) is the one exception: its payload is
+            # {"node": <row>, "re_approval_required": bool}, so the row
+            # snapshot is nested. Unwrap it the same way here rather than
+            # special-casing the event type, so any future node.* event
+            # that nests its snapshot under "node" replays correctly too.
+            snapshot = payload["node"] if "node" in payload and "id" not in payload else payload
+            nodes[snapshot["id"]] = snapshot
         # note.* events don't affect projects/nodes replay state.
     return {"projects": projects, "nodes": nodes}
 

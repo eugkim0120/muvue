@@ -324,7 +324,10 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                         payload={"agent": agent},
                     )
                     conn.commit()
-                result = core.nodes.start(conn, node_id, owner=owner, request_id=request_id)
+                result = core.nodes.start(
+                    conn, node_id, owner=owner, request_id=request_id,
+                    lease_minutes=config.planning.lease_minutes,
+                )
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -335,12 +338,13 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         owner: str = Body(...),
         summary: str | None = Body(default=None),
         request_id: str | None = Body(default=None),
+        version: int | None = Body(default=None),
     ) -> dict:
         with _conn() as conn:
             try:
                 result = core.nodes.done(
                     conn, node_id, owner=owner, summary=summary, request_id=request_id,
-                    config=config,
+                    config=config, expected_version=version,
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -355,12 +359,14 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         do_instead: str = Body(default=""),
         scope: str = Body(default=""),
         request_id: str | None = Body(default=None),
+        version: int | None = Body(default=None),
     ) -> dict:
         with _conn() as conn:
             try:
                 result = core.nodes.fail(
                     conn, node_id, owner=owner, lesson=lesson, trigger=trigger,
                     do_instead=do_instead, scope=scope, request_id=request_id,
+                    expected_version=version,
                 )
             except Exception as e:
                 _handle_core_error(e)

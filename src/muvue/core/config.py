@@ -36,6 +36,7 @@ class PlanningConfig(StrictModel):
     max_files_per_task: int = 8
     max_subtasks: int = 6
     ask_timeout_minutes: int = 60
+    lease_minutes: int = 60
 
 
 class NotifyConfig(StrictModel):
@@ -125,6 +126,7 @@ max_diff_lines = 300
 max_files_per_task = 8
 max_subtasks = 6
 ask_timeout_minutes = 60
+lease_minutes = 60
 
 [notify]
 url = ""

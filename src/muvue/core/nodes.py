@@ -176,6 +176,26 @@ def start(
             f"{project['phase']} (Gate 2 not yet approved, or paused -- plan "
             "section 5 'Emergency stop': pause refuses start)"
         )
+    # P3 acceptance #1: a second driver cannot take an already-leased node.
+    # `state_machine.TRANSITIONS` already refuses a second `start` once the
+    # node is `in_progress` (there is no (in_progress, in_progress) edge),
+    # but that raises a generic InvalidTransition regardless of *why*. This
+    # explicit, earlier check gives a precise "leased by someone else"
+    # error for the common case -- a different owner racing the same
+    # `ready` node, or calling `start` again before the daemon's
+    # reconcile-on-start has reverted an expired lease -- instead of
+    # silently reassigning the lease.
+    if (
+        node["status"] == "in_progress"
+        and node["owner"] is not None
+        and node["owner"] != owner
+        and node["lease_until"] is not None
+        and node["lease_until"] > datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    ):
+        raise NodeError(
+            f"cannot start node {node_id}: leased by {node['owner']!r} until "
+            f"{node['lease_until']} (refused, not reassigned)"
+        )
     lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
@@ -193,6 +213,35 @@ def start(
     return {"noop": False, "node": dict(row)}
 
 
+def bump_version(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human"
+) -> sqlite3.Row:
+    """Optimistic concurrency counter (plan section 3: `nodes.version`).
+    Called on human-visible edits made to a node while it may be leased
+    out to an agent (`add_note` for human notes/comments,
+    `core.gates.edit_criteria` for criteria changes) so a lease holder's
+    later `done(..., expected_version=...)` can detect "this node changed
+    under me" instead of silently overwriting a human's edit (P3
+    acceptance #2)."""
+    conn.execute("UPDATE nodes SET version = version + 1 WHERE id = ?", (node_id,))
+    row = get_node(conn, node_id)
+    events.record_event(
+        conn,
+        project_id=row["project_id"],
+        node_id=node_id,
+        actor=actor,
+        type_="node.version_bumped",
+        payload=dict(row),
+    )
+    return row
+
+
+class VersionMismatch(NodeError):
+    """Raised by `done`/`fail` when `expected_version` no longer matches
+    `nodes.version` -- the node was edited (e.g. a human note or criteria
+    change) since the caller's `start` (P3 acceptance #2)."""
+
+
 def done(
     conn: sqlite3.Connection,
     node_id: int,
@@ -201,6 +250,7 @@ def done(
     request_id: str | None = None,
     summary: str | None = None,
     config=None,
+    expected_version: int | None = None,
 ) -> dict:
     """Mark a node done. Idempotent: a node already `done` is a no-op, and a
     duplicate request_id within the 24h dedupe window is a no-op (plan
@@ -226,6 +276,13 @@ def done(
     dup = events.find_recent_by_request_id(conn, request_id, "node.done") if request_id else None
     if dup is not None:
         return {"noop": True, "node": dict(get_node(conn, node_id))}
+
+    if expected_version is not None and node["version"] != expected_version:
+        raise VersionMismatch(
+            f"cannot mark node {node_id} done: version is {node['version']}, "
+            f"expected {expected_version} (edited since start -- re-brief "
+            "and retry rather than overwrite)"
+        )
 
     reviewing = _apply_transition(
         conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
@@ -371,12 +428,18 @@ def fail(
     do_instead: str = "",
     scope: str = "",
     request_id: str | None = None,
+    expected_version: int | None = None,
 ) -> dict:
     dup = events.find_recent_by_request_id(conn, request_id, "node.fail") if request_id else None
     if dup is not None:
         return {"noop": True, "node": dict(get_node(conn, node_id))}
 
     node = get_node(conn, node_id)
+    if expected_version is not None and node["version"] != expected_version:
+        raise VersionMismatch(
+            f"cannot fail node {node_id}: version is {node['version']}, "
+            f"expected {expected_version} (edited since start)"
+        )
     attempts = node["attempts"] + 1
     to_status = "failed" if attempts >= node["max_attempts"] else "ready"
     row = _apply_transition(
@@ -480,5 +543,12 @@ def add_note(
         type_="note.added",
         payload=dict(row),
     )
+    if actor == "human":
+        # Plan section 3/5: a human-visible edit made while a node may be
+        # leased out bumps `nodes.version`, so the lease holder's `done`
+        # can detect it (P3 acceptance #2). Agent-authored notes (lessons,
+        # discoveries the agent itself records) are not edits *by someone
+        # else* and don't bump it.
+        bump_version(conn, node_id, actor=actor)
     conn.commit()
     return {"noop": False, "note": dict(row)}
