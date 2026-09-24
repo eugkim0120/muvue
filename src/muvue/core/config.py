@@ -44,8 +44,26 @@ class NotifyConfig(StrictModel):
 
 
 class BudgetConfig(StrictModel):
-    unit: Literal["usd", "tokens", "requests"] = "usd"
-    limit: float = 25
+    """v4 section 2 "Budget rule (changed from v3)": the top-level
+    `[budget]` no longer holds a unit/limit -- that moved per-driver
+    (`AgentBudgetConfig` below). This is now unit-free stop conditions
+    only, checked by `core.runner.run` independently of any driver's own
+    budget state."""
+
+    max_wall_clock_minutes: int = 240
+    max_nodes_per_run: int = 20
+
+
+class AgentBudgetConfig(StrictModel):
+    """`[agents.<x>.budget]` (v4 section 2): a driver's own budget, in a
+    unit its `cost_model` can actually emit. `doctor` errors if `unit`
+    isn't producible by the owning `AgentConfig.cost_model` -- see
+    `core.runner.EXPECTED_BUDGET_UNIT` (decision #72's existing
+    cost_model->unit mapping, mirrored, not reinvented) and
+    `core.doctor.run_doctor`."""
+
+    unit: Literal["usd", "tokens", "requests"]
+    limit: float
 
 
 class AgentConfig(StrictModel):
@@ -56,6 +74,12 @@ class AgentConfig(StrictModel):
     max_concurrency: int = 1
     on_rate_limit: str = "wait"
     pinned_version: str = ""
+    budget: AgentBudgetConfig | None = None
+    # v4 section 6 / changelog item 11: "wait" against `on_rate_limit` is
+    # bounded by `max_wait_minutes`, after which `on_rate_limit_timeout`
+    # applies.
+    max_wait_minutes: int = 30
+    on_rate_limit_timeout: str = "pause"
 
     @field_validator("on_rate_limit")
     @classmethod
@@ -65,6 +89,20 @@ class AgentConfig(StrictModel):
         raise ValueError(
             "on_rate_limit must be 'wait', 'pause', or 'fallback:<agent>' "
             f"(got {v!r})"
+        )
+
+    @field_validator("on_rate_limit_timeout")
+    @classmethod
+    def _validate_on_rate_limit_timeout(cls, v: str) -> str:
+        # v4 section 6 doesn't spell this out explicitly, but "wait" as a
+        # *timeout* action would be an infinite loop (the thing
+        # max_wait_minutes exists to prevent) -- see docs/decisions.md.
+        if v == "pause" or v.startswith("fallback:"):
+            return v
+        raise ValueError(
+            "on_rate_limit_timeout must be 'pause' or 'fallback:<agent>' "
+            f"('wait' is not allowed -- it would be a silent infinite wait, "
+            f"exactly what max_wait_minutes exists to bound) (got {v!r})"
         )
 
 
@@ -132,8 +170,8 @@ lease_minutes = 60
 url = ""
 
 [budget]
-unit = "usd"
-limit = 25
+max_wall_clock_minutes = 240
+max_nodes_per_run = 20
 
 [agents.fake]
 command = "muvue-fake-agent"
