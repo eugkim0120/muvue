@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>muvue</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0e0e12; color: #e6e6e6; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #17171d; border-bottom: 1px solid #2a2a33; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+  #status-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #294; }
+  #status-pill.paused { background: #a33; }
+  nav { display: flex; gap: 4px; padding: 8px 16px; background: #101015; border-bottom: 1px solid #22222a; }
+  nav button { background: none; border: none; color: #9a9aa5; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  nav button.active { background: #23232d; color: #fff; }
+  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+  .card { background: #17171d; border: 1px solid #24242e; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .muted { color: #8a8a95; font-size: 12px; }
+  .badge { padding: 1px 7px; border-radius: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .status-pending { background: #444; }
+  .status-ready { background: #345; }
+  .status-in_progress { background: #a70; }
+  .status-review { background: #77a; }
+  .status-done { background: #285; }
+  .status-blocked { background: #a33; }
+  .status-failed { background: #711; }
+  .status-awaiting_approval { background: #a7a; }
+  .tier-low { color: #7c7; }
+  .tier-medium { color: #cc7; }
+  .tier-high { color: #e77; }
+  a.nodelink, button.linklike { color: #9cf; background: none; border: none; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+  textarea, input[type=text], input[type=password] { width: 100%; box-sizing: border-box; background: #101015; color: #eee; border: 1px solid #2a2a33; border-radius: 6px; padding: 6px; font-family: inherit; }
+  button.action { background: #2b2b58; color: #dde; border: 1px solid #3a3a70; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button.action:hover { background: #35356a; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #101015; padding: 8px; border-radius: 6px; }
+  #panel-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 10; }
+  #panel-overlay.open { display: flex; }
+  #panel { background: #17171d; border: 1px solid #2a2a33; border-radius: 10px; padding: 16px; width: 100%; max-width: 640px; max-height: 85vh; overflow: auto; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .kpi-grid .card { text-align: center; }
+  .kpi-grid .kpi-value { font-size: 22px; font-weight: 700; }
+  #token-form { display: flex; gap: 6px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>muvue</h1>
+  <span id="status-pill">connecting...</span>
+  <span class="muted" id="protocol-info"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="tree" class="active">tree</button>
+  <button data-tab="inbox">inbox</button>
+  <button data-tab="spec">spec</button>
+  <button data-tab="timeline">timeline</button>
+  <button data-tab="revisions">revisions</button>
+  <button data-tab="kpis">kpis</button>
+</nav>
+<main>
+  <div id="token-form">
+    <input type="password" id="token-input" placeholder="session token (for approve/reject/pause/...)">
+    <button class="action" id="token-save">save</button>
+    <button class="action" id="pause-btn">pause</button>
+    <button class="action" id="resume-btn">resume</button>
+  </div>
+  <section id="view-tree" class="view"></section>
+  <section id="view-inbox" class="view" hidden></section>
+  <section id="view-spec" class="view" hidden></section>
+  <section id="view-timeline" class="view" hidden></section>
+  <section id="view-revisions" class="view" hidden></section>
+  <section id="view-kpis" class="view" hidden></section>
+</main>
+<div id="panel-overlay">
+  <div id="panel"></div>
+</div>
+<script>
+"use strict";
+
+const state = { projectId: null, token: localStorage.getItem("muvue_token") || "" };
+
+function api(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
+  if (state.token) headers["Authorization"] = "Bearer " + state.token;
+  return fetch(path, Object.assign({}, opts, {headers})).then(function (r) {
+    return r.json().then(function (body) {
+      if (!r.ok) { throw new Error((body && body.detail) || r.statusText); }
+      return body;
+    });
+  });
+}
+
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  Object.keys(attrs || {}).forEach(function (k) {
+    if (k === "text") node.textContent = attrs[k];
+    else if (k === "class") node.className = attrs[k];
+    else node.setAttribute(k, attrs[k]);
+  });
+  (children || []).forEach(function (c) { node.appendChild(c); });
+  return node;
+}
+
+function statusBadge(status) {
+  return el("span", {class: "badge status-" + status, text: status});
+}
+
+function tierLabel(tier) {
+  return el("span", {class: "tier-" + tier, text: tier + " risk"});
+}
+
+// -- node panel --------------------------------------------------------
+
+function openPanel(nodeId) {
+  api("/nodes/" + nodeId).then(function (data) {
+    const n = data.node;
+    const panel = document.getElementById("panel");
+    panel.textContent = "";
+    panel.appendChild(el("h2", {text: n.title}));
+    panel.appendChild(el("div", {class: "row"}, [statusBadge(n.status), tierLabel(n.risk_tier)]));
+    panel.appendChild(el("h3", {text: "criteria"}));
+    panel.appendChild(el("pre", {text: n.criteria_json}));
+    if (n.summary) {
+      panel.appendChild(el("h3", {text: "summary"}));
+      panel.appendChild(el("pre", {text: n.summary}));
+    }
+    panel.appendChild(el("h3", {text: "predicted touches"}));
+    panel.appendChild(el("pre", {text: (data.predicted_touches || []).join("\n") || "(none)"}));
+    panel.appendChild(el("h3", {text: "notes"}));
+    (data.notes || []).forEach(function (note) {
+      panel.appendChild(el("div", {class: "card"}, [
+        el("div", {class: "muted", text: note.kind + " - " + note.created_at}),
+        el("div", {text: note.text}),
+      ]));
+    });
+    panel.appendChild(el("h3", {text: "commits"}));
+    panel.appendChild(el("pre", {text: (data.commits || []).map(function (c) { return c.sha; }).join("\n") || "(none)"}));
+
+    if (n.status === "review") {
+      const approveBtn = el("button", {class: "action", text: "approve"});
+      approveBtn.addEventListener("click", function () {
+        api("/nodes/" + n.id + "/approve", {method: "POST", body: JSON.stringify({target: "review"})})
+          .then(function () { closePanel(); loadTab(currentTab); })
+          .catch(function (e) { alert(e.message); });
+      });
+      const rejectBtn = el("button", {class: "action", text: "reject"});
+      rejectBtn.addEventListener("click", function () {
+        const feedback = prompt("feedback for rejection?") || "";
+        api("/nodes/" + n.id + "/reject", {method: "POST", body: JSON.stringify({feedback: feedback})})
+          .then(function () { closePanel(); loadTab(currentTab); })
+          .catch(function (e) { alert(e.message); });
+      });
+      panel.appendChild(approveBtn);
+      panel.appendChild(rejectBtn);
+    }
+
+    if (n.status === "ready") {
+      const startBtn = el("button", {class: "action", text: "start with agent"});
+      startBtn.addEventListener("click", function () {
+        const agent = prompt("agent name (stub -- no driver yet)?", "claude") || "";
+        const owner = prompt("owner id?", "dashboard-user") || "dashboard-user";
+        api("/nodes/" + n.id + "/start?agent=" + encodeURIComponent(agent), {
+          method: "POST", body: JSON.stringify({owner: owner}),
+        }).then(function () { closePanel(); loadTab(currentTab); })
+          .catch(function (e) { alert(e.message); });
+      });
+      panel.appendChild(startBtn);
+    }
+
+    const closeBtn = el("button", {class: "action", text: "close"});
+    closeBtn.addEventListener("click", closePanel);
+    panel.appendChild(document.createElement("br"));
+    panel.appendChild(closeBtn);
+
+    document.getElementById("panel-overlay").classList.add("open");
+  }).catch(function (e) { alert(e.message); });
+}
+
+function closePanel() {
+  document.getElementById("panel-overlay").classList.remove("open");
+}
+document.getElementById("panel-overlay").addEventListener("click", function (ev) {
+  if (ev.target.id === "panel-overlay") closePanel();
+});
+
+// -- tabs ----------------------------------------------------------------
+
+let currentTab = "tree";
+
+function nodeLink(n) {
+  const link = el("button", {class: "linklike", text: "#" + n.id + " " + n.title});
+  link.addEventListener("click", function () { openPanel(n.id); });
+  return link;
+}
+
+function loadTree() {
+  const view = document.getElementById("view-tree");
+  view.textContent = "loading...";
+  api("/nodes").then(function (nodes) {
+    view.textContent = "";
+    if (!nodes.length) { view.appendChild(el("p", {class: "muted", text: "no nodes yet"})); return; }
+    nodes.sort(function (a, b) { return a.id - b.id; });
+    nodes.forEach(function (n) {
+      const card = el("div", {class: "card"}, [
+        el("div", {class: "row"}, [nodeLink(n), statusBadge(n.status)]),
+        el("div", {class: "muted"}, [tierLabel(n.risk_tier), document.createTextNode(" - " + n.kind + (n.parent_id ? " - parent #" + n.parent_id : ""))]),
+      ]);
+      view.appendChild(card);
+    });
+  });
+}
+
+function loadInbox() {
+  const view = document.getElementById("view-inbox");
+  view.textContent = "loading...";
+  api("/inbox").then(function (data) {
+    view.textContent = "";
+    view.appendChild(el("h2", {text: "open questions"}));
+    (data.questions || []).forEach(function (q) {
+      view.appendChild(el("div", {class: "card"}, [el("div", {text: q.text}), el("div", {class: "muted", text: "default: " + (q.default_answer || "(none)")})]));
+    });
+    if (!data.questions.length) view.appendChild(el("p", {class: "muted", text: "none"}));
+    view.appendChild(el("h2", {text: "awaiting review"}));
+    (data.review || []).forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n)])); });
+    if (!data.review.length) view.appendChild(el("p", {class: "muted", text: "none"}));
+    view.appendChild(el("h2", {text: "blocked"}));
+    (data.blocked || []).forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n), el("span", {class: "muted", text: " " + (n.block_reason || "")})])); });
+    if (!data.blocked.length) view.appendChild(el("p", {class: "muted", text: "none"}));
+  });
+}
+
+function loadSpec() {
+  const view = document.getElementById("view-spec");
+  view.textContent = "loading...";
+  api("/nodes").then(function (nodes) {
+    const specs = nodes.filter(function (n) { return n.kind === "spec"; });
+    view.textContent = "";
+    if (!specs.length) { view.appendChild(el("p", {class: "muted", text: "no spec nodes yet"})); return; }
+    specs.forEach(function (spec) {
+      const wrap = el("div", {class: "card"});
+      wrap.appendChild(el("h2", {text: spec.title}));
+      wrap.appendChild(el("pre", {text: spec.body_md || "(empty)"}));
+      const ta = el("textarea", {rows: "2", placeholder: "inline comment (stored as a feedback note)"});
+      const btn = el("button", {class: "action", text: "comment"});
+      btn.addEventListener("click", function () {
+        if (!ta.value.trim()) return;
+        api("/nodes/" + spec.id + "/comment", {method: "POST", body: JSON.stringify({text: ta.value})})
+          .then(function () { ta.value = ""; loadSpec(); })
+          .catch(function (e) { alert(e.message); });
+      });
+      wrap.appendChild(ta);
+      wrap.appendChild(btn);
+      view.appendChild(wrap);
+    });
+  });
+}
+
+function loadTimeline() {
+  const view = document.getElementById("view-timeline");
+  view.textContent = "loading...";
+  api("/events?limit=100").then(function (events) {
+    view.textContent = "";
+    events.slice().reverse().forEach(function (ev) {
+      view.appendChild(el("div", {class: "card"}, [
+        el("div", {class: "muted", text: ev.ts + " - " + ev.actor}),
+        el("div", {text: ev.type + (ev.node_id ? " (node #" + ev.node_id + ")" : "")}),
+      ]));
+    });
+    if (!events.length) view.appendChild(el("p", {class: "muted", text: "no events yet"}));
+  });
+}
+
+function loadRevisions() {
+  const view = document.getElementById("view-revisions");
+  view.textContent = "loading...";
+  api("/projects").then(function (projects) {
+    view.textContent = "";
+    if (!projects.length) { view.appendChild(el("p", {class: "muted", text: "no projects yet"})); return; }
+    const p = projects[projects.length - 1];
+    state.projectId = p.id;
+    api("/projects/" + p.id + "/revisions").then(function (revs) {
+      if (!revs.length) { view.appendChild(el("p", {class: "muted", text: "no plan revisions yet"})); return; }
+      revs.forEach(function (rev) {
+        view.appendChild(el("div", {class: "card"}, [
+          el("div", {text: "revision " + rev.n + (rev.approved_at ? " (approved " + rev.approved_at + ")" : " (pending)")}),
+          el("pre", {text: JSON.stringify(rev.diff, null, 2)}),
+        ]));
+      });
+    });
+  });
+}
+
+function loadKpis() {
+  const view = document.getElementById("view-kpis");
+  view.textContent = "loading...";
+  api("/kpis").then(function (k) {
+    view.textContent = "";
+    const grid = el("div", {class: "kpi-grid"});
+    [
+      ["drift %", (k.drift_pct * 100).toFixed(1) + "%"],
+      ["rubber-stamp rate", (k.rubber_stamp_rate * 100).toFixed(1) + "%"],
+      ["tokens / node", k.tokens_per_node],
+      ["spend vs budget", (k.spend_vs_budget * 100).toFixed(1) + "%"],
+    ].forEach(function (pair) {
+      grid.appendChild(el("div", {class: "card"}, [
+        el("div", {class: "kpi-value", text: String(pair[1])}),
+        el("div", {class: "muted", text: pair[0]}),
+      ]));
+    });
+    view.appendChild(grid);
+  });
+}
+
+const loaders = {tree: loadTree, inbox: loadInbox, spec: loadSpec, timeline: loadTimeline, revisions: loadRevisions, kpis: loadKpis};
+
+function loadTab(tab) {
+  currentTab = tab;
+  Object.keys(loaders).forEach(function (t) {
+    document.getElementById("view-" + t).hidden = t !== tab;
+  });
+  document.querySelectorAll("nav button").forEach(function (b) {
+    b.classList.toggle("active", b.getAttribute("data-tab") === tab);
+  });
+  loaders[tab]();
+}
+
+document.querySelectorAll("nav button").forEach(function (btn) {
+  btn.addEventListener("click", function () { loadTab(btn.getAttribute("data-tab")); });
+});
+
+document.getElementById("token-save").addEventListener("click", function () {
+  state.token = document.getElementById("token-input").value.trim();
+  localStorage.setItem("muvue_token", state.token);
+  alert("token saved");
+});
+document.getElementById("token-input").value = state.token;
+
+document.getElementById("pause-btn").addEventListener("click", function () {
+  if (!state.projectId) { alert("no project loaded yet -- open the revisions tab once first"); return; }
+  api("/projects/" + state.projectId + "/pause", {method: "POST"})
+    .then(function () { refreshStatus(); })
+    .catch(function (e) { alert(e.message); });
+});
+document.getElementById("resume-btn").addEventListener("click", function () {
+  if (!state.projectId) { alert("no project loaded yet -- open the revisions tab once first"); return; }
+  api("/projects/" + state.projectId + "/resume", {method: "POST"})
+    .then(function () { refreshStatus(); })
+    .catch(function (e) { alert(e.message); });
+});
+
+function refreshStatus() {
+  api("/healthz").then(function (h) {
+    document.getElementById("protocol-info").textContent = "protocol v" + h.protocol_version;
+  });
+  api("/projects").then(function (projects) {
+    const pill = document.getElementById("status-pill");
+    if (!projects.length) { pill.textContent = "no project"; return; }
+    const p = projects[projects.length - 1];
+    state.projectId = p.id;
+    pill.textContent = p.phase;
+    pill.classList.toggle("paused", p.phase === "paused");
+  });
+}
+
+// -- SSE: refresh whenever the daemon reports a DB change ----------------
+
+function connectStream() {
+  try {
+    const src = new EventSource("/events/stream");
+    src.onmessage = function () { refreshStatus(); loadTab(currentTab); };
+    src.onerror = function () { /* browser auto-reconnects */ };
+  } catch (e) { /* EventSource unsupported; dashboard still works via manual refresh */ }
+}
+
+refreshStatus();
+loadTab("tree");
+connectStream();
+</script>
+</body>
+</html>
