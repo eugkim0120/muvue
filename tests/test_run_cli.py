@@ -63,11 +63,37 @@ def test_run_cli_completes_a_ready_task_unattended(tmp_path: Path):
     assert show["node"]["status"] == "done"
 
 
-def test_run_cli_respects_parallel_flag(tmp_path: Path):
-    """`--parallel` is accepted and doesn't change single-node behavior --
-    real disjoint-scheduling coverage lives in tests/test_runner.py."""
+def test_run_cli_refuses_parallel_2_in_default_branch_mode(tmp_path: Path):
+    """v4 section 6 Delta C: `--parallel N > 1` is refused unless
+    `worktree_mode = "per_node"` -- `init_repo`'s default config.toml
+    uses `worktree_mode = "branch"` (v4 section 2's own documented
+    default), so this must fail cleanly, not silently degrade to N=1."""
     tmp_path, project, task = _setup_ready_task(tmp_path)
     result = _run(tmp_path, "run", "--parallel", "2", "--path", str(tmp_path))
+    assert result.returncode != 0
+    assert "per_node" in result.stderr
+    # refused before the runner did anything: the ready task is untouched
+    show = json.loads(_run(tmp_path, "show", str(task["id"]), "--path", str(tmp_path)).stdout)
+    assert show["node"]["status"] == "ready"
+
+
+def test_run_cli_allows_parallel_2_in_per_node_worktree_mode(tmp_path: Path):
+    tmp_path, project, task = _setup_ready_task(tmp_path)
+    config_path = tmp_path / ".muvue" / "config.toml"
+    config_path.write_text(config_path.read_text().replace(
+        'worktree_mode = "branch"', 'worktree_mode = "per_node"',
+    ))
+    result = _run(tmp_path, "run", "--parallel", "2", "--path", str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert len(out["processed"]) == 1
+
+
+def test_run_cli_parallel_1_works_in_default_branch_mode(tmp_path: Path):
+    """`--parallel 1` (or omitted) is never restricted -- only N > 1 is
+    (v4 section 6)."""
+    tmp_path, project, task = _setup_ready_task(tmp_path)
+    result = _run(tmp_path, "run", "--parallel", "1", "--path", str(tmp_path))
     assert result.returncode == 0, result.stderr
     out = json.loads(result.stdout)
     assert len(out["processed"]) == 1

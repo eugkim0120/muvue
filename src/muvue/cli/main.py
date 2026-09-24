@@ -846,9 +846,15 @@ def run(
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     db_path = repo_root / ".muvue" / "muvue.db"
-    result = core.runner.run(
-        db_path, config, repo_root, agent_override=agent, parallel=parallel, project_id=project_id,
-    )
+    try:
+        result = core.runner.run(
+            db_path, config, repo_root, agent_override=agent, parallel=parallel, project_id=project_id,
+        )
+    except core.runner.ParallelismRefused as e:
+        # v4 section 6 Delta C: refused before the runner does anything --
+        # core.runner.run raises this before opening a DB connection.
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
     _echo_json(result)
 
 
