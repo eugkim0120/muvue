@@ -168,15 +168,30 @@ def audit() -> None:
 
 
 @app.command()
-def hook(name: str = typer.Argument(...)) -> None:
+def hook(
+    name: str = typer.Argument(...),
+    path: Path = typer.Argument(Path("."), help="Repo root (default: cwd)"),
+) -> None:
     """Entry point invoked by the shim files installed by `init`.
 
-    P0 installs the shim (see repo_init.py) but real hook business logic
-    (parsing trailers, enqueueing hash events, pre-push enforcement) ships
-    in P3/P4; for now this is a cheap, append-only no-op so hooks stay
-    under the 50ms budget from plan section 1.
+    `post-commit` (P3): parses `Muvue-Node:`/`Refs:` trailers out of
+    HEAD's commit message, links the commit to any resolvable node in
+    `node_commits`, and enqueues anchor-hash/staleness no-op signals (see
+    core/hooks.py). Every other hook name (`pre-push`, and the Claude
+    Code adapter's SessionStart/PreToolUse/PreCompact/Stop events routed
+    through `muvue adapter`) is still a cheap no-op -- pre-push strict-
+    mode enforcement is P4 scope (plan section 12 working rule 7: no
+    strict-mode airlock in P3). Stays well under the 50ms budget from
+    plan section 1 either way.
     """
-    return
+    if name != "post-commit":
+        return
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        core.hooks.handle_post_commit_from_git(conn, repo_root)
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------

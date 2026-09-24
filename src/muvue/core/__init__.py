@@ -11,6 +11,7 @@ from . import (
     doctor,
     events,
     gates,
+    hooks,
     migrate,
     nodes,
     projects,
@@ -19,6 +20,7 @@ from . import (
     revisions,
     risk,
     state_machine,
+    trailers,
 )
 from .config import ConfigError, MuvueConfig, load_config
 
@@ -29,6 +31,7 @@ __all__ = [
     "doctor",
     "events",
     "gates",
+    "hooks",
     "migrate",
     "nodes",
     "projects",
@@ -37,6 +40,7 @@ __all__ = [
     "revisions",
     "risk",
     "state_machine",
+    "trailers",
     "ConfigError",
     "MuvueConfig",
     "load_config",
