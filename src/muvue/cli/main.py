@@ -14,6 +14,8 @@ from muvue.core.config import ConfigError
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 adapter_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Vendor adapter config writers (plan section 7).")
 app.add_typer(adapter_app, name="adapter")
+project_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Project-level verbs.")
+app.add_typer(project_app, name="project")
 
 NOT_IMPLEMENTED = "not implemented in P0"
 
@@ -274,9 +276,86 @@ def hook(
         raise typer.Exit(2)
 
 
+@project_app.command("create")
+def project_create(
+    goal: str = typer.Option(..., "--goal"),
+    budget_unit: str = typer.Option("usd", "--budget-unit"),
+    budget_limit: float = typer.Option(0, "--budget-limit"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Create a new project (`core.projects.create_project`). Prints the
+    created project row, including its `id`."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.projects.create_project(
+            conn, goal=goal, budget_unit=budget_unit, budget_limit=budget_limit,
+        )
+    finally:
+        conn.close()
+    _echo_json(dict(result))
+
+
 # --------------------------------------------------------------------------
 # Agent verbs
 # --------------------------------------------------------------------------
+
+
+@app.command()
+def spec(
+    project_id: int = typer.Argument(...),
+    title: str = typer.Option(..., "--title"),
+    body: str = typer.Option(..., "--body"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Gate 1: agent submits a spec node for a project
+    (`core.gates.submit_spec`). Created `pending`; a human then calls
+    `approve spec:ID` before decomposition into tasks."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.gates.submit_spec(conn, project_id=project_id, title=title, body_md=body)
+    finally:
+        conn.close()
+    _echo_json(result)
+
+
+@app.command()
+def decompose(
+    spec_id: int = typer.Argument(..., help="the Gate-1 spec node's id (must be ready)"),
+    title: str = typer.Option(..., "--title"),
+    body: str = typer.Option("", "--body"),
+    criteria: list[str] = typer.Option([], "--criteria", help="repeatable; acceptance criteria"),
+    predicted_touches: list[str] = typer.Option(
+        [], "--predicted-touches", help="repeatable; path globs the task expects to touch"
+    ),
+    criteria_mode: str = typer.Option("manual", "--criteria-mode", help="auto|external|manual"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Gate 2: agent decomposes an approved spec into a task node
+    (`core.nodes.create_node`). Created `pending` under the spec (`parent_id`);
+    a human then calls `approve gate2:PROJECT_ID` to freeze criteria and
+    unblock `start`."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        spec_node = core.nodes.get_node(conn, spec_id)
+        result = core.nodes.create_node(
+            conn,
+            project_id=spec_node["project_id"],
+            kind="task",
+            title=title,
+            parent_id=spec_id,
+            body_md=body,
+            criteria=list(criteria),
+            criteria_mode=criteria_mode,
+            predicted_touches=list(predicted_touches),
+            status="pending",
+            actor="agent",
+        )
+    finally:
+        conn.close()
+    _echo_json(dict(result))
 
 
 @app.command()
@@ -524,13 +603,15 @@ def status(
 @app.command()
 def approve(
     target: str = typer.Argument(
-        ..., help="'spec:ID', 'node:ID', 'gate2:PROJECT_ID', or 'revision:PROJECT_ID:N'"
+        ..., help="'spec:ID', 'node:ID', 'gate2:PROJECT_ID', 'revision:PROJECT_ID:N', "
+        "or 'review:ID'"
     ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human-only approval verb (never exposed over MCP): Gate 1 (spec),
     Gate 2 (a project's whole decomposition, or a single already-decomposed
-    node), or a plan revision's diff-only approval."""
+    node), a plan revision's diff-only approval, or a node sitting in
+    `review` (`core.nodes.approve_review`)."""
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
@@ -547,6 +628,8 @@ def approve(
             result = core.revisions.approve_revision(
                 conn, int(project_id_s), int(n_s), config=config
             )
+        elif kind == "review":
+            result = core.nodes.approve_review(conn, int(rest))
         else:
             typer.echo(f"unknown approve target: {target!r}", err=True)
             raise typer.Exit(1)

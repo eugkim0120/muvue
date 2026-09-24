@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 ## [Unreleased] - dogfood gate (plan section 11, post-v0.1)
 
 ### Added
+- `muvue project create --goal TEXT [--budget-unit UNIT] [--budget-limit
+  N]`, `muvue spec PROJECT_ID --title TEXT --body TEXT` (agent verb,
+  Gate 1), `muvue decompose SPEC_ID --title TEXT [--criteria ...]
+  [--predicted-touches ...] [--criteria-mode auto|external|manual]`
+  (agent verb, Gate 2): the dogfood gate run (plan section 11) failed at
+  ~62% because these had no CLI verb at all -- only raw `core.projects.
+  create_project` / `core.gates.submit_spec` / `core.nodes.create_node`
+  Python calls, forcing anyone using muvue to bypass the CLI for its own
+  planning surface. See `docs/decisions.md` #39.
+- `muvue approve review:ID` (`core.nodes.approve_review`): the API
+  already dispatched this target; the CLI's `approve` command was
+  missing the branch and the `--help` text. Added and covered by a CLI
+  subprocess test.
+- `core.repo_init._update_gitignore` no longer duplicates a `.muvue/*`
+  entry inside its marker block when that exact line already exists as
+  plain (unmarked) text in the repo's `.gitignore`. See
+  `docs/decisions.md` #40. Driven end-to-end through the new `project
+  create`/`spec`/`decompose` CLI verbs as this cycle's dogfood project.
 - CLI `done --run-checks` and API `POST /nodes/{id}/done {"run_checks":
   true}`: opt-in wiring of `core.review.default_run_checks` (P3 decision
   #38's flagged follow-up). Omitted/false preserves risk-tier-only gating

@@ -427,3 +427,56 @@ reading here. Real `decisions` table entries start once dogfooding begins
     a CLI flag, or always-on once the CLI's own working directory is
     guaranteed to be a real checkout rather than a test fixture) is left
     for a follow-up -- flagged in the P3 handoff report.
+
+39. **`project create`/`spec`/`decompose` are thin CLI wrappers, not new
+    `core` logic; `decompose` takes `spec_id` (not `project_id`) and
+    looks up the project via the spec node.** The dogfood gate run (plan
+    section 11) failed at ~62% because the CLI had no verb for project
+    creation, Gate 1 spec submission, or Gate 2 decomposition -- only raw
+    `core.projects.create_project` / `core.gates.submit_spec` /
+    `core.nodes.create_node` calls existed, so a real user of muvue had
+    to bypass the CLI to plan a project at all. `decompose` takes the
+    approved spec's node id as its positional argument (not the project
+    id) because a task's `parent_id` must point at the spec it was
+    decomposed from (`core.nodes.create_node(..., parent_id=spec_id)`) --
+    the CLI reads `project_id` off the spec node itself
+    (`core.nodes.get_node(spec_id)["project_id"]`) rather than asking the
+    caller to pass both ids redundantly and risk them disagreeing.
+    `--criteria`/`--predicted-touches` are repeatable Typer options
+    (`list[str]`) rather than a single comma-separated string (like
+    `propose-revision --node-ids`) because criteria text can itself
+    contain commas, and repeatable flags are the more natural shape for
+    what's usually more than one acceptance criterion per task. Neither
+    `spec` nor `decompose` restricts `actor` (both are agent verbs, no
+    `HumanOnly` check) -- matching `core.gates.submit_spec`'s and
+    `core.nodes.create_node`'s existing signatures, which already default
+    `actor="agent"`/`actor="human"` respectively without enforcement; the
+    human-only boundary in this codebase is enforced at the *approval*
+    verbs (`approve_spec`, `approve_node`, `approve_gate2`), not at
+    creation, and that boundary is unchanged by this fix.
+
+    Also added the CLI's missing `approve review:ID` branch
+    (`core.nodes.approve_review`) -- the API already dispatched this
+    target (`docs/protocol.md`'s Daemon/API section lists it), but the
+    CLI's own `approve` target-parsing had no `review` case and no test
+    exercised it through the CLI. A few lines, in scope for "make the
+    existing CLI surface discoverable," not a new verb.
+
+40. **`.gitignore` marker-block dedup checks exact lines, not
+    substrings.** `core.repo_init._update_gitignore` previously appended
+    all five `.muvue/*` entries inside its marker block unconditionally,
+    even when one was already a plain (unmarked) line in the repo's
+    existing `.gitignore` -- a real repo migrating onto muvue commonly
+    already ignores `.muvue/muvue.db` or similar by hand. Fixed by
+    building `existing_lines` as a `set` of `content.splitlines()` and
+    filtering the candidate entries against it before adding the marker
+    block. Exact-line matching, not substring matching: a substring check
+    (`entry in content`) would have also skipped `.muvue/muvue.db-wal`/
+    `-shm` whenever `.muvue/muvue.db` alone was already present, which is
+    wrong -- those are three distinct gitignore patterns that happen to
+    share a prefix. Chosen as this cycle's dogfood-driven project (see
+    the CLI subprocess trail in the P4-readiness report) specifically
+    because it was small, self-contained, and required no new `core`
+    surface -- a good fit for proving the newly-added `project create` /
+    `spec` / `decompose` CLI verbs end to end on a real (if small) piece
+    of work.

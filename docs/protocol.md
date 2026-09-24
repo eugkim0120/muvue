@@ -354,6 +354,41 @@ the CLI (`done --run-checks`) and API (`POST /nodes/{id}/done
 preserves risk-tier-only gating byte-for-byte -- see `docs/decisions.md`
 #38 and its dogfood-gate follow-up).
 
+## Planning verbs on the CLI (dogfood-gate follow-up)
+
+The P0-P3 planning surface (project creation, Gate 1 spec submission, Gate
+2 task decomposition) previously existed only as raw `core` Python calls
+(`core.projects.create_project`, `core.gates.submit_spec`,
+`core.nodes.create_node`) -- there was no CLI entry point, so anyone
+actually driving muvue had to import `muvue.core` directly instead of
+going through the protocol surface plan section 4 defines. Closed here
+(see `docs/decisions.md` #39):
+
+- `project create --goal TEXT [--budget-unit UNIT] [--budget-limit N]
+  [--path PATH]` (`core.projects.create_project`) -- creates a project,
+  prints the created row (`id`, `goal`, `phase`, `budget_unit`,
+  `budget_limit`).
+- `spec PROJECT_ID --title TEXT --body TEXT [--path PATH]` (agent verb,
+  `core.gates.submit_spec`) -- Gate 1: creates a `pending` spec node. A
+  human then calls `approve spec:ID`.
+- `decompose SPEC_ID --title TEXT [--body TEXT] [--criteria TEXT ...]
+  [--predicted-touches GLOB ...] [--criteria-mode auto|external|manual]
+  [--path PATH]` (agent verb, `core.nodes.create_node`) -- Gate 2: creates
+  a `pending` task node under `spec_id` (`parent_id`, `kind=task`). A
+  human then calls `approve gate2:PROJECT_ID`.
+- `approve review:ID` (`core.nodes.approve_review`) -- the API already
+  dispatched this target (`docs/protocol.md`'s Daemon/API section lists
+  `review` among `approve`'s targets), but the CLI's `approve` command had
+  no `review` branch and no test exercising it through the CLI. Added the
+  branch and documented it in `--help`.
+
+`--criteria` and `--predicted-touches` are repeatable options (Typer
+`list[str]`), matching how `propose-revision --node-ids` already takes a
+comma-separated list elsewhere in this CLI -- repeatable flags were
+chosen instead to match `--criteria`'s natural multi-value shape (a task
+usually has more than one acceptance criterion) without forcing the
+caller to hand-join a comma string.
+
 ## `replan` (P1, confirmed complete in P3)
 
 `replan PARENT_TASK_ID --title TEXT [--body TEXT]`
