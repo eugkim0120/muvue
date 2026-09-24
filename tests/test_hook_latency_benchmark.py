@@ -61,6 +61,7 @@ def _time_one_invocation(repo_root: Path) -> float:
 
 def test_hook_fast_path_cold_latency_p95_p99(repo):
     samples = sorted(_time_one_invocation(repo) for _ in range(ITERATIONS))
+    p50 = _percentile(samples, 0.5)
     p95 = _percentile(samples, 0.95)
     p99 = _percentile(samples, 0.99)
 
@@ -69,9 +70,38 @@ def test_hook_fast_path_cold_latency_p95_p99(repo):
     # rule 9: "report that rather than weakening the criterion."
     print(
         f"\nmuvue._hook cold latency over {ITERATIONS} iterations: "
-        f"min={samples[0]:.1f}ms p50={_percentile(samples, 0.5):.1f}ms "
+        f"min={samples[0]:.1f}ms p50={p50:.1f}ms "
         f"p95={p95:.1f}ms p99={p99:.1f}ms max={samples[-1]:.1f}ms"
     )
 
     assert p95 < 60.0, f"p95={p95:.1f}ms exceeds the 60ms budget (samples={samples})"
     assert p99 < 120.0, f"p99={p99:.1f}ms exceeds the 120ms budget (samples={samples})"
+
+
+def test_gate_median_added_latency_per_agent_tool_call(repo):
+    """v4 section 11's gate row (between P3 and P4): "median added latency
+    per agent tool call < 100 ms; otherwise tighten adapters before P4."
+    This criterion is new in v4 (v3's gate only had the 80%-logged
+    criterion, already passed -- see docs/decisions.md/CHANGELOG for that
+    prior gate-pass record).
+
+    `PreToolUse` fires once per agent tool call (v4 section 4a), and its
+    added cost to that tool call IS the hook's own cold-subprocess
+    execution time -- the same quantity `_time_one_invocation` above
+    measures for p95/p99, just reduced to its median here instead. A
+    fresh, independent sample set (not reusing the p95/p99 test's
+    samples) so this assertion's own report is self-contained per
+    working rule 9 ("verify and report", not "assume an adjacent
+    measurement satisfies a differently-worded criterion")."""
+    samples = sorted(_time_one_invocation(repo) for _ in range(ITERATIONS))
+    median = _percentile(samples, 0.5)
+
+    print(
+        f"\ngate check -- median added latency per agent tool call over "
+        f"{ITERATIONS} cold `muvue._hook` invocations: {median:.1f}ms "
+        f"(bar: < 100ms; samples min={samples[0]:.1f}ms max={samples[-1]:.1f}ms)"
+    )
+
+    assert median < 100.0, (
+        f"median={median:.1f}ms exceeds the gate's 100ms bar (samples={samples})"
+    )
