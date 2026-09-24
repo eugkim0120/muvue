@@ -12,7 +12,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from . import events, risk, state_machine
+from . import events, review, risk, state_machine
 
 DEFAULT_LEASE_MINUTES = 60
 
@@ -270,6 +270,8 @@ def done(
     summary: str | None = None,
     config=None,
     expected_version: int | None = None,
+    run_checks=None,
+    cwd: str = ".",
 ) -> dict:
     """Mark a node done. Idempotent: a node already `done` is a no-op, and a
     duplicate request_id within the 24h dedupe window is a no-op (plan
@@ -326,6 +328,17 @@ def done(
     flagged = risk.is_flagged(conn, reviewing, config)
     conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
     reviewing = get_node(conn, node_id)
+
+    # Light-mode `review` dispatch (plan section 5, P3): auto/external/
+    # manual criteria modes each add their own reason to flag a node to
+    # `review`, on top of core.risk's tier/test-touch flag.
+    dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
+    if dispatch["flag"]:
+        flagged = True
+        events.record_event(
+            conn, project_id=reviewing["project_id"], node_id=node_id, actor="agent",
+            type_=dispatch["event_type"], payload=dispatch["payload"],
+        )
 
     if tier == "low" and not flagged:
         row = _apply_transition(
