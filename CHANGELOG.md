@@ -2,6 +2,89 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §1.2/§3 foundational slice: BEGIN IMMEDIATE transaction discipline, schema deltas, replay-scope redefinition
+
+First phase of the v4 handoff plan migration (branch
+`feat/v4-txn-discipline-schema`). Foundational for the follow-up
+sessions covering the hook fast path, daemon security, per-driver
+budgets, `--parallel` restriction, branch coherence, structure-ref
+commits, and trailer-enforcement relocation — none of which this
+session touches.
+
+### Changed (BREAKING internally, migrated automatically)
+- `SCHEMA_VERSION` 3 -> 4: `projects.closed_at`, `nodes.lease_expiries`
+  (split from `attempts`), `events.actor_evidence`; new `agent_spend`
+  and `actual_touches` tables. `core.migrate.run_migrate` upgrades an
+  existing database in place.
+- `core/db.py`: `connect()` now opens with `isolation_level=None`
+  (autocommit) so transaction boundaries are fully explicit. New
+  `write_txn`/`read_txn` context managers (v4 section 1.2); `write_txn`
+  issues `BEGIN IMMEDIATE`, not sqlite3's default deferred `BEGIN` --
+  "a deferred transaction that reads first and writes later raises
+  `SQLITE_BUSY` immediately on upgrade and is not retried by
+  `busy_timeout`." Nesting-safe via `conn.in_transaction`.
+- **Every mutating function across every `muvue.core` module** now
+  opens its writes inside `write_txn` instead of raw `conn.execute(...)`
+  + scattered `conn.commit()` -- `nodes.py`, `projects.py`, `events.py`,
+  `gates.py`, `asks.py`, `revisions.py`, `close.py`, `merge.py`,
+  `strict.py` (no DB writes of its own -- confirmed, unchanged),
+  `drift.py`, `imports.py`, `runner.py`, `drivers.py` (no DB writes --
+  confirmed, unchanged), `hooks.py`, `trailers.py` (no DB writes --
+  confirmed, unchanged), `daemon.py`. Also fixed one pre-existing
+  working-rule-3 violation found by this sweep: `api/app.py`'s
+  `POST /events/{id}/ack` wrote raw SQL directly; now calls the new
+  `core.events.ack_event`.
+- **Bug fix (v4 section 3/8, changed from v3):** `core.daemon.
+  reconcile_leases` (a daemon-restart/crash lease reclaim) now
+  increments the new `nodes.lease_expiries` counter instead of
+  `nodes.attempts`, and never transitions the node to `failed`. v3
+  conflated the two, so a daemon restart could burn a node's retries
+  toward `max_attempts`. `attempts` now counts *agent* failures only
+  (`core.nodes.fail`, and `core.merge`'s conflict-handling
+  `block(bump_attempts=True)`).
+- `core.rebuild`: replay-scope redefined per v4 section 3. `rebuild`'s
+  equality check now covers only the *replayable projection*
+  (existence, status, parent/dep edges, criteria+hash, owner,
+  attempts, lease_expiries, notes, commits, approvals) and explicitly
+  excludes `lease_until` (wall-clock) and `last_retrieved_at`
+  (read-side telemetry) from the comparison -- not merely tolerates
+  them matching by chance. v3's P0 acceptance ("replay equals live
+  DB") was false as written; this is the honest, narrower claim.
+  `docs/protocol.md` updated to match.
+
+### Added
+- `core/spend.py`: `agent_spend` (one row per project/driver/unit)
+  read/write helper (`record_spend`/`get_spend`/`project_spend`),
+  wired into `core.runner._record_usage` alongside `node_usage`.
+  Budget *enforcement* is explicitly out of scope this session (see
+  docs/decisions.md #72).
+- `core.hooks.handle_post_commit` now also writes `actual_touches`
+  (one row per node/file path from a linked commit) -- raw data for
+  the future prediction-vs-actual drift KPI.
+- `events.actor_evidence` threaded through every `muvue.core` mutating
+  call site: `"tty"` (CLI default), `"mcp"` (`mcp_server.py`),
+  `"dashboard_token"` (`api/app.py`), `"subprocess"` (`core.runner`,
+  `core.daemon`'s background loop), `"hook"` (`core.hooks`/
+  `core.drift`'s hook-driven paths). Purely additive/observational
+  this phase -- nothing enforces on it yet (see docs/decisions.md #73/74).
+- `tests/test_concurrency.py`: real-thread concurrency test proving
+  `write_txn`'s `BEGIN IMMEDIATE` gives zero `SQLITE_BUSY` escapes and
+  no lost updates under N concurrent writers, plus a contrast test
+  demonstrating the pre-fix deferred-transaction upgrade race really
+  does raise `SQLITE_BUSY` immediately.
+- `tests/test_schema_v4.py`, `tests/test_spend.py`: new schema/
+  migration and `core.spend` coverage.
+- `tests/test_rebuild_property.py`: two new tests for the replay-scope
+  redefinition (a genuine replayable-field discrepancy is still
+  caught; a non-replayable `lease_until` difference is no longer
+  flagged).
+- `tests/test_daemon.py`: `attempts`/`lease_expiries` split regression
+  tests (a lease reclaim, run repeatedly past what would have been
+  `max_attempts`, never reaches `failed`; a genuine `nodes.fail` still
+  does).
+- `docs/threat-model.md`: placeholder stub (v4 working rule 6) --
+  real content belongs to the separate §8a daemon-security session.
+
 ## [Unreleased] - real GitHub API wiring for `import`/`merge --pr --create`
 
 Post-P8 remediation: fills the network-free stubs P6/P8 documented as

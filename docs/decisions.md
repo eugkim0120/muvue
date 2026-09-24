@@ -894,3 +894,157 @@ reading here. Real `decisions` table entries start once dogfooding begins
     call shapes (`issue view`/`pr view` vs `pr create`) are structurally
     identical subprocess wrappers, so the live issue-fetch verification
     already covers the mechanism.
+
+70. **`read_txn` is a real (deferred) transaction, not a no-op, but it
+    is never the thing a P0 acceptance criterion depends on.** v4
+    section 1.2 requires exactly two context managers, `read_txn`/
+    `write_txn`, and calls only `write_txn` load-bearing. The simplest
+    reading consistent with "exposes exactly two" (not "one, plus a
+    documented no-op") is that `read_txn` should actually do something:
+    it opens `BEGIN DEFERRED` so a caller running several `SELECT`s
+    gets one consistent snapshot instead of each statement picking up
+    whatever the latest committed state happens to be mid-read. It is
+    nesting-safe the same way `write_txn` is (checks `conn.in_transaction`
+    first). No existing call site in this codebase needed converting to
+    use it this session -- multi-statement reads that already existed
+    (e.g. `core.queries.brief_node`) don't currently require snapshot
+    isolation across their several `SELECT`s, so `read_txn` ships as
+    infrastructure for future callers, not retrofitted everywhere reads
+    happen. See `core/db.py`.
+
+71. **`write_txn` nests by checking `conn.in_transaction`, not via an
+    explicit depth counter or `SAVEPOINT`.** `muvue.core` functions
+    routinely call other `muvue.core` functions that are themselves
+    wrapped in `write_txn` (`core.nodes.fail` calls `core.nodes.
+    add_note`, `core.gates.approve_gate2` calls `core.gates.approve_node`
+    in a loop, `core.close.close_project` calls `core.projects.
+    set_phase`, etc.). Requiring every one of those ~50 mutating
+    functions to only ever be called at the "top" of a transaction would
+    have meant either duplicating every helper's logic inline at each
+    call site (bad) or building a `SAVEPOINT`-based nested-transaction
+    scheme (over-engineered for what's actually needed here: the plan
+    only asks for one write lock acquired up front, not partial
+    rollback of an inner helper while keeping the outer transaction
+    alive). `conn.in_transaction` is sqlite3's own already-correct
+    answer to "is a transaction currently open on this connection" --
+    the outermost `write_txn` call opens `BEGIN IMMEDIATE` and owns
+    commit/rollback; every nested call just becomes a no-op passthrough
+    that shares the same transaction. This is why "smallest correct
+    change" wins here: no new abstraction, just the right check.
+
+72. **`agent_spend`'s unit is decided by `[agents.<x>.cost_model]`, via
+    a small `_COST_MODEL_TO_SPEND` lookup in `core/runner.py`, not by a
+    new `[agents.<x>.budget]` config section.** v4 section 2 introduces
+    `[agents.<x>.budget]` (`unit`/`limit`) as the thing a *future*
+    budget-enforcement phase validates and checks against -- this
+    session's scope is explicitly narrower: "just add the table, a
+    minimal core.spend ... helper ... with a test," not the config
+    section or the enforcement logic. Rather than adding an unused
+    config field now (speculative, since nothing reads it yet), spend
+    accrual derives its unit directly from the one config value that
+    already exists and is already meaningful (`cost_model`):
+    `usd -> cost`, `tokens -> in_tokens + out_tokens`, `quota ->
+    requests`. When the budget-enforcement phase lands, it can add
+    `[agents.<x>.budget]` and validate `budget.unit` against this same
+    mapping (`doctor` erroring if they don't line up, per v4 section 2's
+    own "`doctor` errors if `budget.unit` is not producible by that
+    driver's `cost_model`" rule) without this table or its accrual path
+    changing at all.
+
+73. **`actor_evidence` defaults are assigned per calling *layer*, not
+    threaded as a live TTY/parent-process detection at each call site.**
+    v4 section 3/4 explicitly defers real detection ("walk the parent
+    process chain for a known agent CLI") to future dashboard-surfaced
+    work and asks only that this session "thread a correctly-defaulted
+    `actor_evidence` string through every record_event call site."
+    Simplest reading: every `muvue.core` function that can mutate state
+    and is reachable from more than one layer takes an `actor_evidence`
+    parameter defaulting to `"tty"` (CLI is the dominant/original
+    caller for all of them, and CLI invocation is, almost by
+    definition, "some real or simulated terminal" -- full TTY detection
+    is exactly the deferred work), and the three other entry-point
+    layers override it explicitly at their own call sites:
+    `mcp_server.py` passes `"mcp"` for every one of its 7 tool handlers,
+    `api/app.py` passes `"dashboard_token"` for every one of its ~14
+    mutating endpoints (the daemon's session-token auth is the actual
+    evidence for *every* API-originated write, human-verb or
+    agent-verb alike -- see decision below), `core/runner.py` passes
+    `"subprocess"` at each of its ~9 call sites into `core.nodes`/
+    `core.spend`, and git-hook-driven paths (`core/hooks.py`,
+    `core.drift`'s hook-invoked functions) hardcode `"hook"` inline
+    (never parameterized -- they are *only* ever reached from a hook
+    shim, so there is nothing to override). `core.daemon.
+    reconcile_leases`/`process_queue` (the daemon's own background
+    loop, not triggered by any of the four request-shaped layers) also
+    use `"subprocess"` -- the closest of the five named values to "a
+    non-interactive background process," logged here since the plan's
+    own four examples (tty/dashboard_token/mcp/hook) don't cover a
+    daemon's unprompted background action explicitly.
+
+74. **Every API-layer mutation gets `actor_evidence="dashboard_token"`,
+    including the API's own agent-verb endpoints (`start`/`done`/`fail`/
+    `ask`/etc.), not just its human-verb ones.** `actor_evidence`
+    describes *how the actor was determined* -- i.e., what process
+    talked to `muvue.core` and on what authority -- not the verb's
+    protocol-level role (agent vs. human). Every mutating endpoint in
+    `api/app.py` is reached the same way: an HTTP request to the daemon,
+    which (per v4 section 8a, a separate follow-up session's scope, but
+    already true of the pre-existing session-token mechanism this
+    session didn't touch) is gated by the same token regardless of
+    which verb it calls. So the evidence is uniform across the whole
+    file: "a request that reached the daemon," i.e. `dashboard_token`,
+    is the honest answer for all of it -- distinguishing "agent-verb
+    API call" from "human-verb API call" evidence-wise would invent a
+    finer-grained taxonomy the plan's five named values don't have.
+
+75. **`core.events.ack_event` added; `api/app.py`'s `POST
+    /events/{id}/ack` now calls it instead of issuing `UPDATE events SET
+    acked_at = ...` inline.** Found during this session's mutating-SQL
+    audit (working rule 3: "If you find yourself writing SQL elsewhere,
+    stop"): this one pre-existing endpoint (shipped in P2, before this
+    rule existed in v3) wrote directly against `events` from
+    `api/app.py`, bypassing `muvue.core` entirely -- the one gap the
+    codebase-wide `write_txn` sweep this session did surfaced. Fixed in
+    place as part of "go slowly and completely, don't leave any
+    mutating path on the old pattern," since the whole point of this
+    session is exactly this invariant.
+
+76. **`docs/threat-model.md` ships as a placeholder stub this session,
+    not a real threat model.** v4 working rule 6 lists it as a newly
+    required file, but the actual content (daemon attack surface,
+    binding/origin/CSRF/token analysis) is squarely v4 section 8a's
+    scope, explicitly a separate follow-up session per this session's
+    own task boundary ("do NOT touch ... daemon security"). Writing a
+    real threat model now would mean either doing 8a's analysis early
+    (out of scope, and premature -- 8a's own session should own it) or
+    writing something that reads like a threat model but isn't one
+    (worse than an honest placeholder). The stub says exactly this and
+    points at section 8a.
+
+77. **`rebuild.diff_state`'s replayable-projection filtering applies to
+    the *live* snapshot too, not only the replayed one.** `core.rebuild.
+    live_state` still snapshots every column of `nodes`/`notes` (full
+    row shape, used elsewhere e.g. by `core.history`'s replay target);
+    `_diff_tables` is what narrows the comparison to the replayable
+    subset (v4 section 3), so it must project *both* `live_row` and
+    `replayed_row` down to the same `cols` before comparing -- projecting
+    only one side would make every comparison spuriously mismatch (a
+    live row has more keys than a replayable-only projection) or
+    spuriously match (comparing a full dict against a partial one is
+    never equal, which would make the "genuine bug" test fail for the
+    wrong reason). Fixed as part of the section 3 redefinition, verified
+    by both new tests in `tests/test_rebuild_property.py`.
+
+78. **`agent_spend`'s replay coverage is out of scope this session.** v4
+    section 3 lists "spend" among the replayable projection's
+    categories, but wiring `agent_spend` into `core.rebuild`'s
+    diff/equality check (a new `_REPLAYABLE_AGENT_SPEND_COLUMNS` entry,
+    `rebuild_state_from_events` folding `spend.recorded` events, etc.)
+    is real, non-trivial work this session's explicit scope boundary
+    (section 2: "just add the table ... with a test" -- not the
+    budget-check logic, not general rebuild wiring) doesn't ask for.
+    `agent_spend` rows are written through `write_txn` and logged as
+    `spend.recorded` events (so a *future* rebuild-integration phase has
+    the event stream it needs already in place), but `rebuild.diff_state`
+    does not yet compare them. Flagged prominently for whichever
+    follow-up session extends replay coverage to `agent_spend`.
