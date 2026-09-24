@@ -1454,7 +1454,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     the worst-case driver, not an average or a sum across incompatible
     units.
 
-100. **v4 §9 structure commits: kept the git plumbing local to
+101. **v4 §9 structure commits: kept the git plumbing local to
     `core/close.py` (`_write_structure_commit`, `_maybe_fast_forward_main`),
     not factored into `core.gitutil` or a new module.** `core.gitutil`
     is explicitly scoped to the branch-coherence check's single `git
@@ -1465,18 +1465,16 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `_write_structure_commit` is close.py's only caller. `current_branch`
     itself *is* reused from `core.gitutil` inside `_maybe_fast_forward_main`,
     per the prompt's explicit instruction to reuse it if suitable.
-    (Coordination note: this session started numbering at #100, the
-    next free number as of branch time off `main`'s #99. A parallel v4
-    §7 session (trailer-enforcement relocation) shares this same
-    checkout -- no worktree isolation was available for either session
-    -- and also landed entries starting at #100 on its own branch,
-    `feat/v4-trailer-enforcement-relocation`; a stray `git stash pop`
-    during a branch mixup even carried this exact entry range onto that
-    branch's own commit 56ad367 as a byproduct. Both branches' #100+
-    entries will need renumbering when they merge; left to whoever
-    reconciles the two.)
+    (Coordination note: this session and a parallel v4 §7 session
+    (trailer-enforcement relocation) shared the same checkout -- no
+    worktree isolation was available for either -- and both
+    independently numbered their new entries starting at #100. A stray
+    `git stash pop` during a branch mixup also briefly carried this
+    session's entries onto the §7 branch's commit 56ad367, which was
+    cleaned up there. Renumbered to #101-#107 (after §7's own #100) at
+    merge time.)
 
-101. **`git merge --ff-only`, not a raw `git update-ref refs/heads/main
+102. **`git merge --ff-only`, not a raw `git update-ref refs/heads/main
     <sha>`, for the fast-forward.** `main` is the branch `repo_root`'s
     own `HEAD` is actually checked out on in the safe case (branch ==
     `main`, clean tree) -- a raw ref move advances the branch pointer
@@ -1489,7 +1487,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     isn't possible -- which doubles as the ancestry check, so no separate
     `git merge-base --is-ancestor` call was added.
 
-102. **Parent/base-tree selection for a `muvue/structure` commit: the
+103. **Parent/base-tree selection for a `muvue/structure` commit: the
     ref's own current tip if it exists, else the repo's current `HEAD`.**
     v4 §9 says exactly this ("using... whatever `muvue/structure`'s
     current tree looks like... or the repo's current HEAD"), read
@@ -1503,7 +1501,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     when `main` picked up commits of its own since the last close that
     never made it into `muvue/structure`'s lineage.
 
-103. **Single-writer safety on `refs/heads/muvue/structure` itself: a
+104. **Single-writer safety on `refs/heads/muvue/structure` itself: a
     compare-and-swap `git update-ref refs/heads/muvue/structure <new>
     <old>`** (old = the exact value `_write_structure_commit` read
     moments earlier, or `""` if the ref didn't exist yet), not a bare
@@ -1516,7 +1514,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     loudly (`CloseError`) instead of silently clobbering the first
     commit off the ref.
 
-104. **No `gh pr create` wiring in this session; the required minimum
+105. **No `gh pr create` wiring in this session; the required minimum
     (an unacked `inbox.structure_update_ready` event) is what ships.**
     v4 §9 offers PR-or-inbox and the P6 prompt explicitly marks the PR
     path optional ("this is optional/your call"). `core.github.
@@ -1530,7 +1528,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `close --pr`, matching how `merge --pr` already treats PR creation as
     an opt-in flag rather than automatic (`core/merge.py`, `cli/main.py`).
 
-105. **Test-fixture change: `tests/test_close.py`'s `repo` fixture now
+106. **Test-fixture change: `tests/test_close.py`'s `repo` fixture now
     commits a `.muvue/.gitignore` (ignoring `muvue.db`/`muvue.db-*`/
     `queue.jsonl`) in the repo's *initial* commit, instead of creating a
     bare untracked `.muvue/` directory after that commit.** Needed once
@@ -1545,7 +1543,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     file layout's tracked/untracked split for `components.json`/
     `decisions.json`.
 
-106. **`tests/test_close.py`'s new working-tree-untouched assertions
+107. **`tests/test_close.py`'s new working-tree-untouched assertions
     filter `.muvue/history/` out of the `git status --porcelain` they
     compare.** `close_project`'s event-history export (`core/history.py`,
     P6, unrelated to this session's scope) unconditionally writes

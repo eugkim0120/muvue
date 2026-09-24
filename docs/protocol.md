@@ -870,13 +870,13 @@ version of them into the user's repo changed. `close_project` then calls
 `core.close._maybe_fast_forward_main`, which fast-forwards `main` (`git
 merge --ff-only refs/heads/muvue/structure` — chosen over a raw `git
 update-ref` because it updates HEAD/index/working-tree together and
-doubles as the ancestry check, decision #101) **only when** `main` is
+doubles as the ancestry check, decision #102) **only when** `main` is
 `repo_root`'s checked-out branch *and* `git status --porcelain` is
 empty. Otherwise `main` and the working tree are left completely
 untouched and an unacked `inbox.structure_update_ready` event is
 recorded (`ref`, `sha`, `reason`, `message`) pointing at
 `refs/heads/muvue/structure` for the user to merge or PR by hand — no
-`gh pr create` wiring was added in this session (decision #104). Sets
+`gh pr create` wiring was added in this session (decision #105). Sets
 `projects.phase = 'closed'`, and exports the project's event history
 (below). Also `POST /projects/{id}/close` (session-token-gated).
 

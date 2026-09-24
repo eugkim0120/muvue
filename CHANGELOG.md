@@ -24,10 +24,10 @@ index instead of committing to a checked-out `main`."
   --stdin` -- `repo_root`'s real `.git/index` and working tree are never
   read or written by this step. The resulting commit lands on
   `refs/heads/muvue/structure` via a compare-and-swap `git update-ref`
-  (decision #103).
+  (decision #104).
 - **`main` is fast-forwarded only when it's genuinely safe.**
   `core.close._maybe_fast_forward_main` fast-forwards `main` (`git merge
-  --ff-only refs/heads/muvue/structure`, decision #101) only when
+  --ff-only refs/heads/muvue/structure`, decision #102) only when
   `repo_root`'s checked-out branch is literally `main` *and* `git status
   --porcelain` is empty. In every other case (a different branch checked
   out, or `main` but dirty), `main` and the working tree are left
@@ -57,7 +57,7 @@ index instead of committing to a checked-out `main`."
   is kept and still passes unchanged in outcome (its fixture repo is on
   `main` with a clean tree, so it hits the fast-forward path), with
   updated assertions/docstring making the mechanism change explicit
-  (decisions #105, #106 cover the fixture changes this required).
+  (decisions #106, #107 cover the fixture changes this required).
 
 ## [Unreleased] - v4 §2/§6/P5: per-driver budgets, --parallel restriction, rate-limit wait timeout
 
