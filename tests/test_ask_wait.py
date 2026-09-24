@@ -1,5 +1,8 @@
 """P1 acceptance #4: unanswered `ask` blocks unless `--default-ok`."""
 
+import json
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -7,6 +10,7 @@ import pytest
 
 from muvue.core import asks, db as core_db, gates, nodes, projects
 from muvue.core.config import MuvueConfig
+from muvue.core.repo_init import init_repo
 
 
 @pytest.fixture
@@ -104,3 +108,42 @@ def test_answered_ask_never_blocks_even_past_timeout(conn, in_progress_task, con
     assert result["status"] == "answered"
     assert result["answer"] == "no, keep it"
     assert nodes.get_node(conn, in_progress_task["id"])["status"] == "in_progress"
+
+
+# -- `answer` human verb (docs/protocol.md gap: no entry point existed) ----
+
+
+def test_answer_rejects_non_human_actor(conn, in_progress_task):
+    q = asks.ask(conn, in_progress_task["id"], question="q?", default="yes")["question"]
+    with pytest.raises(asks.HumanOnly):
+        asks.answer(conn, q["id"], text="no", actor="agent")
+    assert asks.get_question(conn, q["id"])["status"] == "open"
+
+
+def test_answer_via_real_cli(conn, in_progress_task, tmp_path: Path):
+    """Proves `muvue answer` (human verb, never MCP -- plan section 4)
+    reaches core.asks.answer through the real CLI, not just core."""
+    repo_root = tmp_path
+    init_repo(repo_root)
+    db_path = repo_root / ".muvue" / "muvue.db"
+    repo_conn = core_db.connect(db_path)
+    project = projects.create_project(repo_conn, goal="answer cli test")
+    task = nodes.create_node(
+        repo_conn, project_id=project["id"], kind="task", title="t",
+        criteria=["works"], criteria_mode="auto", predicted_touches=["a.py"],
+        status="pending",
+    )
+    gates.approve_gate2(repo_conn, project["id"], config=MuvueConfig())
+    nodes.start(repo_conn, task["id"], owner="agent-1")
+    q = asks.ask(repo_conn, task["id"], question="ok?", default="yes")["question"]
+    repo_conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "muvue", "answer", str(q["id"]), "--text", "yes, proceed",
+         "--path", str(repo_root)],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["question"]["status"] == "answered"
+    assert payload["question"]["answer"] == "yes, proceed"

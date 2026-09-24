@@ -556,6 +556,24 @@ def approve(
 
 
 @app.command()
+def answer(
+    question_id: int = typer.Argument(...),
+    text: str = typer.Option(..., "--text"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human-only: answer an open question created by `ask` (never exposed
+    over MCP; plan section 4). Calls core.asks.answer, which records the
+    answer as a `feedback` note on the question's node."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.asks.answer(conn, question_id, text=text)
+    finally:
+        conn.close()
+    _echo_json(result)
+
+
+@app.command()
 def reject() -> None:
     typer.echo(NOT_IMPLEMENTED)
 

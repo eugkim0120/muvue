@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muvue.api import create_app
-from muvue.core import daemon, db as core_db, gates, nodes, projects
+from muvue.core import asks, daemon, db as core_db, gates, nodes, projects
 from muvue.core.config import ChecksConfig, MuvueConfig
 from muvue.core.repo_init import init_repo
 
@@ -237,6 +237,28 @@ def test_pause_refuses_start_then_resume_allows_it(client, repo, conn, ready_tas
     assert r.json()["phase"] == "executing"
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"})
     assert r.status_code == 200
+
+
+# -- `answer` human verb (docs/protocol.md gap: no entry point existed) ----
+
+
+def test_answer_endpoint_requires_session_token(client, ready_task, conn):
+    q = asks.ask(conn, ready_task["task"]["id"], question="q?", default="yes")["question"]
+    r = client.post(f"/questions/{q['id']}/answer", json={"text": "no"})
+    assert r.status_code == 401
+
+
+def test_answer_endpoint_with_valid_token_answers_the_question(client, repo, ready_task, conn):
+    q = asks.ask(conn, ready_task["task"]["id"], question="q?", default="yes")["question"]
+    token = daemon.create_session(repo)
+    r = client.post(
+        f"/questions/{q['id']}/answer",
+        json={"text": "yes, proceed"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["question"]["status"] == "answered"
+    assert r.json()["question"]["answer"] == "yes, proceed"
 
 
 def test_comment_endpoint_adds_feedback_note(client, ready_task, conn):

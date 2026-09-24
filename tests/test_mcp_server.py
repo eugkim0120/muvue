@@ -13,7 +13,10 @@ from muvue.core.config import MuvueConfig
 from muvue.core.repo_init import init_repo
 from muvue.mcp_server import TOOLS, handle_request
 
-HUMAN_VERBS = {"approve", "reject", "ack", "merge", "close", "pause", "resume", "handoff", "import"}
+HUMAN_VERBS = {
+    "approve", "reject", "ack", "merge", "close", "pause", "resume", "handoff",
+    "import", "answer",
+}
 
 
 @pytest.fixture

@@ -27,6 +27,22 @@ class AskError(Exception):
     pass
 
 
+class HumanOnly(AskError):
+    """Raised when a non-human actor calls `answer` (plan section 4:
+    `answer` is a human verb, never exposed over MCP). Same per-module
+    duplication pattern as `core.gates.HumanOnly` / `core.nodes.HumanOnly`
+    -- see docs/decisions.md #35 for why a shared exceptions module isn't
+    worth it for one call site each."""
+
+
+def _require_human(actor: str) -> None:
+    if actor != "human":
+        raise HumanOnly(
+            f"only a human may answer a question (actor was {actor!r}); "
+            "answer is never exposed over MCP (plan section 4)"
+        )
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -79,6 +95,7 @@ def ask(
 def answer(
     conn: sqlite3.Connection, question_id: int, *, text: str, actor: str = "human"
 ) -> dict:
+    _require_human(actor)
     q = get_question(conn, question_id)
     if q["status"] != "open":
         return {"noop": True, "question": dict(q)}

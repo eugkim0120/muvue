@@ -109,10 +109,14 @@ Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
   (`core.asks.ask`) creates an open row in `questions` with a proposed
   default answer; recorded as a `question.asked` event. Dedupes on
   `--request-id` like the other agent verbs.
-- A human answers with `core.asks.answer` (not yet a CLI verb in P1 — no
-  human-verb entry point was specified for it; the `dashboard`'s inbox
-  ships P2). The answer becomes a `feedback` note on the node
-  (`nodes.add_note`).
+- A human answers with `muvue answer QUESTION_ID --text TEXT` (CLI) or
+  `POST /questions/{id}/answer` (API, session-token gated like the other
+  human verbs) — both call `core.asks.answer` (human verb, never MCP;
+  `core.asks.HumanOnly` refuses a non-human `actor`, same pattern as
+  `core.gates.HumanOnly`/`core.nodes.HumanOnly` — see the dogfood-gate
+  follow-up in `docs/decisions.md`). Originally shipped with no entry
+  point at all in P1/P2; this closed that gap. The answer becomes a
+  `feedback` note on the node (`nodes.add_note`).
 - `wait QUESTION_ID [--timeout SECONDS] [--default-ok]`
   (CLI polls `core.asks.wait` every second up to `--timeout` wall-clock
   seconds, or once if omitted). `core.asks.wait` itself takes an

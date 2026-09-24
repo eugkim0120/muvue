@@ -395,6 +395,20 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 _handle_core_error(e)
         return result
 
+    @app.post("/questions/{question_id}/answer")
+    def answer_question(
+        question_id: int,
+        text: str = Body(..., embed=True),
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        _require_session(authorization)
+        with _conn() as conn:
+            try:
+                result = core.asks.answer(conn, question_id, text=text)
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
     @app.post("/questions/{question_id}/wait")
     def wait_question(question_id: int, default_ok: bool = Body(default=False, embed=True)) -> dict:
         with _conn() as conn:

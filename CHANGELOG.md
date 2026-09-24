@@ -10,6 +10,14 @@ All notable changes to this project are documented here.
   #38's flagged follow-up). Omitted/false preserves risk-tier-only gating
   exactly as before; set, a failing `config.checks.test` always flags the
   node to `review` even at low risk tier.
+- `muvue answer QUESTION_ID --text TEXT` (CLI) and `POST
+  /questions/{id}/answer` (API, session-token gated): `core.asks.answer`
+  had zero entry point since P1 (`docs/protocol.md` flagged it explicitly
+  — no human-verb surface was ever specified for it, and the dashboard
+  inbox that P2 was meant to ship it through never wired an answer
+  action). `core.asks.HumanOnly` now also refuses a non-`human` actor
+  calling `answer` directly against core, matching `core.gates.HumanOnly`/
+  `core.nodes.HumanOnly`. `answer` is correctly never exposed over MCP.
 
 ## [Unreleased] - P3 (ships v0.1, light mode)
 
