@@ -2,6 +2,105 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §8a / P2a: daemon security hardening
+
+Branch `feat/v4-daemon-security`, built on the §1.2/§3 txn-discipline
+foundation and the §4a hook fast path below. Implements v4 §8a in full
+("the largest defect in v3... the reason v4 exists") and P2a's
+acceptance criteria from §11/§10. This is a security-motivated rewrite
+of the daemon's auth model, not an additive patch.
+
+### Added
+- `core.daemon.SessionManager`: in-memory-only 256-bit session token
+  (`secrets.token_urlsafe(32)`), minted fresh on every `SessionManager()`
+  construction (i.e. every `serve` restart -- control 6), with an idle
+  timeout (`verify_and_touch`, default 8h since last successful use --
+  control 6, see docs/decisions.md #85 for the "since last request, not
+  since issuance" reading). Replaces the old file-backed
+  `create_session`/`verify_session` pair entirely; **v3's
+  `~/.muvue/session` file-writing is deleted** (control 5).
+- `api/app.py::SecurityMiddleware` (a `@app.middleware("http")`
+  function): validates `Host` (control 2, DNS rebinding), validates
+  `Origin` before auth (control 3, CSRF -- including non-preflighted
+  simple-request CSRF), enforces `Content-Type: application/json` on
+  any mutating request that carries a body (control 4), and strips any
+  `Access-Control-*` response header as a belt-and-suspenders
+  invariant (this app never adds CORS middleware to begin with).
+- `POST /auth/exchange`: exchanges the one-time URL-fragment token for
+  an `HttpOnly`, `SameSite=Strict` `muvue_session` cookie (control 5).
+  `static/index.html`'s dashboard JS now performs this exchange
+  automatically on load (reading `location.hash`, then scrubbing it via
+  `history.replaceState`) instead of persisting a pasted token to
+  `localStorage` (removed -- an XSS-readable, disk-backed token store).
+- `cli/main.py::serve`: `--i-know-this-is-exposed` flag gating any
+  non-loopback `--host` (control 1); prints the dashboard URL with the
+  one-time `#fragment` instead of a bare token line; binds and
+  `listen()`s its own socket before printing the readiness line and
+  hands the fd to uvicorn (fixes a pre-existing race between that line
+  and the socket actually accepting connections -- see
+  docs/decisions.md #87).
+- **Every mutating API endpoint, agent verbs included, is now
+  session-token-gated** (control 4) -- a deliberate widening from
+  P2/P2b's "human verbs only" design; see docs/decisions.md #84 for why
+  `start` (the plan's own named RCE surface) could not stay
+  unauthenticated.
+- `core.doctor.run_security_probes` + `run_doctor`'s new
+  `skip_security_probes`/`daemon_port` params (control 7): live HTTP
+  probes (bad `Host`, bad `Origin`, form-encoded POST, missing/
+  query-string token) against a running daemon, spinning up a
+  throwaway one against an isolated scratch repo when nothing is
+  already listening (never against the repo being checked -- see
+  docs/decisions.md #87). `muvue doctor` gained `--skip-security-probes`
+  and `--daemon-port`.
+- `docs/threat-model.md`: real content (was a placeholder stub) --
+  in-scope attack surface, all seven controls and what each buys vs.
+  doesn't, and the explicitly out-of-scope same-user/ptrace/MCP-
+  prompt-injection risks, per v4 §13.
+- `tests/test_daemon_security.py`: the five required §10 tests (bad
+  `Host`, bad `Origin`, form-encoded POST, token-in-query-string,
+  missing token), each run against a real `muvue serve` subprocess,
+  each asserting both a `403` and that the targeted node's DB state is
+  provably unchanged.
+- `tests/test_doctor_security_probes.py`: control 7 coverage, including
+  "a security probe never mutates the repo it's checking" and the
+  already-running-vs-throwaway-daemon branches.
+- `tests/test_no_token_touches_disk.py`: a full serve -> exchange ->
+  approve flow, asserting no new file appears under `.muvue/` and
+  nothing session/token-shaped exists on disk afterward.
+
+### Changed
+- `api/app.py`: every route handler that used to accept
+  `authorization: str | None = Header(...)` now takes `request: Request`
+  and calls a shared `_require_session(request)` (checks the
+  `Authorization` header, then the `muvue_session` cookie); rejection
+  status changed from `401` to `403` throughout, matching v4 §10's
+  acceptance text verbatim ("each must 403").
+- `tests/test_api.py`, `tests/test_api_p6.py`, `tests/test_api_p7.py`:
+  `TestClient` now uses `base_url="http://127.0.0.1"` (httpx's
+  `http://testserver` default fails the new `Host` check); tests that
+  exercise previously-unauthenticated agent-verb endpoints now pass a
+  valid `Authorization` header, pulled from the app's own
+  `app.state.session.token` rather than the removed
+  `daemon.create_session(repo)`.
+- `tests/test_daemon.py`: session-token tests rewritten against
+  `SessionManager` directly (round-trip, wrong token, idle timeout,
+  rotation-on-restart) -- the old file-based
+  `create_session`/`verify_session` round-trip/expiry/rejection tests
+  no longer apply to a mechanism that no longer touches disk.
+- `tests/test_doctor_queue_depth.py`, `tests/test_cli_drain_callback.py`,
+  `tests/test_adapters.py`, `tests/test_strict_mode.py`: pass
+  `skip_security_probes=True`/`--skip-security-probes` to stay decoupled
+  from the new (and, for a throwaway daemon, ~1-2s slower) live-probe
+  pass, which is orthogonal to what those tests assert.
+
+### Removed
+- `core.daemon.create_session`, `core.daemon.verify_session`,
+  `core.daemon.session_path`, `SESSION_RELPATH` -- the entire
+  file-backed session mechanism. `.muvue/session` is still listed in
+  the `.gitignore` block `repo_init` writes (harmless, defensive; kept
+  so a pre-v4 install's leftover file is still ignored) but nothing in
+  this codebase writes to that path anymore.
+
 ## [Unreleased] - v4 §4a / P0.5: hook fast path
 
 Branch `feat/v4-p0.5-hook-fast-path`, built on the §1.2/§3 foundational

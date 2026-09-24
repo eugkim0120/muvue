@@ -1146,3 +1146,119 @@ reading here. Real `decisions` table entries start once dogfooding begins
     into that structure instead; flagged here so that session knows
     exactly where today's version lives and why it needs its own
     connection.
+
+84. **Session-token gating (v4 §8a) was extended to every mutating
+    endpoint, including the agent verbs that P2/P2b deliberately left
+    unauthenticated.** The original P2 design gated only what it called
+    "human verbs" (`approve`/`reject`/`ack`/`merge`/`close`/`pause`/
+    `resume`/`handoff`/`import`), on the documented theory that agent
+    verbs are "CLI-equivalent" and this is a single local daemon with
+    no multi-machine sync. v4 §8a's own framing makes that theory
+    untenable for one specific endpoint: `POST /nodes/{id}/start?
+    agent=X` launches an arbitrary configured agent CLI subprocess, and
+    the plan text names it explicitly as "a remote-code-execution
+    surface reachable from any web page the user has open" -- it does
+    not carve out an exception for the fact that `start` is nominally
+    an "agent verb". Leaving `start` (and, by the same logic, `done`/
+    `fail`/`ask`/`wait`/`replan`/`comment`/`propose-revision`, which
+    all mutate state a same-origin attacker has no business mutating)
+    unauthenticated while gating `pause` would have been an arbitrary,
+    indefensible line. Simplest reading consistent with the plan's own
+    stated threat (working rule 7): gate everything that mutates.
+    `GET` endpoints remain unauthenticated -- v4 §8a's own acceptance
+    text ("Daemon security tests pass... each must 403 before any side
+    effect") is scoped to mutation, and the daemon is still a
+    single-user, no-multi-machine-sync tool where read access to your
+    own project's state was never the threat model.
+
+85. **Idle timeout (control 6) is read as "since the last request", not
+    "since token issuance"**, per the plan text's own wording: "idle
+    sessions expire after 8h" -- "idle" has one natural reading, and
+    the plan's working rule 12 explicitly asked for this call to be
+    made and documented rather than defaulting to whichever is easier
+    to implement. `SessionManager.verify_and_touch` therefore resets
+    `last_activity` to "now" on every *successful* verification, so a
+    session used at least once every 8h never expires for the
+    lifetime of the `serve` process; one left untouched for 8h+ does.
+    An absolute (issuance-based) expiry was considered and rejected: it
+    would force a human actively working through a long review session
+    to re-exchange the fragment mid-task for no security benefit over
+    the idle model, since the token still rotates completely on every
+    `serve` restart (control 6's other half) regardless of which idle
+    policy is chosen.
+
+86. **The session token's cookie value equals the token itself, not a
+    separately-derived session identifier.** v4 §8a control 5's text
+    describes minting one 256-bit token and exchanging it for a cookie,
+    without specifying whether the cookie carries that same value or a
+    second, server-generated session id mapped to it. Simplest reading
+    (working rule 7): reuse the one value. A second indirection would
+    only matter if the token and the cookie needed independent
+    lifecycles (e.g. multiple concurrent cookie-holding sessions off
+    one token) -- v4 explicitly does *not* want that ("one human
+    session is meaningful per repo at a time", plan §2's session-token
+    framing, unchanged from v3 on this point) -- so a second layer of
+    indirection would be unrequested complexity (working rule 8). Both
+    the `Authorization: Bearer <token>` path (non-browser clients: CLI,
+    VS Code extension, curl, `doctor`'s probes) and the cookie path
+    (the dashboard, after exchange) therefore authenticate against the
+    exact same `SessionManager.verify_and_touch` check.
+
+    A related, purely mechanical decision landed in the same commit:
+    `create_app`'s daemon-security `Host`/`Origin` middleware needs to
+    know the daemon's own bound port to validate against, but FastAPI's
+    `TestClient` defaults to `Host: testserver` with no real port at
+    all. Rather than special-case tests, `create_app(..., port=None)`
+    (the default) validates only the loopback *hostname* portion of
+    `Host`/`Origin` and skips exact-port matching; a real `muvue serve`
+    process always passes its actual `port`, so the exact-port check is
+    live in production and is covered against a real daemon in
+    tests/test_daemon_security.py. Existing `TestClient`-based tests
+    were updated to use `base_url="http://127.0.0.1"` (matching the
+    hostname check) rather than the httpx default `http://testserver`.
+
+87. **`doctor`'s live security probes (control 7) spin up a throwaway
+    daemon against an isolated scratch repo, never `repo_root` itself,
+    when nothing is already listening -- and this runs by default,
+    not opt-in.** The plan text explicitly leaves the "skip vs. spin up
+    a throwaway daemon" choice to be made and documented (working rule
+    12/§8a control 7: "decide sensibly... and document your choice as
+    a decision"). A skip-only `doctor` would silently stop verifying
+    this phase's own controls on precisely the machine state that's
+    most common right after `muvue init` -- no daemon running yet --
+    which defeats the point of "fails loudly" in the plan text.
+    Spinning the throwaway daemon up against `repo_root` itself was
+    tried first and rejected after it broke existing queue-drain tests
+    (tests/test_cli_drain_callback.py,
+    tests/test_doctor_queue_depth.py): `muvue serve` runs
+    `reconcile_on_start` (lease reconcile + queue drain) at startup by
+    design (plan §8), which is exactly correct for a *real* daemon but
+    is an unacceptable side effect for a read-only diagnostic command
+    to have on the repo it's diagnosing. The throwaway daemon now
+    serves a fresh `init_repo`'d `tempfile.TemporaryDirectory()`
+    instead, fully decoupled from `repo_root`'s actual DB/queue state;
+    controls 2/3/4 don't depend on which repo the probed daemon happens
+    to be serving, only on its HTTP-layer behavior. Existing
+    queue-drain-focused tests were updated to pass
+    `skip_security_probes=True`/`--skip-security-probes` to stay
+    decoupled from this orthogonal new behavior; a dedicated
+    tests/test_doctor_security_probes.py covers control 7 itself,
+    including the "no side effect on the real repo" property and the
+    already-running-daemon branch (probed directly, no throwaway spun
+    up). `doctor`'s CLI also gained `--daemon-port` so a non-default
+    `serve --port` can be probed correctly.
+
+    A second, unrelated bug surfaced while building the throwaway-
+    daemon integration tests for this phase: `cli.main.serve` printed
+    its "listening on" readiness line *before* calling
+    `uvicorn.run(host=, port=)`, which only actually binds and starts
+    accepting connections some time after that call is made --
+    `tests/test_serve_integration.py`'s pre-existing pattern of reading
+    that stdout line as a readiness signal was therefore racy (it
+    happened not to be hit before this phase's tests, which spawn many
+    daemons back-to-back). Fixed by binding a real listening socket
+    (`socket.bind()` + `socket.listen()`) *before* printing the line,
+    then handing its file descriptor to `uvicorn.run(fd=...)` --
+    "readiness line printed" and "socket accepts connections" are now
+    the same moment for every caller of `muvue serve`, not just this
+    phase's own tests.

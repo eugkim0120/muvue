@@ -205,52 +205,87 @@ a full node-row snapshot; these two are metadata-only payloads
 replay (`payload["id"]` KeyError). This is exactly the two-times-fixed
 replay pitfall the P2 prompt warned about.
 
-### Daemon and API (P2)
+### Daemon and API (P2, security hardened in P2a per plan v4 section 8a)
 
-`muvue serve [PATH] [--host] [--port]` (`core.daemon` + `muvue.api`):
-one daemon per repo, holds no in-memory state (plan section 1). On
-startup, before opening the socket: `core.daemon.reconcile_on_start`
-reverts every `in_progress` node whose `lease_until` is already past back
-to `ready` (`attempts + 1`; `failed` if that exhausts `max_attempts`),
-then drains the event queue (`events.acked_at`; P2's consumer is a
-documented no-op -- anchor-hashing/staleness are P3+ structure-layer
-work). A fresh session token is minted (`core.daemon.create_session`,
-written to `<repo>/.muvue/session`) and printed once.
+`muvue serve [PATH] [--host] [--port] [--i-know-this-is-exposed]`
+(`core.daemon` + `muvue.api`): one daemon per repo, holds no
+*reconstructible* in-memory state (plan section 1) -- with one
+deliberate, documented exception, the session token itself (below).
+**Control 1 (bind):** `--host` other than `127.0.0.1`/`localhost`
+refuses to start unless `--i-know-this-is-exposed` is also passed, in
+which case it starts with a loud warning. On startup, before opening
+the socket: `core.daemon.reconcile_on_start` reverts every
+`in_progress` node whose `lease_until` is already past back to `ready`
+(`lease_expiries + 1`, `attempts` untouched -- v4 section 3/5, not P2's
+original `attempts + 1`/`failed` behavior), then drains the event queue
+(`events.acked_at`). A fresh 256-bit session token is minted in memory
+(`core.daemon.SessionManager`, **never written to disk** -- v3's
+`~/.muvue/session` file is gone entirely) and the dashboard URL is
+printed once with it as a one-time `#fragment`
+(`http://host:port/#t=<token>`).
 
-`muvue.api.create_app(repo_root, config)` mirrors the CLI verbs 1:1
-(FastAPI, OpenAPI at `/openapi.json` for free):
+`muvue.api.create_app(repo_root, config, *, session=None, port=None)`
+mirrors the CLI verbs 1:1 (FastAPI, OpenAPI at `/openapi.json` for
+free). Every request first passes `SecurityMiddleware` (runs before any
+route handler):
 
-- Ops/read (unauthenticated): `GET /healthz`, `GET /` (dashboard),
-  `GET /events/stream` (SSE, one connection held for the stream's
-  lifetime polling `PRAGMA data_version` -- see `docs/decisions.md` for
-  why a fresh connection per poll does not work), `GET /inbox`,
-  `GET /kpis`, `GET /projects`, `GET /projects/{id}`,
-  `GET /projects/{id}/revisions`, `GET /events`, `GET /nodes`,
-  `GET /nodes/{id}`, `GET /nodes/{id}/diff` (stub: committed files only,
-  no real diff capture until git integration ships), `GET
-  /nodes/{id}/logs` (stub: NDJSON of the node's own event history, no
-  live agent process until P5's runner).
-- Agent verbs (unauthenticated -- "agent verbs stay CLI/local", the API
-  exposes them for the dashboard/automation but doesn't gate them):
-  `POST /nodes/{id}/start[?agent=X]` (the `agent` query param is recorded
-  via a `node.agent_requested` event; nothing is spawned -- P5 scope),
-  `POST /nodes/{id}/done`, `POST /nodes/{id}/fail`, `POST
-  /nodes/{id}/ask`, `POST /questions/{id}/wait`, `POST
-  /nodes/{id}/replan`, `POST /projects/{id}/propose-revision`, `POST
-  /nodes/{id}/comment` (spec inline comments, reuses `feedback` notes).
-- Human verbs (plan section 4's "never exposed over MCP" -- the API does
-  expose them, gated instead by the session token per the P2 prompt):
-  `POST /nodes/{id}/approve` (`target ∈ {spec, node, gate2, revision,
-  review}`), `POST /nodes/{id}/reject`, `POST /events/{id}/ack`, `POST
-  /projects/{id}/pause`, `POST /projects/{id}/resume`, `POST
-  /projects/{id}/close`. Stubs: `POST /nodes/{id}/merge`, `POST
-  /nodes/{id}/handoff`, `POST /import`. All require `Authorization:
-  Bearer <token>` verified against `<repo>/.muvue/session`; missing or
-  invalid -> `401`.
+- **Control 2:** `Host` header must resolve to `127.0.0.1`/`localhost`
+  (and, when `port` is known, match it exactly) or the request 403s.
+- **Control 3:** an `Origin` header present but not matching the
+  daemon's own origin 403s, *before* any auth check. No
+  `Access-Control-*` header is ever emitted by this app (no CORS
+  middleware exists here at all).
+- **Control 4 (content-type half):** a mutating request (`POST`/`PUT`/
+  `PATCH`/`DELETE`) that carries a body must use `Content-Type:
+  application/json` or 403s (a body-less mutation, e.g. `POST
+  /projects/{id}/pause`, is exempt from this specific check -- it has
+  nothing to smuggle via a form submission -- but still needs a valid
+  token).
+
+Routes, by auth requirement:
+
+- **Read-only (unauthenticated):** `GET /healthz`, `GET /` (dashboard),
+  `GET /events/stream` (SSE), `GET /inbox`, `GET /kpis`, `GET
+  /projects`, `GET /projects/{id}`, `GET /projects/{id}/revisions`,
+  `GET /events`, `GET /nodes`, `GET /nodes/{id}`, `GET
+  /nodes/{id}/diff`, `GET /nodes/{id}/logs`.
+- **Every mutating endpoint, agent verbs included (control 4, token
+  half; see docs/decisions.md #84 for why agent verbs are gated now,
+  a change from P2/P2b):** `POST /nodes/{id}/start[?agent=X]`, `POST
+  /nodes/{id}/done`, `POST /nodes/{id}/fail`, `POST /nodes/{id}/ask`,
+  `POST /questions/{id}/answer`, `POST /questions/{id}/wait`, `POST
+  /nodes/{id}/replan`, `POST /nodes/{id}/comment`, `POST
+  /projects/{id}/propose-revision`, `POST /nodes/{id}/approve`, `POST
+  /nodes/{id}/reject`, `POST /events/{id}/ack`, `POST
+  /nodes/{id}/merge`, `POST /nodes/{id}/handoff`, `POST /import`, `GET
+  /projects/{id}/close-preview` (read-only but still gated, matching
+  P2/P2b's original choice), `POST /projects/{id}/close`, `POST
+  /projects/{id}/pause`, `POST /projects/{id}/resume`. All require a
+  valid session token via `Authorization: Bearer <token>` **or** the
+  `muvue_session` cookie -- never a query string; missing or invalid
+  -> `403` (not `401` -- v4 section 10's acceptance criteria for the
+  daemon-security tests specify `403` uniformly across all five
+  rejection cases).
+- **`POST /auth/exchange`** (control 5, unauthenticated by necessity --
+  it's how a session is established): body `{"token": "<fragment
+  value>"}`; on a match, sets an `HttpOnly`, `SameSite=Strict`
+  `muvue_session` cookie carrying that same token value (see
+  docs/decisions.md #86 for why the cookie reuses the token value
+  rather than a second derived session id) and returns `200`; on a
+  mismatch, `403` and no cookie.
 
 `pause`/`resume` are real: `projects.set_phase` to `paused`/`executing`.
-`nodes.start` now refuses while `project.phase` is `planning` **or**
+`nodes.start` refuses while `project.phase` is `planning` **or**
 `paused` (plan section 5 "Emergency stop... refuses start").
+
+`muvue doctor` gained `--skip-security-probes` and `--daemon-port`
+(control 7): by default it issues live HTTP probes (bad `Host`, bad
+`Origin`, form-encoded POST, missing/query-string token) against a
+running daemon -- an already-running one on `--daemon-port` (default
+8765) if reachable, otherwise a throwaway one spun up against an
+isolated scratch repo (never `repo_root` -- see docs/decisions.md #87)
+and torn down afterward -- and fails loudly (`report.issues`) if any
+control doesn't reject as expected.
 
 ## Leases and optimistic version (P3, ships v0.1)
 
@@ -266,8 +301,10 @@ written to `<repo>/.muvue/session`) and printed once.
   (`--version` on the CLI): a mismatch raises `VersionMismatch` (a
   `NodeError` subclass) instead of overwriting a human's edit made
   between `start` and `done`. Omitting it preserves prior behavior.
-- Expired leases still revert to `ready` (`attempts + 1`) only on
-  `core.daemon.reconcile_on_start` (P2) -- unchanged.
+- Expired leases still revert to `ready` (`lease_expiries + 1`,
+  `attempts` untouched -- v4 section 3/5) only on
+  `core.daemon.reconcile_on_start` (P2) -- unchanged since that
+  session's own txn-discipline work.
 
 ## Hook fast path (P0.5, added after P3-P7 landed)
 
