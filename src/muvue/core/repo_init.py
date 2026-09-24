@@ -21,6 +21,37 @@ from .config import DEFAULT_CONFIG_TOML
 HOOK_NAMES = ["post-commit", "pre-push"]
 MANIFEST_NAME = ".init_manifest.json"
 
+
+def _muvue_src_dir() -> Path:
+    """Directory that must be on `sys.path` for `import muvue._hook` to
+    resolve when the interpreter is invoked with `-S` (v4 section 4a):
+    `-S` skips `site`'s own sys.path manipulation (`.pth`/editable-
+    install processing), which is normally what makes an installed
+    `muvue` importable at all, not just what makes Typer/Pydantic slow
+    to import -- discovered empirically while wiring this phase (see
+    docs/decisions.md). `muvue.__file__`'s grandparent directory covers
+    both layouts: a `src/`-layout editable install (this repo's own dev
+    venv: `<repo>/src/muvue/__init__.py` -> `<repo>/src`) and a normal
+    site-packages install (`<site-packages>/muvue/__init__.py` ->
+    `<site-packages>`)."""
+    import muvue as _muvue_pkg
+
+    return Path(_muvue_pkg.__file__).resolve().parent.parent
+
+
+def hook_fast_path_command(name: str) -> str:
+    """v4 section 4a (P0.5 hook fast path): the shared command string
+    every hook shim invokes -- git hooks here, and the Claude Code
+    adapter's `.claude/settings.json` entries in `core/adapters.py`
+    (single source of truth so both shim writers stay in sync).
+    `PYTHONPATH=<src dir>` prefixed so `-S` (skip `site` init, part of
+    the latency win -- see `src/muvue/_hook.py`) doesn't also break
+    finding the `muvue` package itself; PYTHONPATH is still honored
+    with `-S` (it's applied before `site` would run, not by it)."""
+    py = shlex.quote(sys.executable)
+    pythonpath = shlex.quote(str(_muvue_src_dir()))
+    return f"PYTHONPATH={pythonpath} {py} -S -m muvue._hook {name}"
+
 # `init --sandbox` (plan section 5: "`init --sandbox` emits a compose file
 # for container isolation (later)"). Scaffold only -- muvue does not build,
 # start, or manage this stack; strict mode's real isolation today is the
@@ -67,8 +98,11 @@ def _install_hook_shim(path: Path, name: str, backups: dict[str, str | None]) ->
         backups[key] = path.read_text() if path.exists() else None
 
     begin, end = _hook_marker(name)
-    py = shlex.quote(sys.executable)
-    body = f"{py} -m muvue hook {name}\n"
+    # v4 section 4a (P0.5 hook fast path): every hook shim invokes the
+    # stdlib-only `muvue._hook` entry point, not the full Typer CLI
+    # (`-m muvue hook`, ~150-400ms cold) -- `-S` skips `site` init too.
+    # See src/muvue/_hook.py and docs/decisions.md.
+    body = f"{hook_fast_path_command(name)}\n"
     block = f"{begin}\n{body}{end}\n"
 
     if path.exists():
@@ -101,6 +135,9 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         ".muvue/muvue.db-shm",
         ".muvue/session",
         ".muvue/current_node",
+        # v4 section 2 file layout: "gitignored; hook fast-path spool
+        # (append-only)" -- muvue._hook's queue, see src/muvue/_hook.py.
+        ".muvue/queue.jsonl",
     ]
     # A repo may already ignore one of these as a plain (unmarked) line --
     # don't duplicate it inside the marker block (dogfood-gate follow-up,

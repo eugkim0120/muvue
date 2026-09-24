@@ -22,9 +22,9 @@ are), never raw SQL, consistent with working rule 3.
 from __future__ import annotations
 
 import json
-import shlex
-import sys
 from pathlib import Path
+
+from .repo_init import hook_fast_path_command
 
 CURRENT_NODE_RELPATH = ".muvue/current_node"
 
@@ -70,9 +70,12 @@ _CLAUDE_HOOK_EVENTS = {
 }
 
 
-def _hook_command() -> str:
-    py = shlex.quote(sys.executable)
-    return f"{py} -m muvue hook"
+def _is_muvue_hook_command(command: str) -> bool:
+    """Recognizes both the current fast-path command and the pre-v4
+    full-CLI command, so re-running `adapter install claude-code`
+    against a settings.json written before this session upgrades it in
+    place instead of leaving a stale duplicate entry."""
+    return "muvue._hook" in command or "-m muvue hook" in command
 
 
 def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
@@ -88,9 +91,13 @@ def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
     settings: dict = json.loads(path.read_text()) if path.exists() else {}
     hooks = settings.setdefault("hooks", {})
 
-    base_cmd = _hook_command()
     for claude_event, muvue_name in _CLAUDE_HOOK_EVENTS.items():
-        command = f"{base_cmd} {muvue_name}"
+        # v4 section 4a (P0.5): the Claude Code adapter's hook commands
+        # invoke the stdlib-only fast path too (`PreToolUse` fires per
+        # tool call -- the whole reason this entry point exists), not
+        # the full Typer CLI. Shared with the git-hook shim writer so
+        # both stay in sync -- see core.repo_init.hook_fast_path_command.
+        command = hook_fast_path_command(muvue_name)
         entry_list = hooks.get(claude_event, [])
         # Idempotent + non-destructive: drop any previous muvue entry for
         # this event (identified by the command containing "-m muvue
@@ -98,7 +105,7 @@ def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
         entry_list = [
             group
             for group in entry_list
-            if not any("-m muvue hook" in h.get("command", "") for h in group.get("hooks", []))
+            if not any(_is_muvue_hook_command(h.get("command", "")) for h in group.get("hooks", []))
         ]
         group: dict = {"hooks": [{"type": "command", "command": command}]}
         if claude_event == "PreToolUse":

@@ -38,7 +38,10 @@ def test_init_installs_absolute_path_hook_shims(git_fixture_repo: Path):
         path = husky_dir / name if husky_dir.is_dir() else repo / ".git" / "hooks" / name
         content = path.read_text()
         assert sys.executable in content
-        assert "-m muvue hook" in content
+        # v4 section 4a (P0.5): shims invoke the stdlib-only fast path,
+        # not the full Typer CLI -- see src/muvue/_hook.py.
+        assert "-S -m muvue._hook" in content
+        assert name in content
     repo_init.uninit_repo(repo)
 
 

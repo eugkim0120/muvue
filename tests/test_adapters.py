@@ -25,7 +25,9 @@ def test_install_claude_code_writes_all_four_hooks(tmp_path: Path):
     for event in ("SessionStart", "PreToolUse", "PreCompact", "Stop"):
         assert event in hooks
         commands = [h["command"] for g in hooks[event] for h in g["hooks"]]
-        assert any("-m muvue hook" in c for c in commands)
+        # v4 section 4a (P0.5): the Claude Code adapter's hook commands
+        # invoke the stdlib-only fast path -- see src/muvue/_hook.py.
+        assert any("-S -m muvue._hook" in c for c in commands)
     assert settings["_muvue"]["protocol_version"] == 1
 
 

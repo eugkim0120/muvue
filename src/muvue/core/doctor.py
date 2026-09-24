@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,15 +13,26 @@ from .config import ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim
 
 
+QUEUE_DEPTH_WARN_THRESHOLD = 1000
+
+
 @dataclass
 class DoctorReport:
     ok: bool = True
     issues: list[str] = field(default_factory=list)
     repaired: list[str] = field(default_factory=list)
+    # v4 section 4a: "`doctor` reports queue depth and warns above
+    # 1000." Non-fatal -- unlike `issues`, a warning here never flips
+    # `ok` to False; a deep-but-still-draining queue isn't a broken
+    # install.
+    warnings: list[str] = field(default_factory=list)
 
     def fail(self, msg: str) -> None:
         self.ok = False
         self.issues.append(msg)
+
+    def warn(self, msg: str) -> None:
+        self.warnings.append(msg)
 
 
 def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
@@ -54,6 +66,19 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
         finally:
             conn.close()
 
+    # v4 section 4a: hook fast-path queue depth (`.muvue/queue.jsonl`,
+    # `muvue._hook`'s spool -- see src/muvue/_hook.py). A deep queue
+    # means drain (absent-daemon CLI-callback drain, or the daemon's
+    # continuous loop) is falling behind the spool rate.
+    queue_path = muvue_dir / "queue.jsonl"
+    if queue_path.exists():
+        depth = sum(1 for line in queue_path.read_text().splitlines() if line.strip())
+        if depth > QUEUE_DEPTH_WARN_THRESHOLD:
+            report.warn(
+                f"hook queue depth is {depth} (> {QUEUE_DEPTH_WARN_THRESHOLD}) at "
+                f"{queue_path}; drain is falling behind"
+            )
+
     husky_dir = repo_root / ".husky"
     for name in HOOK_NAMES:
         path = husky_dir / name if husky_dir.is_dir() else repo_root / ".git" / "hooks" / name
@@ -66,11 +91,27 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
                 report.fail(f"hook shim missing or not installed: {path} (--repair to fix)")
         else:
             content = path.read_text()
-            # Verify the shim uses an absolute interpreter path (plan section 5).
+            # Verify the shim uses an absolute interpreter path (plan
+            # section 5). v4 section 4a: current shims are
+            # `PYTHONPATH=<dir> <python> -S -m muvue._hook NAME` (the
+            # `PYTHONPATH=` prefix is required for `-S` to still find
+            # the `muvue` package -- see core.repo_init.
+            # hook_fast_path_command) -- the interpreter is the token
+            # right before `-S`, not simply the first token anymore.
+            # `-m muvue hook` (no `PYTHONPATH=` prefix, first token IS
+            # the interpreter) recognized too for a pre-v4 shim not yet
+            # re-`init`/`doctor --repair`ed.
             for line in content.splitlines():
-                if line.strip().startswith("/") and " -m muvue hook " in line:
-                    interp = line.split()[0].strip("'\"")
-                    if not Path(interp).is_absolute():
+                if "-m muvue._hook " in line or " -m muvue hook " in line:
+                    tokens = shlex.split(line)
+                    interp = None
+                    if "-S" in tokens:
+                        idx = tokens.index("-S")
+                        if idx > 0:
+                            interp = tokens[idx - 1]
+                    elif tokens and tokens[0].startswith("/"):
+                        interp = tokens[0]
+                    if interp is None or not Path(interp).is_absolute():
                         report.fail(f"hook shim in {path} does not use an absolute path")
                     break
 

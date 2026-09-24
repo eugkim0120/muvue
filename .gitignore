@@ -13,4 +13,5 @@ __pycache__/
 .muvue/session
 .muvue/current_node
 .muvue/.init_manifest.json
+.muvue/queue.jsonl
 # <<< muvue <<<
