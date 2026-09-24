@@ -22,12 +22,21 @@ _NODE_COLUMNS = [
 ]
 
 
-def rebuild_state(conn: sqlite3.Connection) -> dict:
-    """Replay `events` and return {"projects": {id: row_dict}, "nodes": {...}}."""
+def rebuild_state_from_events(events: list[dict]) -> dict:
+    """Fold an arbitrary in-order sequence of event dicts (each with at
+    least `type`/`payload`, `payload` a JSON string as stored in the
+    `events` table) into {"projects": {...}, "nodes": {...}}. Shared by
+    `rebuild_state` (the full live `events` table) and
+    `core.history.rebuild_from_archive` (P6: a single project's exported
+    `.jsonl.gz` archive) -- both are just different sources of the same
+    event-dict shape, so the fold logic only needs to exist once (plan
+    working rule: single write/replay path)."""
     projects: dict[int, dict] = {}
     nodes: dict[int, dict] = {}
-    for ev in conn.execute("SELECT * FROM events ORDER BY id ASC"):
-        payload = json.loads(ev["payload"])
+    for ev in events:
+        payload = ev["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
         etype = ev["type"]
         if etype.startswith("project."):
             projects[payload["id"]] = payload
@@ -41,8 +50,15 @@ def rebuild_state(conn: sqlite3.Connection) -> dict:
             # that nests its snapshot under "node" replays correctly too.
             snapshot = payload["node"] if "node" in payload and "id" not in payload else payload
             nodes[snapshot["id"]] = snapshot
-        # note.* events don't affect projects/nodes replay state.
+        # note.*/component.*/decision.*/external_ref.* events don't
+        # affect projects/nodes replay state.
     return {"projects": projects, "nodes": nodes}
+
+
+def rebuild_state(conn: sqlite3.Connection) -> dict:
+    """Replay `events` and return {"projects": {id: row_dict}, "nodes": {...}}."""
+    events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id ASC")]
+    return rebuild_state_from_events(events)
 
 
 def live_state(conn: sqlite3.Connection) -> dict:
@@ -57,11 +73,7 @@ def live_state(conn: sqlite3.Connection) -> dict:
     return {"projects": projects, "nodes": nodes}
 
 
-def diff_state(conn: sqlite3.Connection) -> dict:
-    """Return {} if replay-from-events equals the live DB, else a dict of
-    mismatches for debugging."""
-    replayed = rebuild_state(conn)
-    live = live_state(conn)
+def _diff_tables(replayed: dict, live: dict) -> dict:
     mismatches: dict = {}
     for table in ("projects", "nodes"):
         cols = _PROJECT_COLUMNS if table == "projects" else _NODE_COLUMNS
@@ -77,3 +89,34 @@ def diff_state(conn: sqlite3.Connection) -> dict:
                     "replayed": replayed_row,
                 }
     return mismatches
+
+
+def diff_state(conn: sqlite3.Connection) -> dict:
+    """Return {} if replay-from-events equals the live DB, else a dict of
+    mismatches for debugging."""
+    replayed = rebuild_state(conn)
+    live = live_state(conn)
+    return _diff_tables(replayed, live)
+
+
+def diff_project_from_archive(conn: sqlite3.Connection, project_id: int, archive_path) -> dict:
+    """P6 acceptance #3, project-scoped variant of `diff_state`: return {}
+    if replaying *only* `project_id`'s exported `.jsonl.gz` archive
+    (`core.history.export_project`) reproduces that project's row and its
+    nodes exactly as they are live right now, else a dict of mismatches.
+    Live state is filtered down to this one project so a project that
+    happens to share an id-space with others in the same DB doesn't
+    trip an unrelated "id_mismatch"."""
+    from . import history as history_mod  # local import: avoids a cycle (history -> rebuild)
+
+    replayed = history_mod.rebuild_from_archive(archive_path)
+    live_full = live_state(conn)
+    live = {
+        "projects": {
+            id_: row for id_, row in live_full["projects"].items() if id_ == project_id
+        },
+        "nodes": {
+            id_: row for id_, row in live_full["nodes"].items() if row["project_id"] == project_id
+        },
+    }
+    return _diff_tables(replayed, live)

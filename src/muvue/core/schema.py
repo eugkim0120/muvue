@@ -4,7 +4,7 @@ Process graph tables per plan section 3, plus empty structure-graph tables
 (created now, no logic yet, needed from P6 onward).
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -181,6 +181,49 @@ CREATE TABLE IF NOT EXISTS decisions (
     superseded_by INTEGER REFERENCES decisions(id),
     source_node_id INTEGER REFERENCES nodes(id)
 );
+
+-- P6: `brief`'s structure-aware ranking (plan section 4) searches these
+-- two FTS5 tables in addition to notes_fts, now that `close` (core/close.py)
+-- actually populates `decisions`/`components` (see docs/decisions.md).
+CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+    title, context, choice, content='decisions', content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
+    INSERT INTO decisions_fts(rowid, title, context, choice)
+        VALUES (new.id, new.title, new.context, new.choice);
+END;
+
+CREATE TRIGGER IF NOT EXISTS decisions_ad AFTER DELETE ON decisions BEGIN
+    INSERT INTO decisions_fts(decisions_fts, rowid, title, context, choice)
+        VALUES ('delete', old.id, old.title, old.context, old.choice);
+END;
+
+CREATE TRIGGER IF NOT EXISTS decisions_au AFTER UPDATE ON decisions BEGIN
+    INSERT INTO decisions_fts(decisions_fts, rowid, title, context, choice)
+        VALUES ('delete', old.id, old.title, old.context, old.choice);
+    INSERT INTO decisions_fts(rowid, title, context, choice)
+        VALUES (new.id, new.title, new.context, new.choice);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS components_fts USING fts5(
+    name, purpose, content='components', content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS components_ai AFTER INSERT ON components BEGIN
+    INSERT INTO components_fts(rowid, name, purpose) VALUES (new.id, new.name, new.purpose);
+END;
+
+CREATE TRIGGER IF NOT EXISTS components_ad AFTER DELETE ON components BEGIN
+    INSERT INTO components_fts(components_fts, rowid, name, purpose)
+        VALUES ('delete', old.id, old.name, old.purpose);
+END;
+
+CREATE TRIGGER IF NOT EXISTS components_au AFTER UPDATE ON components BEGIN
+    INSERT INTO components_fts(components_fts, rowid, name, purpose)
+        VALUES ('delete', old.id, old.name, old.purpose);
+    INSERT INTO components_fts(rowid, name, purpose) VALUES (new.id, new.name, new.purpose);
+END;
 
 CREATE TABLE IF NOT EXISTS invariants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
