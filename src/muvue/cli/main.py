@@ -267,18 +267,50 @@ def fail(
 
 
 @app.command()
-def brief() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def brief(
+    node_id: int = typer.Argument(...),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """What an agent needs to start work on a node (plan section 4):
+    the node, its lessons/pinned notes, and any open question."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.queries.brief_node(conn, node_id)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
-def show() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def show(
+    node_id: int = typer.Argument(...),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.queries.show_node(conn, node_id)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
-def note() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def note(
+    node_id: int = typer.Argument(...),
+    text: str = typer.Option(..., "--text"),
+    kind: str = typer.Option("discovery", "--kind"),
+    pinned: bool = typer.Option(False, "--pinned"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.nodes.add_note(conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
@@ -375,8 +407,17 @@ def propose_revision(
 
 
 @app.command()
-def status() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def status(
+    project_id: int = typer.Option(None, "--project-id"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.queries.status_summary(conn, project_id)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 # --------------------------------------------------------------------------
