@@ -21,6 +21,25 @@ class NodeError(Exception):
     pass
 
 
+class HumanOnly(NodeError):
+    """Raised when a non-human actor calls a human verb (plan section 4:
+    "Never exposed over MCP"). `core.gates` has its own identically-named
+    exception for the same rule applied to gate/revision approvals; this
+    one covers review approve/reject, which live in `nodes.py` to avoid a
+    `nodes` <-> `gates` import cycle. Enforced in `muvue.core` itself
+    (P3 acceptance #4: an adversarial agent script calling a human verb
+    directly against core must be refused by core, not just by the
+    CLI/API/MCP surface)."""
+
+
+def _require_human(actor: str) -> None:
+    if actor != "human":
+        raise HumanOnly(
+            f"only a human may perform this action (actor was {actor!r}); "
+            "human verbs are never exposed over MCP (plan section 4)"
+        )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -356,9 +375,12 @@ def approve_review(conn: sqlite3.Connection, node_id: int, *, actor: str = "huma
     (`actor`, default "human"). Same pattern `core.gates.approve_spec` /
     `approve_node` already use via `nodes.ready`.
 
+    Refuses (`HumanOnly`) if `actor != "human"`.
+
     Logs a `metric.rubber_stamp` event when the elapsed time since the
     node entered `review` is under 10 seconds (plan section 5: "Time-to-
     approve under 10s is logged as a rubber-stamp signal")."""
+    _require_human(actor)
     node = get_node(conn, node_id)
     if node["status"] != "review":
         raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
@@ -400,7 +422,9 @@ def reject_review(
 ) -> dict:
     """Human rejection of a node in `review` (plan section 4 human verb
     `reject --feedback`): review -> in_progress, feedback recorded as a
-    `feedback` note so the agent picks it up on its next `brief`/`show`."""
+    `feedback` note so the agent picks it up on its next `brief`/`show`.
+    Refuses (`HumanOnly`) if `actor != "human"`."""
+    _require_human(actor)
     node = get_node(conn, node_id)
     if node["status"] != "review":
         raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")

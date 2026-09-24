@@ -19,6 +19,22 @@ class GateError(Exception):
     pass
 
 
+class HumanOnly(GateError):
+    """Raised when a non-human actor calls a human verb (plan section 4:
+    "Never exposed over MCP" for approve/reject/gate2/revision approval).
+    Enforced here, in `muvue.core`, not only at the CLI/API/MCP surface --
+    P3 acceptance #4 requires an adversarial agent script that calls a
+    human verb directly against core to be refused by core itself."""
+
+
+def _require_human(actor: str) -> None:
+    if actor != "human":
+        raise HumanOnly(
+            f"only a human may perform this action (actor was {actor!r}); "
+            "human verbs are never exposed over MCP (plan section 4)"
+        )
+
+
 def _hash_criteria(criteria_json: str) -> str:
     return hashlib.sha256(criteria_json.encode()).hexdigest()
 
@@ -46,8 +62,9 @@ def submit_spec(
 
 
 def approve_spec(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> dict:
-    """Gate 1 approval: pending -> ready. Human-only in practice (never
-    exposed over MCP), enforced by the CLI layer, not here."""
+    """Gate 1 approval: pending -> ready. Human-only, enforced here (see
+    `_require_human`/`HumanOnly`) -- not only at the CLI layer."""
+    _require_human(actor)
     node = nodes_mod.get_node(conn, node_id)
     if node["kind"] != "spec":
         raise GateError(f"node {node_id} is kind={node['kind']!r}, not a spec")
@@ -96,6 +113,7 @@ def approve_node(
     `pending -> ready`. Used for the initial Gate 2 approval of a task node
     and for re-approval after a post-freeze criteria edit (both are the
     same operation: freeze the current criteria, unblock `start`)."""
+    _require_human(actor)
     node = nodes_mod.get_node(conn, node_id)
     if node["status"] != "pending":
         raise GateError(
@@ -135,6 +153,7 @@ def approve_gate2(
     freezing each one's criteria and running the granularity lint. On
     success flips `project.phase` from `planning` to `executing`, which is
     what `start` gates on (P1 acceptance #1)."""
+    _require_human(actor)
     pending = conn.execute(
         "SELECT * FROM nodes WHERE project_id = ? AND kind IN ('task', 'subtask') "
         "AND status = 'pending' AND deleted_at IS NULL",

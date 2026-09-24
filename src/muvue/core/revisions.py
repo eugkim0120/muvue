@@ -17,7 +17,7 @@ import sqlite3
 from . import events
 from . import nodes as nodes_mod
 from .config import MuvueConfig
-from .gates import GateError, approve_node
+from .gates import GateError, _require_human, approve_node
 
 
 def _hash_criteria(criteria_json: str) -> str:
@@ -132,6 +132,7 @@ def approve_revision(
     actor: str = "human",
     config: MuvueConfig | None = None,
 ) -> dict:
+    _require_human(actor)
     revision = conn.execute(
         "SELECT * FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
     ).fetchone()
