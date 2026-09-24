@@ -123,6 +123,45 @@ def export(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
 
 
 @app.command()
+def serve(
+    path: Path = typer.Argument(Path("."), help="Repo root to serve"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8765, "--port"),
+) -> None:
+    """One daemon per repo (plan section 8): HTTP API + SSE dashboard.
+
+    Reconciles expired leases and drains the event queue once at startup
+    (`core.daemon.reconcile_on_start`) before opening the socket -- this
+    is what makes a killed-and-restarted daemon self-healing (P2
+    acceptance #2), since the daemon itself holds no in-memory state.
+    Mints a fresh session token for human-verb API calls and prints it
+    once; it is also written to `.muvue/session` for the dashboard to
+    read, per `core.daemon.create_session`.
+    """
+    import uvicorn
+
+    from muvue.api import create_app
+    from muvue.core import daemon as daemon_mod
+
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    conn = _db_connect(repo_root)
+    try:
+        result = daemon_mod.reconcile_on_start(conn)
+    finally:
+        conn.close()
+    for reverted in result["reverted_nodes"]:
+        typer.echo(f"reconciled expired lease: node {reverted['id']} -> {reverted['status']}")
+
+    token = daemon_mod.create_session(repo_root)
+    typer.echo(f"session token (human verbs): {token}")
+
+    app_instance = create_app(repo_root, config=config)
+    typer.echo(f"muvue daemon listening on http://{host}:{port}")
+    uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+
+
+@app.command()
 def audit() -> None:
     """Structure-graph drift audit. Ships P7."""
     typer.echo(NOT_IMPLEMENTED)
