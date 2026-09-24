@@ -832,3 +832,43 @@ reading here. Real `decisions` table entries start once dogfooding begins
     outstanding" framing is the same). A new table would duplicate what
     `events` (append-only, already replayable, already ack-able) already
     provides.
+
+66. **The P8 VS Code extension assumes `muvue serve` is already running
+    at a configurable URL (`muvue.daemonUrl`, default
+    `http://127.0.0.1:8765`) and never spawns or manages that process
+    itself.** Plan section 11's P8 row scopes the deliverable as "webview
+    + command bridge," and section 8 frames the extension purely in
+    terms of the dashboard "load[ing] unchanged inside a VS Code
+    webview" -- neither mentions process lifecycle, and P2 already gave
+    `serve` its own CLI entry point and restart-safety story (reconcile-
+    on-start, no in-memory daemon state) that a second, extension-owned
+    spawn path would either duplicate or race against. Simplest reading:
+    the extension is a thin client of an independently-run daemon, same
+    as a browser tab would be.
+
+67. **The extension's webview renders the dashboard via an `<iframe
+    src="<daemon-url>">`, not a fetch-and-inject of the HTML.** Fetching
+    `index.html`'s markup and re-injecting it into the webview's own DOM
+    would strip it of its own origin (the fetched JS's relative `fetch()`
+    and `EventSource("/events/stream")` calls, see `index.html`, need to
+    resolve against the daemon's origin, not `vscode-webview://...`) --
+    an iframe pointed straight at the daemon's URL keeps the page
+    same-origin with itself and requires no changes to `index.html` or
+    the daemon (P8 acceptance #1: "same `index.html` renders unchanged").
+    The webview's own wrapper HTML (`buildWebviewHtml` in
+    `vscode-extension/src/lib.ts`) sets `frame-src` to just that one
+    origin and `default-src 'none'` otherwise -- it runs no script of its
+    own, since all dashboard behaviour, including the SSE connection
+    (P8 acceptance #2), lives inside the iframe unchanged.
+
+68. **No CORS header was added to `src/muvue/api/app.py` for P8.** The
+    only cross-origin surface an extension could plausibly need CORS for
+    is a webview-script `fetch()` to the daemon from the webview's own
+    `vscode-webview://` origin; this extension does not do that -- the
+    iframe navigates directly to the daemon's URL (decision #67, so its
+    `fetch`/`EventSource` calls are same-origin with the daemon, not
+    cross-origin), and the three commands' own daemon calls run in the
+    extension host's Node process (`extension.ts`'s `fetch`), which is
+    not subject to browser CORS at all. Plan working rule 3 says to fix a
+    genuine CORS gap minimally if one is found; none was found, so
+    `app.py` is unchanged in this phase.

@@ -1,0 +1,54 @@
+{
+  "name": "muvue-vscode",
+  "displayName": "muvue",
+  "description": "Thin webview + command bridge for the muvue dashboard daemon (plan P8).",
+  "version": "0.1.0",
+  "publisher": "muvue",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:muvue.openDashboard",
+    "onCommand:muvue.approveNode",
+    "onCommand:muvue.pauseProject"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "muvue.openDashboard",
+        "title": "muvue: Open Dashboard"
+      },
+      {
+        "command": "muvue.approveNode",
+        "title": "muvue: Approve Node"
+      },
+      {
+        "command": "muvue.pauseProject",
+        "title": "muvue: Pause Project (Emergency Stop)"
+      }
+    ],
+    "configuration": {
+      "title": "muvue",
+      "properties": {
+        "muvue.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "URL of a running `muvue serve` daemon (see plan section 8; the extension does not start the daemon itself)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "npm run compile && node ./out/test/lib.test.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

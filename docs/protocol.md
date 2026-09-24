@@ -770,3 +770,25 @@ The dashboard's timeline tab (`static/index.html`) fetches its usual
 100-event window once, then scrubs it client-side with a range slider
 (`<input type=range>`, `addEventListener`, no inline handlers, no CDN)
 over "oldest event shown" rather than re-fetching per drag.
+
+## VS Code extension (P8)
+
+`vscode-extension/` is a thin webview + command bridge, not a new
+protocol surface: it adds no endpoints and calls no verb this document
+doesn't already describe, so `protocol_version` is unchanged.
+
+- Webview: a `<iframe>` pointed at the running daemon's real URL
+  (`muvue.daemonUrl`, default `http://127.0.0.1:8765`) renders `GET /`
+  (this same `index.html`) unmodified; the dashboard's own SSE connection
+  (`GET /events/stream`, above) and all its other `fetch()` calls run
+  same-origin with the daemon from inside that iframe, unchanged.
+- Commands (`vscode-extension/package.json` `contributes.commands`,
+  wired in `src/extension.ts`): `muvue.openDashboard` (opens the
+  webview), `muvue.approveNode` (`POST /nodes/{id}/approve`, prompts for
+  the node id and the session token), `muvue.pauseProject`
+  (`POST /projects/{id}/pause`, same auth). Both mutating commands send
+  the session token as `Authorization: Bearer <token>`, the same human-
+  verb auth this document's "Human verbs" section already requires.
+- The extension does not start `muvue serve`; see `docs/decisions.md`
+  #66-#68 for the process-lifecycle, iframe-vs-fetch, and no-new-CORS
+  decisions.

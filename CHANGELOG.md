@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P8 (thin VS Code extension: webview + command bridge)
+
+Final phase of the handoff plan (plan section 11 row P8).
+
+### Added
+- `vscode-extension/`: a thin VS Code extension, `src/extension.ts`
+  (113 lines) + `src/lib.ts` (86 lines, no `vscode` import so it's
+  unit-testable with plain `node`). Registers three commands
+  (`muvue.openDashboard`, `muvue.approveNode`, `muvue.pauseProject`),
+  each a real call into the daemon's existing HTTP API (P2's
+  `src/muvue/api/app.py`) -- no new backend endpoints, no dashboard
+  logic duplicated.
+- Webview: `<iframe src="<daemon-url>">`, so the dashboard rendered is
+  whatever `GET /` the running `muvue serve` daemon currently serves
+  (P2's `index.html`, extended by P7) -- never a bundled copy. SSE
+  (`GET /events/stream`) and all other dashboard `fetch()` calls run
+  same-origin with the daemon from inside that iframe, unchanged.
+- `tests/test_vscode_extension_p8.py`: real-process integration test,
+  spawns an actual `muvue serve` subprocess (same pattern as
+  `test_serve_integration.py`) and asserts `GET /` is byte-identical to
+  the shipped `index.html` and `GET /events/stream` is a live SSE
+  endpoint that emits a `data:` line -- the two URLs the extension's
+  webview and bridge code depend on.
+- `vscode-extension/test/lib.test.ts`: unit tests (plain `node`, no
+  framework) for webview HTML generation, command-to-endpoint mapping,
+  auth header construction, and URL joining.
+- `vscode-extension/README.md`: build/run/test instructions and an
+  explicit statement of what was and wasn't verifiable in an
+  environment with no live VS Code Extension Host.
+
+### Scope notes (see `docs/decisions.md` #66-68)
+- The extension assumes `muvue serve` is already running; it never
+  spawns or manages that process.
+- No CORS header was added to `src/muvue/api/app.py`: the iframe is
+  same-origin with the daemon, and the extension's own `fetch()` calls
+  run in the (non-browser) extension host process, so no genuine gap
+  was found.
+- Not run inside a real VS Code window in this environment -- see the
+  README's "What is verified, and what is not" section.
+
 ## [Unreleased] - P7 (drift loops, `audit`, lesson decay, real `drift_pct`, timeline scrubber)
 
 ### Added
