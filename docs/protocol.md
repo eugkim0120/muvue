@@ -683,7 +683,7 @@ test that a difference confined to a non-replayable field (e.g.
 `lease_until`, because real time passed between taking the live
 snapshot and replaying) is no longer flagged.
 
-## Runner, drivers, merge, handoff (P5)
+## Runner, drivers, merge, handoff (P5, per-driver budget/`--parallel`/rate-limit-timeout deltas v4)
 
 ### `muvue run [--agent X] [--parallel N] [--project-id ID]`
 
@@ -691,29 +691,58 @@ Unattended runner (`core.runner.run`), scoped to `task`/`subtask` nodes
 (a `ready` `spec` node means "ready for decomposition" — a distinct
 workflow this runner doesn't drive, see `docs/decisions.md`).
 
+- **`--parallel N > 1` is refused unless `worktree_mode = "per_node"`**
+  (v4 section 6, changelog item 4) — `core.runner.validate_parallel`
+  raises `ParallelismRefused` before `run` opens a DB connection or does
+  anything else; the CLI catches it and exits 1 with a clear message.
+  `branch` mode (the documented default) shares one checkout, where
+  `predicted_touches` disjointness cannot prevent same-file races.
+  `--parallel 1` (default) is never restricted, in either
+  `worktree_mode`. Disjoint-`predicted_touches` scheduling
+  (`core.runner.select_batch`) still runs as a merge-conflict-reduction
+  *heuristic* when `parallel > 1` (which, by construction, only happens
+  under `per_node`) — it is not treated as a safety property.
 - At the top of every run: reverts expired leases
   (`core.daemon.reconcile_leases`) and un-blocks any
   `blocked(rate_limit)` node whose recorded `retry_at` has passed
   (`core.runner.reconcile_rate_limits`) — the same reconcile-on-start
   pattern `muvue serve` already uses (plan section 5), extended here.
-- Each cycle: if any node in the run's scope is already
+- Each cycle, before anything else: the unit-free `[budget]` stop
+  conditions (v4 section 2) — `max_nodes_per_run` (count of nodes
+  processed so far this `run()` call) and `max_wall_clock_minutes`
+  (elapsed since `run()` started, via an injectable `now_fn`) — either
+  stops the run (`{"reason": "max_nodes_per_run"}` /
+  `{"reason": "max_wall_clock_minutes"}`), independent of any driver's
+  own budget.
+- Then: if any node in the run's scope is already
   `awaiting_approval`/`blocked`/`failed`, the run pauses immediately
   without scheduling anything new (`{"paused": {"reason":
   "nodes_need_attention", ...}}`) — the simplest deterministic reading of
   "pauses ... when it hits a node in that state" (see
-  `docs/decisions.md`). Otherwise: checks the budget
-  (`core.runner.budget_state`, reading `config.budget.unit`/`limit`
-  against `node_usage`) — exhausted (spend >= limit) stops the run
-  (`{"reason": "budget_exhausted"}`); >= 80% logs one
-  `runner.budget_warning` event, doesn't stop scheduling.
+  `docs/decisions.md`).
+- **Per-driver budgets (v4 section 2/6)**: there is no single
+  cross-agent budget number any more. Each configured
+  `[agents.<x>.budget]` (`unit`/`limit`, in a unit that agent's
+  `cost_model` can actually emit — `doctor` enforces this) is checked
+  independently against that driver's own spend
+  (`core.runner.driver_budget_state`, summing `agent_spend` across every
+  project for that agent+unit). A driver at 100% is removed from
+  `select_batch`'s candidate agents for this cycle — its ready nodes stay
+  `ready`, nothing crashes — while every other driver keeps being
+  scheduled normally. If every remaining ready node routes to an
+  exhausted driver, the batch is simply empty and the run stops as a
+  natural consequence (no separate "no path left" detection). A driver
+  at >= 80% logs one `runner.driver_budget_warning` event (once per
+  driver per run), and does not stop scheduling.
 - Selects a batch of ready nodes via `core.runner.select_batch`: routes
   each by `[routing]` (or `--agent` override), skips a node whose routed
-  agent isn't configured, and greedily picks up to `--parallel N` nodes
-  whose `predicted_touches` don't overlap any other selected node's,
-  never exceeding any one agent's own `max_concurrency` within the batch.
-  `--parallel 1` (default) processes nodes serially; `> 1` runs the batch
-  concurrently via a thread pool, each thread opening its own SQLite
-  connection (no shared connection across threads).
+  agent isn't configured or is budget-exhausted, and greedily picks up to
+  `--parallel N` nodes whose `predicted_touches` don't overlap any other
+  selected node's, never exceeding any one agent's own `max_concurrency`
+  within the batch. `--parallel 1` (default) processes nodes serially;
+  `> 1` runs the batch concurrently via a thread pool, each thread
+  opening its own SQLite connection (no shared connection across
+  threads).
 - For each selected node (`core.runner.run_node`): `start` (binds a
   strict-mode worktree if configured), `brief` piped to the driver
   (`core.drivers.invoke_driver`) as a fresh subprocess, then `done`/
@@ -721,6 +750,9 @@ workflow this runner doesn't drive, see `docs/decisions.md`).
   that lands in `failed`, stays `review` (flagged, not auto-approved),
   or `blocked` after this cycle's batch pauses the run for the *next*
   cycle (existing in-flight work in the same batch still finishes).
+- The returned `"budget"` field is now `{agent_name: driver_budget_state,
+  ...}` (only agents with a `budget` configured appear), not a single
+  global state dict.
 
 ### Drivers (`config.agents.<name>`)
 
@@ -744,8 +776,22 @@ Real invocation, `core.drivers.invoke_driver`:
    `status: "rate_limited"`) -> the node goes `blocked(rate_limit)` with
    a `retry_at` (a `runner.rate_limited` event; a non-`node.`-prefixed
    type, like `review.auto_approved`, so `rebuild` doesn't misparse it as
-   a row snapshot), and `on_rate_limit` (`wait`/`fallback:<agent>`/
-   `pause`) is applied.
+   a row snapshot, also carrying `wait_started_at` -- see below), and
+   `on_rate_limit` (`wait`/`fallback:<agent>`/`pause`) is applied.
+5. **`max_wait_minutes` bounds `on_rate_limit = "wait"`** (v4 section 6,
+   changelog item 11): `wait_started_at` tracks when *this* wait episode
+   began (carried forward across `reconcile_rate_limits`'s own
+   unblock-and-retry cycles via the latest `runner.rate_limited` event's
+   payload, as long as nothing but `node.ready`/`node.start` happened in
+   between -- otherwise a fresh episode). Once
+   `now - wait_started_at >= agent_cfg.max_wait_minutes`,
+   `on_rate_limit_timeout` (`fallback:<agent>` or `pause` -- never
+   `wait`, config-validated) applies instead, and a
+   `runner.rate_limit_wait_exhausted` event fires (the notification --
+   no real notification-sending exists outside the dashboard yet, so a
+   `write_txn`-recorded event is the minimum acceptable implementation;
+   see `docs/decisions.md`). An unbounded `wait` against a 5-hour
+   subscription window was a silent stall in v3; this bounds it.
 
 Never reads, stores, or passes a vendor credential (plan principle 7):
 only shells out and inherits the caller's own environment.

@@ -2,6 +2,86 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §2/§6/P5: per-driver budgets, --parallel restriction, rate-limit wait timeout
+
+Branch `feat/v4-runner-budget-deltas`, built on §1.2/§3 (txn discipline,
+`agent_spend` table skeleton, decision #72), §4a, §8a, and the §5
+enforcement deltas. Four deltas: v4 changelog items 4, 5, 11, and P5's
+row in §11 as amended by v4.
+
+### Changed
+- **Config schema (v4 §2, changelog item 5).** The single top-level
+  `[budget]` (`unit`/`limit`) is gone. It's now unit-free stop
+  conditions only: `max_wall_clock_minutes` (default 240),
+  `max_nodes_per_run` (default 20) (`core.config.BudgetConfig`). Each
+  `[agents.<x>]` gains an optional nested `[agents.<x>.budget]`
+  (`core.config.AgentBudgetConfig`: `unit`, `limit`) -- `None` means
+  unlimited for that driver. `AgentConfig` also gains `max_wait_minutes`
+  (default 30) and `on_rate_limit_timeout` (default `"pause"`, validated
+  to `"pause"` or `"fallback:<agent>"` -- `"wait"` is rejected, since a
+  *timeout* action of `"wait"` would be the unbounded stall
+  `max_wait_minutes` exists to prevent). `DEFAULT_CONFIG_TOML` and this
+  repo's own dogfood `.muvue/config.toml` migrated to the new shape.
+- **`doctor` budget-unit validation (v4 §2).** `core.doctor.run_doctor`
+  now errors (not warns) when a configured `[agents.<x>.budget].unit`
+  isn't producible by that driver's `cost_model`
+  (`core.runner.EXPECTED_BUDGET_UNIT`, mirroring decision #72's existing
+  `usd -> usd` / `tokens -> tokens` / `quota -> requests` mapping, not a
+  new one).
+- **`core.runner`: per-driver budget enforcement (v4 §2/§6).**
+  `core.runner.budget_state` (single global spend-vs-limit) is replaced
+  by `driver_budget_state`/`driver_budget_states` (per agent, summing
+  `agent_spend` across every project for that agent+unit against its own
+  `[agents.<x>.budget]`). `run()` computes the set of 100%-exhausted
+  agents each cycle and passes it to `select_batch`, which now skips any
+  node routed to an exhausted agent -- other agents keep being scheduled
+  normally. An agent at >= 80% logs one `runner.driver_budget_warning`
+  event (once per agent per run). If every remaining ready node routes
+  to an exhausted agent, `select_batch` simply returns nothing and the
+  run stops as a natural consequence of "nothing left to schedule" -- no
+  separate "no path left" detection was built, per the plan's own
+  wording. The unit-free `[budget]` (`max_wall_clock_minutes` via an
+  injectable `now_fn`, `max_nodes_per_run` via `len(processed)`) is
+  checked independently, at the top of every cycle, before any
+  driver-budget or gating check. `run()`'s returned `"budget"` field is
+  now `{agent_name: state, ...}`, not one global dict.
+- **`--parallel N > 1` refused outside `worktree_mode = "per_node"` (v4
+  §6, changelog item 4).** New `core.runner.ParallelismRefused` /
+  `validate_parallel`, called first thing inside `core.runner.run` --
+  before any DB connection or side effect. The CLI (`muvue run`) catches
+  it and exits 1 with a clear message. `--parallel 1` (default) is never
+  restricted, in either `worktree_mode`. `select_batch`'s
+  `predicted_touches`-disjointness scheduling is unchanged in code but
+  re-framed in docs as a merge-conflict-reduction heuristic, not a
+  safety property -- it can now only ever matter when
+  `worktree_mode == "per_node"`, since that's the only way `parallel >
+  1` reaches it at all.
+- **`max_wait_minutes` bounds `on_rate_limit = "wait"` (v4 §6, changelog
+  item 11).** `core.runner._apply_rate_limit` now tracks
+  `wait_started_at` per rate-limit "episode" (carried forward across
+  `reconcile_rate_limits`'s unblock-and-retry cycles via the latest
+  `runner.rate_limited` event, unless something other than a plain
+  `node.ready`/`node.start` happened in between, which starts a fresh
+  episode). Once `now - wait_started_at >= max_wait_minutes`,
+  `on_rate_limit_timeout` applies instead of continuing to wait, and a
+  `runner.rate_limit_wait_exhausted` event fires as the notification (no
+  real notification-sending exists outside the dashboard yet, so a
+  `write_txn`-recorded event is the documented minimum-acceptable
+  implementation -- see docs/decisions.md).
+
+### Tests
+- `tests/test_v4_budget_config.py`, `tests/test_v4_doctor_budget_validation.py`,
+  `tests/test_v4_rate_limit_wait_timeout.py` (new).
+- `tests/test_runner.py`: budget tests rewritten to the per-driver shape
+  (`config.agents["fake"].budget = AgentBudgetConfig(...)` instead of
+  `config.budget.unit`/`.limit`); new two-driver
+  exhausted-vs-generous test, `max_nodes_per_run`/
+  `max_wall_clock_minutes` tests, `--parallel` refusal/`per_node`-mode/
+  `parallel=1`-in-either-mode tests.
+- `tests/test_run_cli.py`: `test_run_cli_respects_parallel_flag`
+  (assumed the old "accepted, silently serial" behavior) replaced with
+  three tests proving the v4 refusal/allow/parallel-1 behavior.
+
 ## [Unreleased] - v4 §5: enforcement deltas (granularity hard block, touch-drift tier, branch coherence)
 
 Branch `feat/v4-enforcement-deltas`, built on §1.2/§3 (txn discipline),

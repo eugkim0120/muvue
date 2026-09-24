@@ -1336,3 +1336,120 @@ reading here. Real `decisions` table entries start once dogfooding begins
     creation, and carried unchanged in the `project.created` event
     payload, so it's fully within the replayable projection (v4 §3) with
     no new exclusion needed.
+
+91. **Per-driver budget is scoped to the driver across every project,
+    not per (project, driver).** `agent_spend` is keyed `(project_id,
+    agent, unit)` (decision #72), but `[agents.<x>.budget]` lives in
+    `config.toml`, which is repo-wide, not per-project -- there is no
+    config surface for "this project's budget for this driver" distinct
+    from any other project's. `core.runner.driver_budget_state` sums
+    `agent_spend.spent` across every project for a given `(agent, unit)`
+    pair before comparing to the configured limit. The alternative (only
+    counting the current `run()` call's own `project_id`, when given)
+    would let a driver silently reset its spend history every time a
+    caller scopes `run` to a different project, which contradicts "each
+    driver carries its own budget" (v4 §2) reading as one number *for
+    that driver*, not one number per project the driver happens to touch.
+
+92. **`select_batch`'s new `exhausted_agents` parameter is optional and
+    self-computing, not a required argument.** Existing tests (and any
+    other direct caller) invoke `select_batch(conn, ready_rows, config,
+    parallel=..., agent_override=...)` without it; adding a required
+    parameter would have broken every one of those call sites for no
+    behavioral gain, since the value is always deterministically
+    derivable from `conn`/`config` (`core.runner._exhausted_agents`).
+    `core.runner.run` still passes it explicitly (computed once per
+    cycle) purely to avoid re-querying `agent_spend` a second time
+    inside `select_batch` on the same cycle -- an optimization, not a
+    behavior difference.
+
+93. **A driver-budget-exhausted stop is not a distinct `paused` reason.**
+    v4 §6's own wording ("don't build a separate 'no path left'
+    detection, let it fall out of 'there's nothing else routable'") is
+    read literally: when every remaining ready node routes to an
+    exhausted driver, `select_batch` returns an empty batch and `run`'s
+    existing `if not batch: break` (unchanged) exits with `paused =
+    None` -- the same code path as "nothing is `ready`" or "everything
+    already got scheduled this session." The caller can still tell a
+    driver was the reason by reading the returned `"budget"` dict for
+    `exhausted: true` entries; no new top-level reason string was added.
+
+94. **`max_wall_clock_minutes` / `max_nodes_per_run` are checked at the
+    very top of every cycle, before the gating check and before any
+    driver-budget check.** The plan doesn't order these relative to each
+    other; unit-free stop conditions were read as the outermost,
+    cheapest, most "the operator said stop no matter what" check --
+    checking gating or per-driver budget first would mean a run sitting
+    on a gating-blocked node for a long time could silently blow through
+    `max_wall_clock_minutes` before ever reporting it, which defeats the
+    point of a wall-clock ceiling.
+
+95. **`run()` gained a `now_fn` parameter (default `core.runner._now`),
+    threaded through `run_node`/`_apply_rate_limit`/
+    `_apply_on_rate_limit`/`_handle_unavailable`, rather than a second,
+    separately-injectable clock for rate-limit timing alone.** One clock
+    seam matches the existing codebase convention (`core.asks.wait`'s
+    `now` parameter, `core.hooks._drain_clock`) and lets a single test
+    fixture drive both `max_wall_clock_minutes` and
+    `max_wait_minutes`/`wait_started_at` timing deterministically without
+    two independent fakes to keep in sync.
+
+96. **`wait_started_at` "episode continuity" is determined by scanning
+    for any event on the node, after the latest `runner.rate_limited`
+    event, whose type is not `node.ready`/`node.start`.** A `wait`
+    episode spans reconcile-unblock -> re-`start` -> re-block cycles,
+    each of which only ever emits `node.ready` (from
+    `reconcile_rate_limits`/`_apply_on_rate_limit`'s ready-then-retry)
+    and `node.start` (from `run_node`'s own `nodes.start` call) in
+    between two `runner.rate_limited` events, as long as the node keeps
+    getting rate-limited. Anything else appearing between them (a real
+    `done`, a different block reason, a handoff) means the node did
+    something other than sit in the same stalled `wait` loop, so the
+    next `runner.rate_limited` event starts a fresh episode rather than
+    inheriting a stale `wait_started_at`. This is a event-log scan, not a
+    new schema column, matching how `reconcile_rate_limits` already
+    reads `retry_at` back out of the latest `runner.rate_limited` event's
+    payload rather than adding a dedicated column for it.
+
+97. **`runner.rate_limit_wait_exhausted` (the "notification fires" for
+    `max_wait_minutes` timeout escalation) is a `write_txn`-recorded
+    event, not a call into `config.notify.url`.** The P5 prompt names
+    this as the documented fallback ("if no real notification-sending
+    exists yet (it may have been dashboard-only), a
+    `runner.rate_limit_wait_exhausted` event recorded via `write_txn` is
+    the minimum acceptable 'notification fires' implementation").
+    Checked: no code path in this repo actually performs an HTTP call to
+    `config.notify.url` anywhere yet (grep for `notify.url` /
+    `requests`/`urllib` outside `core.doctor`'s probe helper turns up
+    nothing) -- P2's dashboard/inbox work surfaces inbox events in the
+    UI, it does not send them anywhere. Wiring a real webhook call is out
+    of scope for this session (not one of the four requested deltas) and
+    is left for whichever future session actually builds
+    `config.notify.url` delivery.
+
+98. **`AgentConfig.on_rate_limit_timeout` explicitly forbids `"wait"`,
+    validated at config-load time.** v4 §6 doesn't spell this out in so
+    many words, but its own reasoning for adding `max_wait_minutes` in
+    the first place -- "an unbounded `wait` ... is a silent stall" -- 
+    applies identically to a *timeout* action of `"wait"`: it would mean
+    "wait past the wait timeout by waiting some more," which is not a
+    timeout at all. Rejected at the same `field_validator` layer as
+    `on_rate_limit`'s existing `wait`/`pause`/`fallback:<agent>` check,
+    with the same error-message shape, so a bad config fails at `load_config`
+    rather than silently looping at runtime.
+
+99. **`GET /kpis`' `spend_vs_budget` becomes `max(pct across every
+    configured driver budget, default=0.0)`, not a dict keyed by
+    driver.** v4 §2 removed the single global budget number this field
+    used to read (`core.runner.budget_state`); nothing in the P5 prompt
+    or the plan's KPI list (drift %, prediction-vs-actual touch drift,
+    rubber-stamp rate, tokens per node, "spend vs budget per driver")
+    asks for `spend_vs_budget` itself to become a per-driver breakdown --
+    the plan's own wording splits that out as a *separate* dashboard
+    concept ("spend vs budget per driver"), which `core.runner.
+    driver_budget_states` already serves for a future dashboard panel.
+    Keeping `spend_vs_budget` a single scalar preserves the existing
+    `/kpis` response shape (no test asserted its value, only its
+    presence) and reads as "the most urgent budget signal right now" --
+    the worst-case driver, not an average or a sum across incompatible
+    units.

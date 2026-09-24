@@ -83,6 +83,29 @@ the one driver exercised against a real subprocess in this environment,
 and is what P5's acceptance criteria substitute for a real
 subscription-authenticated CLI throughout.
 
+## Per-driver budget unit (v4 section 2, this vendor-agnostic)
+
+Each `[agents.<x>]` may now carry its own `[agents.<x>.budget]`
+(`unit`/`limit`), separate from the global `[budget]` (which holds only
+unit-free stop conditions, `max_wall_clock_minutes`/`max_nodes_per_run`).
+The valid `unit` for a given vendor's `cost_model` is fixed by what that
+vendor's own usage output can actually produce, not a free choice:
+`cost_model = "usd"` -> `budget.unit = "usd"`, `"tokens"` -> `"tokens"`,
+`"quota"` -> `"requests"`. This is a config-shape change only; it does
+not alter any of the synthetic `usage_parser` guidance above, and
+`doctor` rejects a mismatched pairing before a run ever starts. Example
+(v4 section 2's own `config.toml`): `[agents.claude]` with
+`cost_model = "quota"` pairs with `[agents.claude.budget] unit =
+"requests"`; `[agents.codex]` with `cost_model = "usd"` pairs with
+`unit = "usd"`.
+
+`max_wait_minutes`/`on_rate_limit_timeout` (v4 section 6, changelog item
+11) are also per-driver now, alongside `on_rate_limit` — a vendor whose
+rate-limit window is long (e.g. a 5-hour subscription reset) should set
+`max_wait_minutes` well under that window so `wait` never turns into an
+unbounded stall; `on_rate_limit_timeout` then decides what happens next
+(`fallback:<agent>` or `pause`, never `wait` again).
+
 ## Residual risk (plan section 6, item 3)
 
 "Vendor terms for headless subscription use change" -- unchanged from
