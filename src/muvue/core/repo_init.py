@@ -138,6 +138,16 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         # v4 section 2 file layout: "gitignored; hook fast-path spool
         # (append-only)" -- muvue._hook's queue, see src/muvue/_hook.py.
         ".muvue/queue.jsonl",
+        # Not listed in plan section 2's committed-files table (only
+        # config.toml/components.json/decisions.json are meant to be
+        # committed) -- gitignored so an ordinary `git add -A` mid-project
+        # never sweeps it into a commit. It must stay recoverable purely
+        # from the live filesystem for `uninit_repo` to restore hook shims
+        # correctly; a later `git reset`/checkout that a commit containing
+        # it would be exposed to could otherwise delete or stale it. Found
+        # via the v4 P0 filesystem-snapshot round-trip test (see
+        # tests/test_init_uninit.py, docs/decisions.md).
+        ".muvue/.init_manifest.json",
     ]
     # A repo may already ignore one of these as a plain (unmarked) line --
     # don't duplicate it inside the marker block (dogfood-gate follow-up,
@@ -186,6 +196,45 @@ def init_repo(repo_root: Path, *, sandbox: bool = False) -> Path:
     return muvue_dir
 
 
+def _delete_structure_ref_if_present(repo_root: Path) -> None:
+    """v4 section 9 created a `muvue/structure` git ref (`close.STRUCTURE_REF`)
+    that lives entirely inside `.git/refs/` -- `uninit`'s manifest-restore
+    above never touches it, since it was never a file `init` wrote or
+    modified. v4's own P0 acceptance wording predates section 9 (P0 comes
+    before P6 in the plan's phase ordering) and doesn't mention this ref's
+    uninit lifecycle either way. Judgment call (docs/decisions.md): a
+    `muvue/structure` ref is muvue-owned the same way `.muvue/` is, so
+    "no muvue-owned tracked or untracked files [or refs] remain" extends
+    to it -- `uninit` deletes it if present, via `git update-ref -d`
+    (never touches the working tree, index or HEAD, same guarantee
+    `close._write_structure_commit` relies on). Skipped, not force-deleted,
+    if it's the ref currently checked out (`git symbolic-ref HEAD`) --
+    an edge case no normal workflow reaches, but deleting a ref out from
+    under the checked-out HEAD is a needless footgun to add here.
+
+    Imported lazily (not at module scope) to keep `init_repo`'s own import
+    surface small and avoid any import-order coupling to `core/close.py`."""
+    import subprocess
+
+    from . import close as close_mod
+
+    git_dir = repo_root / ".git"
+    if not git_dir.exists():
+        return
+
+    symbolic = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if symbolic.returncode == 0 and symbolic.stdout.strip() == close_mod.STRUCTURE_REF:
+        return
+
+    subprocess.run(
+        ["git", "update-ref", "-d", close_mod.STRUCTURE_REF],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+
+
 def uninit_repo(repo_root: Path) -> None:
     repo_root = Path(repo_root)
     muvue_dir = repo_root / ".muvue"
@@ -201,6 +250,8 @@ def uninit_repo(repo_root: Path) -> None:
                 path.unlink(missing_ok=True)
             else:
                 path.write_text(original)
+
+    _delete_structure_ref_if_present(repo_root)
 
     import shutil
 
