@@ -77,18 +77,50 @@
 <script>
 "use strict";
 
-const state = { projectId: null, token: localStorage.getItem("muvue_token") || "" };
+// v4 section 8a control 5: the session token never touches localStorage
+// (or any other disk-backed storage) -- an XSS payload or a cooperating
+// same-origin script reading localStorage could otherwise exfiltrate a
+// token that survives page reloads indefinitely. `state.token` here is
+// only a same-tab, in-memory fallback for a manually pasted token (e.g.
+// while iterating without exchanging a fresh `serve` link); the primary
+// path is the HttpOnly `muvue_session` cookie minted by `/auth/exchange`
+// below, which page JS can never read back out at all.
+const state = { projectId: null, token: "" };
 
 function api(path, opts) {
   opts = opts || {};
   const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  return fetch(path, Object.assign({}, opts, {headers})).then(function (r) {
+  return fetch(path, Object.assign({}, opts, {headers, credentials: "same-origin"})).then(function (r) {
     return r.json().then(function (body) {
       if (!r.ok) { throw new Error((body && body.detail) || r.statusText); }
       return body;
     });
   });
+}
+
+// One-time URL-fragment hand-off (v4 section 8a control 5): `muvue
+// serve` prints a link with `#t=<token>`. The fragment is never sent
+// over HTTP by the browser (so it never reaches this or any other
+// server, and typically isn't logged the way a query string would be),
+// but this page's own JS can read `location.hash` and exchange it here
+// for an HttpOnly, SameSite=Strict session cookie -- then scrubs the
+// fragment from the visible URL/history so it doesn't linger.
+function exchangeFragmentToken() {
+  const hash = window.location.hash || "";
+  const match = hash.match(/(?:^#|[&])t=([^&]+)/);
+  if (!match) return;
+  const token = decodeURIComponent(match[1]);
+  fetch("/auth/exchange", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
+    body: JSON.stringify({token: token}),
+  }).then(function (r) {
+    if (r.ok) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }).catch(function () { /* exchange endpoint unreachable; dashboard still usable read-only */ });
 }
 
 function el(tag, attrs, children) {
@@ -368,11 +400,10 @@ document.querySelectorAll("nav button").forEach(function (btn) {
 });
 
 document.getElementById("token-save").addEventListener("click", function () {
+  // In-memory only for this tab (see `state` above) -- never persisted.
   state.token = document.getElementById("token-input").value.trim();
-  localStorage.setItem("muvue_token", state.token);
-  alert("token saved");
+  alert("token set for this tab only (not saved to disk/localStorage)");
 });
-document.getElementById("token-input").value = state.token;
 
 document.getElementById("pause-btn").addEventListener("click", function () {
   if (!state.projectId) { alert("no project loaded yet -- open the revisions tab once first"); return; }
@@ -411,6 +442,7 @@ function connectStream() {
   } catch (e) { /* EventSource unsupported; dashboard still works via manual refresh */ }
 }
 
+exchangeFragmentToken();
 refreshStatus();
 loadTab("tree");
 connectStream();

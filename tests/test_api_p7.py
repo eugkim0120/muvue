@@ -43,7 +43,7 @@ def config() -> MuvueConfig:
 
 @pytest.fixture
 def client(repo, config) -> TestClient:
-    return TestClient(create_app(repo, config=config))
+    return TestClient(create_app(repo, config=config), base_url="http://127.0.0.1")
 
 
 @pytest.fixture

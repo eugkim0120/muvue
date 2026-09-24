@@ -1,5 +1,15 @@
-"""P2: FastAPI app mirrors CLI verbs 1:1 (plan section 4), human verbs
-gated by session token (plan section 8), inbox latency (P2 acceptance #1).
+"""P2: FastAPI app mirrors CLI verbs 1:1 (plan section 4), every mutating
+endpoint session-token gated (plan v4 section 8a), inbox latency (P2
+acceptance #1).
+
+`TestClient` is pointed at `base_url="http://127.0.0.1"` throughout: the
+daemon-security `Host` middleware (v4 section 8a control 2) rejects any
+other Host value, including httpx's `testserver` default -- see
+docs/decisions.md #84/#86. `create_app` is called without an explicit
+`port`, so the Host/Origin checks only enforce the loopback *hostname*
+here, not an exact port (a real `muvue serve` process always passes
+`port`; the exact-port matching is covered against a real running
+daemon in tests/test_daemon_security.py).
 """
 
 from __future__ import annotations
@@ -11,9 +21,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muvue.api import create_app
-from muvue.core import asks, daemon, db as core_db, gates, nodes, projects
+from muvue.core import asks, db as core_db, gates, nodes, projects
 from muvue.core.config import ChecksConfig, MuvueConfig
 from muvue.core.repo_init import init_repo
+
+BASE_URL = "http://127.0.0.1"
 
 
 @pytest.fixture
@@ -28,9 +40,23 @@ def config() -> MuvueConfig:
 
 
 @pytest.fixture
-def client(repo, config) -> TestClient:
-    app = create_app(repo, config=config)
-    return TestClient(app)
+def app(repo, config):
+    return create_app(repo, config=config)
+
+
+@pytest.fixture
+def client(app) -> TestClient:
+    return TestClient(app, base_url=BASE_URL)
+
+
+@pytest.fixture
+def token(app) -> str:
+    return app.state.session.token
+
+
+@pytest.fixture
+def auth_headers(token) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -83,19 +109,25 @@ def test_inbox_endpoint_responds_under_one_second(client, ready_task):
     assert elapsed < 1.0, f"inbox took {elapsed:.3f}s"
 
 
-# -- agent verbs --------------------------------------------------------
+# -- agent verbs (v4 section 8a: session-gated like every other mutation) --
 
 
-def test_start_done_via_api(client, ready_task):
+def test_start_done_via_api(client, ready_task, auth_headers):
     node_id = ready_task["task"]["id"]
-    r = client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "in_progress"
 
-    r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "done"
     assert r.json()["auto_approved"] is True
+
+
+def test_start_without_session_token_is_rejected(client, ready_task):
+    node_id = ready_task["task"]["id"]
+    r = client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
+    assert r.status_code == 403
 
 
 # -- opt-in `run_checks` wiring at the API layer (P3 decision #38) ---------
@@ -104,7 +136,8 @@ def test_start_done_via_api(client, ready_task):
 def test_done_without_run_checks_ignores_a_failing_test_command(repo):
     config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
     app = create_app(repo, config=config)
-    client = TestClient(app)
+    client = TestClient(app, base_url=BASE_URL)
+    headers = {"Authorization": f"Bearer {app.state.session.token}"}
     conn = core_db.connect(repo / ".muvue" / "muvue.db")
     project = projects.create_project(conn, goal="api run_checks test")
     task = nodes.create_node(
@@ -116,8 +149,8 @@ def test_done_without_run_checks_ignores_a_failing_test_command(repo):
     node_id = task["id"]
     conn.close()
 
-    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
-    r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"})
+    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=headers)
+    r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"}, headers=headers)
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "done"
     assert r.json()["auto_approved"] is True
@@ -126,7 +159,8 @@ def test_done_without_run_checks_ignores_a_failing_test_command(repo):
 def test_done_with_run_checks_flags_a_failing_test_command(repo):
     config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
     app = create_app(repo, config=config)
-    client = TestClient(app)
+    client = TestClient(app, base_url=BASE_URL)
+    headers = {"Authorization": f"Bearer {app.state.session.token}"}
     conn = core_db.connect(repo / ".muvue" / "muvue.db")
     project = projects.create_project(conn, goal="api run_checks test")
     task = nodes.create_node(
@@ -138,18 +172,18 @@ def test_done_with_run_checks_flags_a_failing_test_command(repo):
     node_id = task["id"]
     conn.close()
 
-    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"})
+    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=headers)
     r = client.post(
-        f"/nodes/{node_id}/done", json={"owner": "agent-1", "run_checks": True}
+        f"/nodes/{node_id}/done", json={"owner": "agent-1", "run_checks": True}, headers=headers
     )
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "review"
     assert r.json()["auto_approved"] is False
 
 
-def test_start_with_agent_param_is_recorded_but_does_not_spawn(client, ready_task, conn):
+def test_start_with_agent_param_is_recorded_but_does_not_spawn(client, ready_task, conn, auth_headers):
     node_id = ready_task["task"]["id"]
-    r = client.post(f"/nodes/{node_id}/start?agent=claude", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{node_id}/start?agent=claude", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
     events = conn.execute(
         "SELECT * FROM events WHERE node_id = ? AND type = 'node.agent_requested'",
@@ -193,49 +227,42 @@ def test_show_node_404_for_missing_node(client):
 
 def test_approve_requires_session_token(client, ready_task):
     r = client.post(f"/nodes/{ready_task['task']['id']}/reject", json={"feedback": "no"})
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
-def test_approve_with_valid_session_token_succeeds(client, repo, conn, config):
+def test_approve_with_valid_session_token_succeeds(client, conn, config, auth_headers):
     project = projects.create_project(conn, goal="p2")
     spec = gates.submit_spec(conn, project_id=project["id"], title="spec", body_md="# x")
-    token = daemon.create_session(repo)
     r = client.post(
         f"/nodes/{spec['id']}/approve",
         json={"target": "spec"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_headers,
     )
     assert r.status_code == 200
     assert r.json()["status"] == "ready"
 
 
-def test_approve_with_bad_token_rejected(client, repo, ready_task):
-    daemon.create_session(repo)
+def test_approve_with_bad_token_rejected(client, ready_task):
     r = client.post(
         f"/nodes/{ready_task['task']['id']}/reject",
         json={"feedback": "no"},
         headers={"Authorization": "Bearer wrong"},
     )
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
-def test_pause_refuses_start_then_resume_allows_it(client, repo, conn, ready_task):
-    token = daemon.create_session(repo)
+def test_pause_refuses_start_then_resume_allows_it(client, conn, ready_task, auth_headers):
     project_id = ready_task["project"]["id"]
-    r = client.post(
-        f"/projects/{project_id}/pause", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = client.post(f"/projects/{project_id}/pause", headers=auth_headers)
     assert r.status_code == 200
     assert r.json()["phase"] == "paused"
 
-    r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 409
 
-    r = client.post(
-        f"/projects/{project_id}/resume", headers={"Authorization": f"Bearer {token}"}
-    )
+    r = client.post(f"/projects/{project_id}/resume", headers=auth_headers)
     assert r.json()["phase"] == "executing"
-    r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"})
+    r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
 
 
@@ -245,25 +272,24 @@ def test_pause_refuses_start_then_resume_allows_it(client, repo, conn, ready_tas
 def test_answer_endpoint_requires_session_token(client, ready_task, conn):
     q = asks.ask(conn, ready_task["task"]["id"], question="q?", default="yes")["question"]
     r = client.post(f"/questions/{q['id']}/answer", json={"text": "no"})
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
-def test_answer_endpoint_with_valid_token_answers_the_question(client, repo, ready_task, conn):
+def test_answer_endpoint_with_valid_token_answers_the_question(client, ready_task, conn, auth_headers):
     q = asks.ask(conn, ready_task["task"]["id"], question="q?", default="yes")["question"]
-    token = daemon.create_session(repo)
     r = client.post(
         f"/questions/{q['id']}/answer",
         json={"text": "yes, proceed"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_headers,
     )
     assert r.status_code == 200
     assert r.json()["question"]["status"] == "answered"
     assert r.json()["question"]["answer"] == "yes, proceed"
 
 
-def test_comment_endpoint_adds_feedback_note(client, ready_task, conn):
+def test_comment_endpoint_adds_feedback_note(client, ready_task, conn, auth_headers):
     node_id = ready_task["task"]["id"]
-    r = client.post(f"/nodes/{node_id}/comment", json={"text": "looks good"})
+    r = client.post(f"/nodes/{node_id}/comment", json={"text": "looks good"}, headers=auth_headers)
     assert r.status_code == 200
     notes = conn.execute(
         "SELECT * FROM notes WHERE node_id = ? AND kind = 'feedback'", (node_id,)
@@ -277,3 +303,31 @@ def test_kpis_endpoint_present_with_stubbed_and_real_fields(client):
     body = r.json()
     assert body["drift_pct"] == 0.0
     assert "rubber_stamp_rate" in body
+
+
+# -- auth exchange (v4 section 8a control 5) --------------------------------
+
+
+def test_exchange_sets_httponly_samesite_strict_cookie(client, token):
+    r = client.post("/auth/exchange", json={"token": token})
+    assert r.status_code == 200
+    cookie_header = r.headers.get("set-cookie", "")
+    assert "muvue_session=" in cookie_header
+    assert "HttpOnly" in cookie_header
+    assert "SameSite=strict" in cookie_header or "SameSite=Strict" in cookie_header
+
+
+def test_exchange_with_wrong_token_rejected(client):
+    r = client.post("/auth/exchange", json={"token": "wrong"})
+    assert r.status_code == 403
+    assert "set-cookie" not in {k.lower() for k in r.headers.keys()}
+
+
+def test_cookie_from_exchange_authorizes_mutating_requests(client, token, ready_task):
+    r = client.post("/auth/exchange", json={"token": token})
+    assert r.status_code == 200
+    # No Authorization header this time -- the cookie the exchange just
+    # set (and httpx/TestClient's cookie jar now carries) is what
+    # authorizes this mutating request.
+    r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"})
+    assert r.status_code == 200

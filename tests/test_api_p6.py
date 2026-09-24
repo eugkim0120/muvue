@@ -11,9 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muvue.api import create_app
-from muvue.core import daemon, db as core_db, nodes, projects
+from muvue.core import db as core_db, nodes, projects
 from muvue.core.config import MuvueConfig
 from muvue.core.repo_init import init_repo
+
+BASE_URL = "http://127.0.0.1"
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -43,8 +45,18 @@ def config() -> MuvueConfig:
 
 
 @pytest.fixture
-def client(repo, config) -> TestClient:
-    return TestClient(create_app(repo, config=config))
+def app(repo, config):
+    return create_app(repo, config=config)
+
+
+@pytest.fixture
+def client(app) -> TestClient:
+    return TestClient(app, base_url=BASE_URL)
+
+
+@pytest.fixture
+def token(app) -> str:
+    return app.state.session.token
 
 
 @pytest.fixture
@@ -68,11 +80,10 @@ def done_task(conn):
 
 def test_close_preview_requires_session_token(client, done_task):
     r = client.get(f"/projects/{done_task['project']['id']}/close-preview")
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
-def test_close_preview_shows_closeable_diff(client, repo, done_task):
-    token = daemon.create_session(repo)
+def test_close_preview_shows_closeable_diff(client, done_task, token):
     r = client.get(
         f"/projects/{done_task['project']['id']}/close-preview",
         headers={"Authorization": f"Bearer {token}"},
@@ -83,8 +94,7 @@ def test_close_preview_shows_closeable_diff(client, repo, done_task):
     assert "diff" in body
 
 
-def test_close_commits_and_flips_phase(client, repo, done_task):
-    token = daemon.create_session(repo)
+def test_close_commits_and_flips_phase(client, done_task, token):
     r = client.post(
         f"/projects/{done_task['project']['id']}/close",
         headers={"Authorization": f"Bearer {token}"},
@@ -101,11 +111,10 @@ def test_import_requires_session_token(client, done_task):
         "/import",
         json={"node_id": done_task["task"]["id"], "issue_number": 1, "data": {}},
     )
-    assert r.status_code == 401
+    assert r.status_code == 403
 
 
-def test_import_links_external_ref(client, repo, done_task):
-    token = daemon.create_session(repo)
+def test_import_links_external_ref(client, done_task, token):
     r = client.post(
         "/import",
         json={
@@ -118,8 +127,7 @@ def test_import_links_external_ref(client, repo, done_task):
     assert r.json()["external_ref"]["ext_id"] == "5"
 
 
-def test_merge_with_pr_flag_includes_body(client, repo, done_task):
-    token = daemon.create_session(repo)
+def test_merge_with_pr_flag_includes_body(client, done_task, token):
     r = client.post(
         f"/nodes/{done_task['task']['id']}/merge?pr=true",
         headers={"Authorization": f"Bearer {token}"},

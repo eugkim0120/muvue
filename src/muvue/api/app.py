@@ -1,11 +1,25 @@
 """FastAPI app factory: mirrors the CLI verbs 1:1 (plan section 4),
 OpenAPI-documented for free by FastAPI, versioned via `protocol_version`.
 
-Human verbs (`approve`, `reject`, `ack`, `merge`, `close`, `pause`,
-`resume`, `handoff`, `import`) are gated by the repo-scoped session token
-(`core.daemon.verify_session`) instead of MCP exposure -- see
-docs/decisions.md. Agent verbs and ops/read endpoints are unauthenticated
-(local daemon, no multi-machine sync per plan non-goals).
+Security (plan v4 section 8a -- "the largest defect in v3"): this daemon
+exposes `POST /nodes/{id}/start?agent=X`, which launches an arbitrary
+configured agent CLI subprocess. Every mutating endpoint -- agent verbs
+(`start`/`done`/`fail`/`ask`/`wait`/`replan`/`comment`/`propose-revision`)
+and human verbs alike (`approve`/`reject`/`ack`/`merge`/`close`/`pause`/
+`resume`/`handoff`/`import`) -- is therefore gated the same way: POST
+only, `Content-Type: application/json` only, and a valid session token
+in the `Authorization` header or the `muvue_session` cookie (never a
+query string). This is a deliberate widening from the P2/P2b design,
+where agent verbs were unauthenticated on the theory that this is a
+single local daemon with no multi-machine sync; v4 section 8a's own
+framing of `start` as a remote-code-execution primitive makes that
+theory untenable -- see docs/decisions.md #84 and docs/threat-model.md.
+
+`SecurityMiddleware` below enforces Host validation (control 2), Origin
+validation (control 3, *before* auth -- this blocks simple-request CSRF
+that a CORS preflight alone would not) and the JSON-content-type half of
+control 4, all before any route handler runs. No `Access-Control-*`
+header is ever emitted (there is no CORS middleware in this app at all).
 """
 
 from __future__ import annotations
@@ -16,14 +30,19 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from muvue import core
 from muvue.core.config import MuvueConfig
+from muvue.core.daemon import SessionManager
 
 STATIC_DIR = Path(__file__).parent / "static"
+SESSION_COOKIE_NAME = "muvue_session"
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost"})
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
@@ -34,31 +53,130 @@ def _rows_to_list(rows) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
+def create_app(
+    repo_root: Path,
+    config: MuvueConfig | None = None,
+    *,
+    session: SessionManager | None = None,
+    port: int | None = None,
+) -> FastAPI:
     repo_root = Path(repo_root)
     db_path = repo_root / ".muvue" / "muvue.db"
     config = config or core.load_config(repo_root / ".muvue" / "config.toml")
+    session = session or SessionManager()
 
     app = FastAPI(
         title="muvue",
         version=str(config.protocol_version),
         description="muvue daemon API (plan section 4): mirrors CLI verbs 1:1.",
     )
+    app.state.session = session
+    app.state.port = port
 
-    @contextmanager
-    def _conn() -> Iterator[sqlite3.Connection]:
-        conn = core.db.connect(db_path)
+    # ------------------------------------------------------------------
+    # Security middleware (plan v4 section 8a, controls 2/3/4).
+    # Runs before every route handler, including read-only GETs for
+    # Host/Origin (a rebound/cross-origin request has no business
+    # reading state either), and before auth for the Origin check
+    # specifically (control 3: "rejected with 403 *before* auth").
+    # ------------------------------------------------------------------
+
+    def _host_ok(host_header: str) -> bool:
+        if not host_header:
+            return False
+        hostname = host_header.split(":", 1)[0].strip().lower()
+        if hostname not in _LOOPBACK_HOSTNAMES:
+            return False
+        if port is not None and ":" in host_header:
+            try:
+                header_port = int(host_header.split(":", 1)[1])
+            except ValueError:
+                return False
+            if header_port != port:
+                return False
+        return True
+
+    def _origin_ok(origin: str) -> bool:
         try:
-            yield conn
-        finally:
-            conn.close()
+            parts = urlsplit(origin)
+        except ValueError:
+            return False
+        if parts.scheme != "http":
+            return False
+        hostname = (parts.hostname or "").lower()
+        if hostname not in _LOOPBACK_HOSTNAMES:
+            return False
+        if port is not None:
+            # Default the implicit port for a bare "http://127.0.0.1"
+            # Origin (no explicit ":80") to 80, same as a real browser.
+            return (parts.port or 80) == port
+        return True
 
-    def _require_session(authorization: str | None) -> None:
+    @app.middleware("http")
+    async def security_gate(request: Request, call_next):
+        # Control 2: reject DNS rebinding -- validate Host before
+        # anything else runs.
+        if not _host_ok(request.headers.get("host", "")):
+            return JSONResponse({"detail": "invalid Host header"}, status_code=403)
+
+        # Control 3: reject cross-origin *before* auth. Absence of an
+        # Origin header (same-origin navigation, non-browser clients
+        # like curl/the CLI/VS Code extension) is not itself rejected --
+        # only a foreign Origin is.
+        origin = request.headers.get("origin")
+        if origin is not None and not _origin_ok(origin):
+            return JSONResponse({"detail": "invalid Origin header"}, status_code=403)
+
+        # Control 4 (JSON-only half): every mutating request that
+        # actually carries a body must use Content-Type: application/
+        # json. A plain HTML <form> can only submit application/x-www-
+        # form-urlencoded or multipart/form-data without JavaScript, so
+        # this alone defeats classic HTML-form CSRF; JS-driven cross-
+        # origin requests are already blocked by the Origin check above.
+        # A body-less mutation (e.g. `POST /projects/{id}/pause`, no
+        # payload) has no attacker-controlled content to smuggle via a
+        # form submission in the first place, so it's exempt from the
+        # content-type check itself -- it still needs a valid session
+        # token, enforced separately by each route's `_require_session`.
+        if request.method in _MUTATING_METHODS:
+            content_length = request.headers.get("content-length")
+            has_body = content_length not in (None, "0")
+            if has_body:
+                content_type = request.headers.get("content-type", "")
+                media_type = content_type.split(";", 1)[0].strip().lower()
+                if media_type != "application/json":
+                    return JSONResponse(
+                        {"detail": "mutating requests with a body must use "
+                                   "Content-Type: application/json"},
+                        status_code=403,
+                    )
+
+        response = await call_next(request)
+        # Belt-and-suspenders: this app never adds CORS middleware, but
+        # assert the invariant at the response boundary too so a future
+        # accidental `add_middleware(CORSMiddleware, ...)` fails loudly
+        # in the daemon-security tests rather than silently reopening
+        # control 3.
+        for header in list(response.headers.keys()):
+            if header.lower().startswith("access-control-"):
+                del response.headers[header]
+        return response
+
+    def _require_session(request: Request) -> None:
+        """Control 4 (token half): a valid token via `Authorization:
+        Bearer <token>` (non-browser clients: CLI, VS Code extension) or
+        the `muvue_session` HttpOnly cookie (the dashboard, after the
+        one-time fragment exchange -- control 5). Never a query string:
+        no endpoint here ever reads one, and a query-string `token=`
+        param is simply ignored, not accepted."""
+        authorization = request.headers.get("authorization")
         token = None
         if authorization and authorization.lower().startswith("bearer "):
             token = authorization.split(" ", 1)[1].strip()
-        if not core.daemon.verify_session(repo_root, token):
-            raise HTTPException(status_code=401, detail="missing or invalid session token")
+        if token is None:
+            token = request.cookies.get(SESSION_COOKIE_NAME)
+        if not session.verify_and_touch(token):
+            raise HTTPException(status_code=403, detail="missing or invalid session token")
 
     def _handle_core_error(exc: Exception) -> None:
         if isinstance(exc, LookupError):
@@ -78,6 +196,42 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         ):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
+
+    @contextmanager
+    def _conn() -> Iterator[sqlite3.Connection]:
+        conn = core.db.connect(db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Auth exchange (plan v4 section 8a, control 5): the dashboard's own
+    # JS reads the one-time URL fragment (never sent over HTTP, so it
+    # never reaches this endpoint or any server log via the URL itself)
+    # and POSTs its value here as JSON. On a match, mints an HttpOnly,
+    # SameSite=Strict cookie carrying that same token -- `Secure` is
+    # omitted because loopback HTTP has no TLS to require it; SameSite
+    # =Strict is what actually matters (a cross-site request, even a
+    # "simple" same-site-looking one, never carries this cookie).
+    # `HttpOnly` means page JS (or an XSS payload) can never read the
+    # cookie back out. Nothing here is ever written to disk.
+    # ------------------------------------------------------------------
+
+    @app.post("/auth/exchange")
+    def exchange_token(token: str = Body(..., embed=True)) -> JSONResponse:
+        if not session.verify_and_touch(token):
+            raise HTTPException(status_code=403, detail="invalid token")
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(
+            SESSION_COOKIE_NAME,
+            token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+        return resp
 
     # ------------------------------------------------------------------
     # Ops / dashboard
@@ -226,7 +380,8 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         }
 
     # ------------------------------------------------------------------
-    # Agent verbs (plan section 4) -- CLI-equivalent, unauthenticated
+    # Agent verbs (plan section 4) -- CLI-equivalent, read endpoints
+    # unauthenticated, mutating ones session-gated (see module docstring).
     # ------------------------------------------------------------------
 
     @app.get("/projects")
@@ -375,6 +530,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     @app.post("/nodes/{node_id}/start")
     def start_node(
         node_id: int,
+        request: Request,
         owner: str = Body(...),
         agent: str | None = None,
         request_id: str | None = Body(default=None),
@@ -382,7 +538,16 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         """`POST /nodes/{id}/start?agent=X` (plan section 4): the driver
         that would actually spawn agent `X` ships in P5 (runner/drivers).
         Here `agent` is recorded on the start event but nothing is
-        spawned -- documented stub per the P2 prompt."""
+        spawned -- documented stub per the P2 prompt.
+
+        Session-gated (v4 section 8a, docs/decisions.md #84): this is
+        the endpoint the plan itself names as the RCE surface -- "a
+        daemon exposing that on localhost with a token stored in a
+        world-readable file is a remote-code-execution surface reachable
+        from any web page the user has open" -- so it is never left
+        unauthenticated even though `start` is nominally an agent verb.
+        """
+        _require_session(request)
         with _conn() as conn:
             try:
                 if agent:
@@ -407,6 +572,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     @app.post("/nodes/{node_id}/done")
     def done_node(
         node_id: int,
+        request: Request,
         owner: str = Body(...),
         summary: str | None = Body(default=None),
         request_id: str | None = Body(default=None),
@@ -417,6 +583,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             "(opt-in -- see docs/decisions.md #38); default preserves risk-tier-only gating",
         ),
     ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.nodes.done(
@@ -432,6 +599,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     @app.post("/nodes/{node_id}/fail")
     def fail_node(
         node_id: int,
+        request: Request,
         owner: str = Body(...),
         lesson: str = Body(...),
         trigger: str = Body(default=""),
@@ -440,6 +608,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         request_id: str | None = Body(default=None),
         version: int | None = Body(default=None),
     ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.nodes.fail(
@@ -454,10 +623,12 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     @app.post("/nodes/{node_id}/ask")
     def ask_node(
         node_id: int,
+        request: Request,
         question: str = Body(...),
         default: str | None = Body(default=None),
         request_id: str | None = Body(default=None),
     ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.asks.ask(
@@ -471,10 +642,10 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     @app.post("/questions/{question_id}/answer")
     def answer_question(
         question_id: int,
+        request: Request,
         text: str = Body(..., embed=True),
-        authorization: str | None = Header(default=None),
     ) -> dict:
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.asks.answer(conn, question_id, text=text, actor_evidence="dashboard_token")
@@ -483,7 +654,10 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/questions/{question_id}/wait")
-    def wait_question(question_id: int, default_ok: bool = Body(default=False, embed=True)) -> dict:
+    def wait_question(
+        question_id: int, request: Request, default_ok: bool = Body(default=False, embed=True)
+    ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.asks.wait(
@@ -497,8 +671,9 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.post("/nodes/{node_id}/replan")
     def replan_node(
-        node_id: int, title: str = Body(...), body_md: str = Body(default="")
+        node_id: int, request: Request, title: str = Body(...), body_md: str = Body(default="")
     ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.revisions.replan_add_subtask(
@@ -511,12 +686,13 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.post("/nodes/{node_id}/comment")
     def comment_on_node(
-        node_id: int, text: str = Body(...), pinned: bool = Body(default=False)
+        node_id: int, request: Request, text: str = Body(...), pinned: bool = Body(default=False)
     ) -> dict:
         """Spec-document inline comments (plan section 8: "spec document
         view with inline comments (stored as `feedback` events)") -- reuse
         `nodes.add_note`'s existing `feedback` note kind/dedupe machinery
         rather than adding a parallel comment table."""
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.nodes.add_note(
@@ -528,7 +704,10 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/projects/{project_id}/propose-revision")
-    def propose_revision(project_id: int, node_ids: list[int] = Body(..., embed=True)) -> dict:
+    def propose_revision(
+        project_id: int, request: Request, node_ids: list[int] = Body(..., embed=True)
+    ) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.revisions.propose_revision(conn, project_id, node_ids, actor_evidence="dashboard_token")
@@ -537,17 +716,17 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     # ------------------------------------------------------------------
-    # Human verbs (plan section 4): gated by the repo session token.
+    # Human verbs (plan section 4): gated by the in-memory session token.
     # ------------------------------------------------------------------
 
     @app.post("/nodes/{node_id}/approve")
     def approve_node(
         node_id: int,
+        request: Request,
         target: str = Body(default="node"),
         n: int | None = Body(default=None),
-        authorization: str | None = Header(default=None),
     ) -> dict:
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 if target == "spec":
@@ -570,11 +749,9 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.post("/nodes/{node_id}/reject")
     def reject_node(
-        node_id: int,
-        feedback: str = Body(..., embed=True),
-        authorization: str | None = Header(default=None),
+        node_id: int, request: Request, feedback: str = Body(..., embed=True)
     ) -> dict:
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.nodes.reject_review(conn, node_id, feedback=feedback, actor_evidence="dashboard_token")
@@ -583,8 +760,8 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/events/{event_id}/ack")
-    def ack_event(event_id: int, authorization: str | None = Header(default=None)) -> dict:
-        _require_session(authorization)
+    def ack_event(event_id: int, request: Request) -> dict:
+        _require_session(request)
         with _conn() as conn:
             row = core.events.ack_event(conn, event_id)
             if row is None:
@@ -592,16 +769,14 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return dict(row)
 
     @app.post("/nodes/{node_id}/merge")
-    def merge_node(
-        node_id: int, pr: bool = False, authorization: str | None = Header(default=None),
-    ) -> dict:
+    def merge_node(node_id: int, request: Request, pr: bool = False) -> dict:
         """Plan section 6 "Merging" (P5): attempt to merge this node's
         strict-mode branch onto the airlock's main. Light-mode / never
         strict-started nodes are a documented no-op (`core.merge`).
         `?pr=true` (P6, plan section 4/11): also include a generated PR
         description body (`core.pr.generate_pr_body`) in the response --
         no real `gh pr create` call, no network access here."""
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.merge.attempt_merge(conn, node_id, repo_root)  # merge.py: actor_evidence hardcoded "subprocess" internally
@@ -612,12 +787,10 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/nodes/{node_id}/handoff")
-    def handoff_node(
-        node_id: int, to: str = Body(..., embed=True), authorization: str | None = Header(default=None),
-    ) -> dict:
+    def handoff_node(node_id: int, request: Request, to: str = Body(..., embed=True)) -> dict:
         """Plan section 6 "Handoff" (P5): reassign the node's lease to `to`
         so a different driver can resume purely from DB state."""
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.nodes.handoff(
@@ -630,16 +803,16 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.post("/import")
     def import_(
+        request: Request,
         node_id: int = Body(...),
         issue_number: int = Body(...),
         data: dict = Body(...),
-        authorization: str | None = Header(default=None),
     ) -> dict:
         """Plan section 4/11 (P6): link `node_id` to `github#issue_number`
         in `external_refs`. No live GitHub API call here (plan working
         rule 2) -- `data` is the issue payload the caller already has
         (see `core/imports.py`)."""
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.imports.import_github_issue(
@@ -651,10 +824,13 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.get("/projects/{project_id}/close-preview")
-    def close_preview(project_id: int, authorization: str | None = Header(default=None)) -> dict:
+    def close_preview(project_id: int, request: Request) -> dict:
         """P6: the dashboard-reviewable structure diff `close` would
-        propose, without committing anything (`core.close.preview_close`)."""
-        _require_session(authorization)
+        propose, without committing anything (`core.close.preview_close`).
+        A read-only endpoint, but still session-gated since it's the
+        pre-close review surface for a human verb, matching P2/P2b's
+        original choice to gate it."""
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.close.preview_close(conn, project_id)
@@ -663,12 +839,12 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/projects/{project_id}/close")
-    def close_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:
+    def close_project(project_id: int, request: Request) -> dict:
         """Plan section 9 (P6): commit the project's structure diff
         (`.muvue/components.json`/`.muvue/decisions.json`, committed on
         `main`), flip the project to `closed`, and export its event
         history (`core.close.close_project`, `confirm=True`)."""
-        _require_session(authorization)
+        _require_session(request)
         with _conn() as conn:
             try:
                 result = core.close.close_project(
@@ -680,8 +856,8 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return result
 
     @app.post("/projects/{project_id}/pause")
-    def pause_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:
-        _require_session(authorization)
+    def pause_project(project_id: int, request: Request) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 row = core.projects.set_phase(conn, project_id, "paused")
@@ -690,8 +866,8 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         return dict(row)
 
     @app.post("/projects/{project_id}/resume")
-    def resume_project(project_id: int, authorization: str | None = Header(default=None)) -> dict:
-        _require_session(authorization)
+    def resume_project(project_id: int, request: Request) -> dict:
+        _require_session(request)
         with _conn() as conn:
             try:
                 row = core.projects.set_phase(conn, project_id, "executing")
