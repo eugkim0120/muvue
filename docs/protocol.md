@@ -42,7 +42,12 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
 ### Ops (`muvue <verb>`)
 - `init [PATH]` — scaffold `.muvue/` (config, db, hook shims, `.gitignore`).
 - `uninit [PATH]` — remove `.muvue/` and precisely reverse every file `init`
-  touched.
+  touched, including deleting the `muvue/structure` git ref if one exists
+  (see docs/decisions.md #108). v4 §11's tightened P0 acceptance ("no
+  muvue-owned tracked or untracked files remain, `git status` matches the
+  pre-`init` baseline") is verified by a real before/after filesystem
+  snapshot, not just `git status --porcelain`, on all 4 fixture repos —
+  see `tests/test_init_uninit.py` and docs/decisions.md #109-#110.
 - `doctor [--repair] [PATH]` — validate config, db schema version, hook
   shim presence/absolute-path correctness; `--repair` reinstalls missing
   shims.
@@ -404,6 +409,14 @@ read).
 iterations). Measured locally on this machine (no CI runner available
 in this environment): p95 ~20ms, p99 ~24ms -- well inside budget. See
 docs/decisions.md #79-#82 for the design decisions this phase made.
+
+**Gate re-check (v4 §11, between P3 and P4):** the gate row's second
+criterion, "median added latency per agent tool call < 100ms", is this
+same cold-`muvue._hook`-subprocess measurement reduced to its median
+(`PreToolUse` fires once per tool call, and its added cost to that call
+IS this measurement) — `test_gate_median_added_latency_per_agent_tool_call`
+in the same file. Measured locally: median ~18.9ms, well inside the
+100ms bar.
 
 ## Post-commit hook (P3)
 

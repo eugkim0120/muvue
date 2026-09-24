@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §11 P0/gate re-verification + `uninit` acceptance tightening (changelog item 14, final v4-migration piece)
+
+Branch `feat/v4-uninit-and-gate-recheck`, built on every prior v4-delta
+branch. Closes v4 changelog item 14 part 1 ("`uninit` acceptance made
+testable") and re-verifies the P0/dogfood-gate acceptance criteria
+against v4's tightened §11 wording (both predate or were written before
+several later v4-delta sessions and needed a real re-check, not an
+assumption).
+
+### Fixed
+- **`.muvue/.init_manifest.json` was never gitignored.** `core.repo_init.
+  _update_gitignore` now adds it to the marker-block entries. Without
+  this, an ordinary mid-project `git add -A && git commit` would sweep
+  the backup manifest `uninit_repo` needs into git history; a later
+  `git reset --hard` (or anything else reverting that commit) could
+  delete or stale it, and `uninit_repo` silently treats a missing
+  manifest as "nothing to restore" rather than erroring -- so `uninit`
+  would quietly leave original hook-file contents unrestored and still
+  report success. Found by the new filesystem-snapshot round-trip test
+  below; see docs/decisions.md #109.
+
+### Added
+- **`uninit_repo` now also deletes the `muvue/structure` git ref
+  (`refs/heads/muvue/structure`) if one exists**, via `git update-ref -d`
+  (never touches the working tree, index, or `HEAD`), skipping only if
+  it's the ref currently checked out. v4's P0 acceptance wording predates
+  §9's structure-ref mechanism and doesn't say either way; judged
+  muvue-owned the same way `.muvue/` is. See docs/decisions.md #108.
+- **`tests/test_init_uninit.py` rewritten**: `init` -> real usage (create
+  a project/node, commit, run the post-commit hook, write a structure
+  commit onto `muvue/structure`) -> `uninit`, asserted against a real
+  before/after filesystem snapshot (every file on disk, not just `git
+  status --porcelain`'s view of it) on all 4 fixtures (`plain_python`,
+  `js_husky`, `docs_only`, `monorepo`). This is the "made testable" half
+  of changelog item 14: v3/pre-tightening acceptance was satisfiable even
+  if `uninit` left a gitignored file behind, since gitignored files never
+  show in porcelain output; this doesn't have that blind spot. All 4
+  fixtures round-trip byte-identical (`.git/index`/`objects`/`logs`/
+  `COMMIT_EDITMSG`/`ORIG_HEAD` excluded as git-internal bookkeeping
+  unrelated to what muvue touched -- see docs/decisions.md #110).
+- **`tests/test_hook_latency_benchmark.py`: new
+  `test_gate_median_added_latency_per_agent_tool_call`.** v4 §11's gate
+  row added a *new* criterion beyond v3's 80%-logged-unprompted bar:
+  "median added latency per agent tool call < 100 ms". Computed from a
+  fresh 60-sample set of real cold `muvue._hook` subprocess invocations
+  (same measurement `_time_one_invocation` already made for p95/p99,
+  reduced to median here). Measured locally (no CI runner available in
+  this environment): **median 18.9ms**, comfortably under the 100ms bar
+  (samples ranged 17.5-24.0ms this run). Not a new mechanism -- P0.5's
+  hook fast path already existed; this is the re-verification v4 working
+  rule 9 asks for ("verify and report, don't assume an adjacent
+  measurement satisfies a differently-worded new criterion").
+
+### Verified, no change needed
+- **Original P3 gate's 80%-logged-unprompted property.** Spot-checked
+  every v4-delta session's new functionality (per-driver budgets,
+  `--parallel` restriction, branch coherence, granularity hard-block,
+  `touches_outside_predicted`, `muvue/structure` commits) against
+  `cli/main.py` and `api/app.py`: each is reachable through an existing
+  CLI/API verb (`run --parallel`, `start`, `decompose`/`propose-revision`,
+  `close`) -- none is a brand-new human/agent verb that exists only as a
+  raw `core.*` call, the class of gap the original gate exercise found
+  and fixed. No new CLI/API wrapper needed.
+
 ## [Unreleased] - v4 §7: commit-trailer enforcement relocation (changelog item 10)
 
 Branch `feat/v4-trailer-enforcement-relocation`, built on §1.2/§3, §4a,

@@ -1617,3 +1617,71 @@ reading here. Real `decisions` table entries start once dogfooding begins
     actually testing (the structure-ref mechanism), not silently passing
     by asserting something weaker than intended, nor failing on an
     unrelated pre-existing gap.
+
+108. **`uninit` now deletes the `muvue/structure` git ref (`refs/heads/
+    muvue/structure`, `core.close.STRUCTURE_REF`) if one exists, skipping
+    the delete only if it's the ref currently checked out as `HEAD`.**
+    v4's P0 acceptance wording ("no muvue-owned tracked or untracked
+    files") predates §9's structure-ref mechanism in the plan's own
+    phase ordering (P0 before P6) and never says anything about the
+    ref's `uninit` lifecycle either way -- genuinely ambiguous, per
+    working rule 7. Judgment call: a `muvue/structure` ref is exactly as
+    muvue-owned as `.muvue/` itself (created and only ever written by
+    `core.close._write_structure_commit`, via `git update-ref`, never by
+    the user), so it falls under the same "no muvue-owned artifacts
+    remain" umbrella the tightened P0 wording is really asking about,
+    even though the literal sentence only names files. Implemented with
+    `git update-ref -d` in `core/repo_init.py`'s new
+    `_delete_structure_ref_if_present`, called from `uninit_repo` after
+    the manifest restore, before `.muvue/` itself is removed -- never
+    touches the working tree, index, or `HEAD` (same guarantee
+    `_write_structure_commit` relies on), matching working rule 3 (git
+    ref manipulation is not a sqlite write, so it's plain git-subprocess
+    work, not `write_txn`-relevant). The "don't delete a currently
+    checked-out ref" guard is defensive: no normal workflow reaches it
+    (nothing in muvue ever checks the structure ref out as a working
+    branch), but it costs one `git symbolic-ref -q HEAD` call to avoid a
+    needless footgun if a user manually did `git checkout muvue/structure`
+    before running `uninit`.
+
+109. **Real gap found by the new filesystem-snapshot round-trip test, and
+    fixed: `.muvue/.init_manifest.json` was never added to the
+    marker-block `.gitignore` entries `_update_gitignore` writes.**
+    `.init_manifest.json` (the backup file `uninit_repo` replays to
+    restore hook shims/`.gitignore` to their pre-`init` contents) must
+    stay recoverable purely from the live filesystem for `uninit` to work
+    correctly; being un-ignored meant an ordinary mid-project `git add -A
+    && git commit` (a completely normal thing for a human or agent to
+    do while a muvue project is in progress -- muvue never told them not
+    to) would sweep it into history like any other untracked file. A
+    later `git reset --hard` (to an earlier commit, or anything else
+    that mutates the tracked tree back past that point) would then
+    delete or stale `.init_manifest.json`, and `uninit_repo` silently
+    treats a missing manifest as "nothing to restore" (see its `if
+    manifest_path.exists():` guard) rather than erroring -- so `uninit`
+    would quietly leave the original (pre-`init`) hook file contents
+    unrestored and report success. Reproduced directly: the new
+    `test_init_uninit_filesystem_snapshot_roundtrip` test's usage-
+    exercise step (create project/node, commit, run the post-commit
+    hook, write a structure commit) does exactly this `git add -A` +
+    later `git reset --hard` sequence, and failed on 3 of 4 fixtures
+    (`plain_python`, `docs_only`, `monorepo` -- all three have no
+    `.husky/`, so `init` writes real `.git/hooks/post-commit`/`pre-push`
+    shims that need restoring; `js_husky` failed only on the unrelated
+    `.git/ORIG_HEAD` housekeeping artifact below) before this fix landed.
+    Fix: added `.muvue/.init_manifest.json` to `_update_gitignore`'s
+    entries list in `core/repo_init.py` -- smallest correct change, no
+    change to `init_repo`/`uninit_repo`'s own restore logic, since the
+    restore logic was already correct given an intact manifest.
+
+110. **`test_init_uninit.py`'s filesystem snapshot excludes `.git/
+    ORIG_HEAD` alongside the pre-existing `.git/index`/`objects`/`logs`/
+    `COMMIT_EDITMSG` exclusions.** `ORIG_HEAD` is written by `git reset
+    --hard` itself (git's own pre-reset-HEAD bookkeeping, restorable via
+    `git reset --hard ORIG_HEAD`) -- the new test's usage-exercise helper
+    runs `git reset --hard HEAD~1` to undo its own test commit and leave
+    the *tracked* tree matching the pre-`init` baseline again, and that
+    `reset --hard` is the helper's own action, not something `init`/
+    `uninit` do or need to account for. Same category as the other
+    git-managed exclusions: something git itself writes as a side effect
+    of an ordinary git command, unrelated to what muvue touched.
