@@ -2,6 +2,64 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P6 (close, structure layer, history archive, brief-reads-structure)
+
+### Added
+- `muvue close PROJECT_ID [--yes]` (`core.close.close_project`, plan
+  section 9): real implementation, replacing the P0/P3/P5 `NOT
+  IMPLEMENTED` stub. Without `--yes`: dry-run preview of the proposed
+  structure diff (also `GET /projects/{id}/close-preview`); with
+  `--yes`: commits the diff into `components`/`decisions`, writes the
+  full current tables to `.muvue/components.json`/`.muvue/decisions.json`
+  and commits them on the repo's `main` (muvue as "the single writer"),
+  sets `phase -> closed`, exports the project's event history. Gated on
+  every live `task`/`subtask` node being `done`. Diff is capped at
+  `core.close.MAX_DIFF_ITEMS` (20) per category: `decisions` (from
+  `kind='decision'` notes), `promoted_lessons` (from `pinned` `kind
+  ='lesson'` notes, also landing in `decisions`), `components` (from
+  distinct `predicted_touches` path globs not already tracked). Also
+  `POST /projects/{id}/close`.
+- `core.history` (plan section 2 file layout): the real per-project
+  `.muvue/history/<id>.jsonl.gz` archive (`export_project`) --
+  gzip-compressed JSONL, replacing `export`'s P0-era whole-DB flat dump
+  for the per-project case (`muvue export --project-id ID`, and what
+  `close` calls internally). `rebuild_from_archive` replays one
+  project's archive in isolation.
+- `core.rebuild.rebuild_state_from_events`: the event-fold logic
+  `rebuild_state(conn)` used inline, now factored out and shared with
+  `core.history.rebuild_from_archive` -- one project's exported archive
+  replays through the exact same fold as a full-DB replay.
+  `core.rebuild.diff_project_from_archive` / `muvue rebuild --project-id
+  ID [--from-archive PATH]`: project-scoped counterpart to `diff_state`
+  (P6 acceptance #3).
+- `core.queries.brief_node` now also returns `relevant_decisions`/
+  `relevant_components` (plan section 4: `brief`'s ranking "over notes,
+  decisions, component purposes"): FTS5 search
+  (`search_decisions`/`search_components`) against new
+  `decisions_fts`/`components_fts` virtual tables (`SCHEMA_VERSION = 2`)
+  built from the node's own title/body, `bm25()`-ranked, `status
+  ='current'` only. A brand-new project's `brief` now surfaces a
+  decision `close`d on a completely unrelated, already-`closed` project
+  (P6 acceptance #1) -- the FTS5 index is global, not project-scoped.
+- `core.imports.import_github_issue` / `muvue import --from github#N
+  --node-id ID [--data PATH]` (plan section 4/11, human verb): links a
+  node to a GitHub issue/PR in `external_refs`. No live GitHub API
+  access in this environment (plan working rule 2) -- issue data comes
+  from an inline dict, a local JSON file (`--data`), or an injected
+  `fetch_fn(issue_number)` seam a real implementation plugs into later.
+  Also `POST /import`.
+- `core.pr.generate_pr_body` / `muvue merge NODE_ID --pr` (plan section
+  4/6/11): generates a PR description body (markdown) -- the node's
+  title/body, acceptance criteria, relevant decisions (same FTS5 search
+  `brief` uses), notes, and linked `external_refs`. No real `gh pr
+  create` call (no network access here); returned as text. Also `POST
+  /nodes/{id}/merge?pr=true`.
+
+### Changed
+- `SCHEMA_VERSION` 1 -> 2: adds `decisions_fts`/`components_fts` FTS5
+  virtual tables + their AI/AD/AU triggers (same pattern as `notes_fts`).
+  Run `muvue migrate` on an existing `.muvue/muvue.db`.
+
 ## [Unreleased] - P5 (runner, drivers)
 
 ### Added

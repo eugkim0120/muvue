@@ -49,8 +49,9 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
 - `migrate [PATH]` — bring `muvue.db` to the current `SCHEMA_VERSION`.
 - `rebuild [PATH]` — replay `events` and report any mismatch against the
   live DB.
-- `export [PATH]` — minimal events dump to `.muvue/history/events.json`
-  (full `.jsonl.gz` history export ships P6).
+- `export [PATH]` — minimal events dump to `.muvue/history/events.json`.
+  `export --project-id ID [PATH]` (P6, see below) writes the real
+  per-project `.muvue/history/<id>.jsonl.gz` archive instead.
 - `audit` — stub, ships P7.
 - `hook NAME` — shim entry point installed by `init`; no business logic
   yet (ships P3/P4). Must stay cheap (<50ms) per plan section 1.
@@ -575,3 +576,102 @@ exposed over MCP. Reassigns `owner`/`lease_until` on an `in_progress` or
 `blocked` node (un-blocking it back to `in_progress` first if needed) so
 a different driver can resume purely from DB state — no in-memory
 handoff (plan principle 1).
+
+## Close, structure layer, history archive, import, PR body (P6)
+
+### `muvue close PROJECT_ID [--yes]`
+
+`core.close.close_project` (plan section 9). Human verb, never exposed
+over MCP. Without `--yes`: a dry-run preview (also `GET
+/projects/{id}/close-preview`) of the proposed structure diff, no
+mutation. **Closeable gate**: every one of the project's live
+(non-soft-deleted) `task`/`subtask` nodes must be `done` (`spec` nodes
+are excluded — see docs/decisions.md); otherwise `preview_close`
+reports `"closeable": false` and the offending node ids, and
+`close_project(..., confirm=True)` raises `CloseError`.
+
+The proposed diff, **capped at `core.close.MAX_DIFF_ITEMS` (20) per
+category**:
+- `decisions` — one candidate per `kind='decision'` note on the
+  project's nodes (title = first line of the note text, choice = the
+  full text).
+- `promoted_lessons` — one candidate per `kind='lesson'` note with
+  `pinned=1` (plan section 9: "a lesson note with `pinned=true` ... are
+  'promoted lessons'"), parsed from `fail`'s lesson JSON
+  (trigger/failure/do_instead/scope) into the same title/context/choice
+  shape as a decision. Promoted lessons land in the `decisions` table
+  too (no separate structure-layer table for them).
+- `components` — one candidate per distinct `predicted_touches.path_glob`
+  the project's nodes declared, not already tracked as a component
+  (there is no static-analysis/anchor-hashing scan yet — that ships with
+  P7's `audit`).
+
+On `--yes`/`confirm=True`: inserts the diff's rows into `components`/
+`decisions` (each recording a `component.created`/`decision.created`
+event), dumps the **full current** `components`/`decisions` tables to
+`.muvue/components.json`/`.muvue/decisions.json`, commits those two
+files on the repo's checked-out `main` (muvue is "the single writer" of
+these files — a plain `git add`/`git commit` on `repo_root`, muvue
+committer identity, same pattern as `core.merge`'s `_run_git_as_muvue`;
+not a strict-mode airlock merge — there is no per-project git branch for
+structure metadata), sets `projects.phase = 'closed'`, and exports the
+project's event history (below). Also `POST /projects/{id}/close`
+(session-token-gated).
+
+### History archive: `.muvue/history/<project-id>.jsonl.gz`
+
+`core.history.export_project`/`rebuild_from_archive` (plan section 2
+file layout, section 9). The real per-project archive format — P0's
+`export [PATH]` (whole-DB flat `events.json` dump) still exists
+unchanged for that case; `export --project-id ID [PATH]` (and `close`,
+which calls this internally) now write the real format: gzip-compressed,
+one JSON event per line, every event with that `project_id`, in `id`
+order.
+
+`core.rebuild.rebuild_state_from_events` is the single fold
+implementation both `rebuild_state(conn)` (the whole live `events`
+table) and `history.rebuild_from_archive(path)` (one project's exported
+archive) call — a project-scoped replay reproduces exactly the same
+`{"projects": {...}, "nodes": {...}}` shape as the whole-DB replay,
+scoped down to what that archive actually contains.
+`muvue rebuild --project-id ID [PATH] [--from-archive PATH]` /
+`core.rebuild.diff_project_from_archive` compares that replay against
+the project's live state (filtered to its own project id and nodes) —
+`{}` means the archive reproduces it exactly.
+
+### `brief` reads structure (plan section 4)
+
+`core.queries.brief_node` now also returns `relevant_decisions`/
+`relevant_components`: the top `STRUCTURE_SEARCH_LIMIT` (3) FTS5 hits
+against `decisions_fts`/`components_fts` (new virtual tables,
+`SCHEMA_VERSION = 2`) for a query built from the node's own
+title/body_md, ranked by `bm25()`, `status = 'current'` only. This is
+what lets a brand-new project's `brief` cite a decision `close`d on a
+completely different, already-`closed` project (P6 acceptance #1) — the
+FTS5 tables are global, not scoped to a project.
+`core.queries.search_decisions`/`search_components` are the reusable
+query functions (also used by `core.pr.generate_pr_body`, below).
+
+### `muvue import --from github#N --node-id ID [--data PATH]`
+
+`core.imports.import_github_issue` (plan section 4/11). Human verb,
+never exposed over MCP. No live GitHub API access in this environment
+(plan working rule 2, no new HTTP-client dependency) — issue data comes
+from one of `data` (inline dict), `data_path`/`--data` (a local JSON
+file, `{"number", "title", "url", "body"}`), or an injected
+`fetch_fn(issue_number) -> dict` (the seam a real GitHub-API
+implementation plugs into later; not built here). Inserts one
+`external_refs` row (`system='github'`) and records
+`external_ref.added`. Also `POST /import` (session-token-gated; `data`
+is a required JSON body field, no file-path option over HTTP).
+
+### `muvue merge NODE_ID --pr`
+
+`core.pr.generate_pr_body` (plan section 4/6/11). No real `gh pr create`
+call (no network access here) — returns a markdown PR description body
+(`result["pr_body"]`) built from the node's own title/body_md,
+acceptance criteria (`criteria_json`), its notes, any relevant decisions
+(same FTS5 search `brief` uses), and any linked `external_refs`.
+Independent of the merge outcome itself (works the same in light mode,
+where `attempt_merge` returns `"no_worktree"`). Also `POST
+/nodes/{id}/merge?pr=true` (session-token-gated).

@@ -654,3 +654,94 @@ reading here. Real `decisions` table entries start once dogfooding begins
     the `UPDATE`, before `review.awaiting`. No behavior change from a
     caller's perspective -- same return value, same live-DB state --
     only `rebuild`'s replayed state now matches it.
+
+52. **`close`'s "closeable" gate is "every live (non-soft-deleted)
+    `task`/`subtask` node is `done`", excluding `spec` nodes.** The plan
+    doesn't say precisely when a project may close; the simplest reading
+    consistent with section 9's "wrap up finished work into structure"
+    framing is "nothing left undone." Including `spec` nodes in that
+    check was tried first and found wrong immediately: a Gate-1-approved
+    spec sits at `status='ready'` forever (`core.gates.approve_spec`) --
+    it is never itself marked `done`, only the tasks decomposed under it
+    are (the same asymmetry `core.runner._ready_nodes` already documents
+    at entry #47) -- so requiring it `done` too would make every project
+    permanently unclosable. See `core/close.py::_closeable_gate`.
+
+53. **The structure diff is capped at `core.close.MAX_DIFF_ITEMS = 20`
+    per category** (decisions / promoted lessons / components), not one
+    combined cap. The plan says only "capped per close" with no number or
+    shape. Per-category keeps one noisy category (e.g. a project with
+    many `predicted_touches` globs) from crowding out the others in a
+    single close's PR-diff-sized review, which is the point of the cap
+    (section 9: "reviewed ... as the PR diff"). 20 is a round number
+    sized for "reviewable in one sitting," not derived from any measured
+    review-time budget -- exposed as a module attribute (not a local
+    constant) so it's overridable per test/config without a real
+    `[close]` config section, which nothing else in the plan asks for
+    yet (no speculative config surface, working rule 6).
+
+54. **Promoted lessons (`kind='lesson'`, `pinned=1` notes) are written
+    into the `decisions` table, not a separate structure-layer table.**
+    The schema (plan section 3, P0) only defines `components`/
+    `decisions`/`invariants`/`node_touches` for the structure graph --
+    no dedicated "lessons" table, and section 9 lists "promoted lessons"
+    as one of three things a structure diff proposes without describing
+    a distinct storage shape for them. A lesson's own JSON fields
+    (trigger/failure/do_instead/scope, from `core.nodes.fail`) map
+    cleanly onto a decision's (title/context/choice): title <- trigger,
+    context <- failure, choice <- do_instead, title prefixed `[lesson]`
+    so `components.json`/`decisions.json` readers can tell them apart
+    from an explicit `kind='decision'` note without a schema change.
+
+55. **Component diff candidates come from `predicted_touches.path_glob`,
+    not a real static-analysis/anchor-hashing scan.** Section 9's
+    anchor-hash/staleness machinery is explicitly P6+ structure-layer
+    work per earlier phases' own notes (see docs/protocol.md's P3
+    "husky/pre-commit-framework..." aside), but building a real
+    per-language static scanner is squarely P7 `audit` territory (drift
+    detection), not P6's "propose a diff to review" scope, and would be
+    unrequested scope creep (working rule 7) this early. The only
+    structural signal already on hand -- each node's own declared
+    `predicted_touches` globs (plan section 3) -- is what `close` uses
+    instead: one candidate component per distinct glob a project touched
+    that isn't already tracked by name.
+
+56. **History archive events are the same dict shape
+    (`{"type", "payload": <json-string>, ...}`) on disk as in the live
+    `events` table**, not a pre-parsed/re-shaped export format.
+    `core.rebuild.rebuild_state_from_events` was factored out of
+    `rebuild_state(conn)` to fold either source through one
+    implementation (single write/replay path, plan working rule 3
+    extended to replay); keeping the archived shape identical to the
+    live row shape (rather than, say, pre-parsing `payload` to a dict
+    before writing the `.jsonl.gz` file) is what makes that one function
+    usable against both sources without a second code path or an
+    extra round-trip.
+
+57. **`import`'s real GitHub fetch is an injectable `fetch_fn(number) ->
+    dict` seam, with `data`/`data_path` as the two ways to supply it
+    locally today** (no new HTTP-client dependency, plan working rule
+    2). The P6 prompt left the exact shape as a judgment call. Three
+    options were considered: (a) only a local file (`--data PATH`) --
+    simplest CLI story, but gives library/test callers no way to inject
+    data without going through the filesystem; (b) only `fetch_fn` --
+    clean for tests, but the CLI then has no way to supply data at all
+    without a real implementation to inject; (c) both, plus an inline
+    `data` dict for API callers who already have the payload in a
+    request body. (c) is what's implemented: `POST /import` takes `data`
+    directly (no filesystem access from an HTTP body), the CLI takes
+    `--data PATH` (a human's likeliest way to hand muvue a mocked/saved
+    issue payload), and `fetch_fn` is what a real GitHub-API-backed
+    caller plugs in later without changing `import_github_issue`'s
+    signature.
+
+58. **`merge --pr`'s body generation is independent of the merge
+    outcome** -- it runs (and is tested) even when `attempt_merge`
+    returns `"no_worktree"` (light mode). The plan's acceptance
+    criterion only asks that the generated body's structure/content be
+    correct, not that a real merge occurred first, and gating it on
+    `"status": "merged"` would make `--pr` untestable/unusable in light
+    mode entirely (the majority of nodes in this codebase's own test
+    suite), which is a worse default than describing a node's own
+    criteria/decisions/notes regardless of whether a separate,
+    strict-mode-only git operation happened to succeed.
