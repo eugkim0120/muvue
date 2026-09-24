@@ -39,7 +39,7 @@ def _show(conn: sqlite3.Connection, config, args: dict) -> dict:
 def _start(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.nodes.start(
         conn, args["node_id"], owner=args["owner"], request_id=args.get("request_id"),
-        lease_minutes=config.planning.lease_minutes,
+        lease_minutes=config.planning.lease_minutes, actor_evidence="mcp",
     )
 
 
@@ -47,7 +47,7 @@ def _done(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.nodes.done(
         conn, args["node_id"], owner=args["owner"], summary=args.get("summary"),
         request_id=args.get("request_id"), config=config,
-        expected_version=args.get("version"),
+        expected_version=args.get("version"), actor_evidence="mcp",
     )
 
 
@@ -56,35 +56,35 @@ def _fail(conn: sqlite3.Connection, config, args: dict) -> dict:
         conn, args["node_id"], owner=args["owner"], lesson=args["lesson"],
         trigger=args.get("trigger", ""), do_instead=args.get("do_instead", ""),
         scope=args.get("scope", ""), request_id=args.get("request_id"),
-        expected_version=args.get("version"),
+        expected_version=args.get("version"), actor_evidence="mcp",
     )
 
 
 def _note(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.nodes.add_note(
         conn, args["node_id"], kind=args.get("kind", "discovery"), text=args["text"],
-        actor="agent", pinned=args.get("pinned", False),
+        actor="agent", actor_evidence="mcp", pinned=args.get("pinned", False),
     )
 
 
 def _ask(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.asks.ask(
         conn, args["node_id"], question=args["question"], default=args.get("default"),
-        request_id=args.get("request_id"),
+        request_id=args.get("request_id"), actor_evidence="mcp",
     )
 
 
 def _wait(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.asks.wait(
         conn, args["question_id"], timeout_minutes=config.planning.ask_timeout_minutes,
-        default_ok=args.get("default_ok", False),
+        default_ok=args.get("default_ok", False), actor_evidence="mcp",
     )
 
 
 def _replan(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.revisions.replan_add_subtask(
         conn, parent_task_id=args["parent_task_id"], title=args["title"],
-        body_md=args.get("body_md", ""),
+        body_md=args.get("body_md", ""), actor_evidence="mcp",
     )
 
 

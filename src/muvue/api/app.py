@@ -373,13 +373,14 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                         project_id=core.nodes.get_node(conn, node_id)["project_id"],
                         node_id=node_id,
                         actor="human",
+                        actor_evidence="dashboard_token",
                         type_="node.agent_requested",
                         payload={"agent": agent},
                     )
                     conn.commit()
                 result = core.nodes.start(
                     conn, node_id, owner=owner, request_id=request_id,
-                    lease_minutes=config.planning.lease_minutes,
+                    lease_minutes=config.planning.lease_minutes, actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -404,7 +405,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                     conn, node_id, owner=owner, summary=summary, request_id=request_id,
                     config=config, expected_version=version,
                     run_checks=core.review.default_run_checks if run_checks else None,
-                    cwd=str(repo_root),
+                    cwd=str(repo_root), actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -426,7 +427,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 result = core.nodes.fail(
                     conn, node_id, owner=owner, lesson=lesson, trigger=trigger,
                     do_instead=do_instead, scope=scope, request_id=request_id,
-                    expected_version=version,
+                    expected_version=version, actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -443,6 +444,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.asks.ask(
                     conn, node_id, question=question, default=default, request_id=request_id,
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -457,7 +459,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         _require_session(authorization)
         with _conn() as conn:
             try:
-                result = core.asks.answer(conn, question_id, text=text)
+                result = core.asks.answer(conn, question_id, text=text, actor_evidence="dashboard_token")
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -469,7 +471,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 result = core.asks.wait(
                     conn, question_id,
                     timeout_minutes=config.planning.ask_timeout_minutes,
-                    default_ok=default_ok,
+                    default_ok=default_ok, actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -483,6 +485,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.revisions.replan_add_subtask(
                     conn, parent_task_id=node_id, title=title, body_md=body_md,
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -500,6 +503,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.nodes.add_note(
                     conn, node_id, kind="feedback", text=text, actor="human", pinned=pinned,
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -509,7 +513,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     def propose_revision(project_id: int, node_ids: list[int] = Body(..., embed=True)) -> dict:
         with _conn() as conn:
             try:
-                result = core.revisions.propose_revision(conn, project_id, node_ids)
+                result = core.revisions.propose_revision(conn, project_id, node_ids, actor_evidence="dashboard_token")
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -529,17 +533,17 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         with _conn() as conn:
             try:
                 if target == "spec":
-                    result = core.gates.approve_spec(conn, node_id)
+                    result = core.gates.approve_spec(conn, node_id, actor_evidence="dashboard_token")
                 elif target == "gate2":
-                    result = core.gates.approve_gate2(conn, node_id, config=config)
+                    result = core.gates.approve_gate2(conn, node_id, config=config, actor_evidence="dashboard_token")
                 elif target == "revision":
                     if n is None:
                         raise HTTPException(status_code=422, detail="revision approval needs n")
-                    result = core.revisions.approve_revision(conn, node_id, n, config=config)
+                    result = core.revisions.approve_revision(conn, node_id, n, config=config, actor_evidence="dashboard_token")
                 elif target == "review":
-                    result = core.nodes.approve_review(conn, node_id)
+                    result = core.nodes.approve_review(conn, node_id, actor_evidence="dashboard_token")
                 else:
-                    result = core.gates.approve_node(conn, node_id, config=config)
+                    result = core.gates.approve_node(conn, node_id, config=config, actor_evidence="dashboard_token")
             except HTTPException:
                 raise
             except Exception as e:
@@ -555,7 +559,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         _require_session(authorization)
         with _conn() as conn:
             try:
-                result = core.nodes.reject_review(conn, node_id, feedback=feedback)
+                result = core.nodes.reject_review(conn, node_id, feedback=feedback, actor_evidence="dashboard_token")
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -564,16 +568,9 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
     def ack_event(event_id: int, authorization: str | None = Header(default=None)) -> dict:
         _require_session(authorization)
         with _conn() as conn:
-            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            row = core.events.ack_event(conn, event_id)
             if row is None:
                 raise HTTPException(status_code=404, detail=f"no such event: {event_id}")
-            conn.execute(
-                "UPDATE events SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
-                "WHERE id = ?",
-                (event_id,),
-            )
-            conn.commit()
-            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return dict(row)
 
     @app.post("/nodes/{node_id}/merge")
@@ -589,7 +586,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
         _require_session(authorization)
         with _conn() as conn:
             try:
-                result = core.merge.attempt_merge(conn, node_id, repo_root)
+                result = core.merge.attempt_merge(conn, node_id, repo_root)  # merge.py: actor_evidence hardcoded "subprocess" internally
                 if pr:
                     result["pr_body"] = core.pr.generate_pr_body(conn, node_id)
             except Exception as e:
@@ -607,6 +604,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.nodes.handoff(
                     conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -628,6 +626,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.imports.import_github_issue(
                     conn, node_id, issue_number, data=data, actor="human",
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -656,6 +655,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             try:
                 result = core.close.close_project(
                     conn, project_id, repo_root, actor="human", confirm=True,
+                    actor_evidence="dashboard_token",
                 )
             except Exception as e:
                 _handle_core_error(e)
