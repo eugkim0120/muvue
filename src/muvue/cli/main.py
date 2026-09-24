@@ -12,8 +12,12 @@ from muvue import core
 from muvue.core.config import ConfigError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
+adapter_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Vendor adapter config writers (plan section 7).")
+app.add_typer(adapter_app, name="adapter")
 
 NOT_IMPLEMENTED = "not implemented in P0"
+
+_CLAUDE_HOOK_NAMES = {"session-start", "pre-tool-use", "pre-compact", "stop"}
 
 
 def _find_repo_root(start: Path | None = None) -> Path:
@@ -161,6 +165,30 @@ def serve(
     uvicorn.run(app_instance, host=host, port=port, log_level="warning")
 
 
+@adapter_app.command("install")
+def adapter_install(
+    name: str = typer.Argument(..., help="claude-code, codex, gemini, or cursor"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Write the given vendor's config, pointing it at muvue's CLI/MCP
+    surface (plan section 7). Codex/Gemini/Cursor writers are best-effort
+    and unverified against live vendor docs -- see docs/providers.md."""
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    installers = {
+        "claude-code": core.adapters.install_claude_code,
+        "codex": core.adapters.install_codex,
+        "gemini": core.adapters.install_gemini,
+        "cursor": core.adapters.install_cursor,
+    }
+    installer = installers.get(name)
+    if installer is None:
+        typer.echo(f"unknown adapter: {name!r} (known: {sorted(installers)})", err=True)
+        raise typer.Exit(1)
+    written = installer(repo_root, protocol_version=config.protocol_version)
+    typer.echo(f"installed {name} adapter: {written}")
+
+
 @app.command()
 def mcp(path: Path = typer.Argument(Path("."), help="Repo root to serve")) -> None:
     """MCP stdio server (plan section 4/7): agent verbs only, never the
@@ -188,21 +216,62 @@ def hook(
     `post-commit` (P3): parses `Muvue-Node:`/`Refs:` trailers out of
     HEAD's commit message, links the commit to any resolvable node in
     `node_commits`, and enqueues anchor-hash/staleness no-op signals (see
-    core/hooks.py). Every other hook name (`pre-push`, and the Claude
-    Code adapter's SessionStart/PreToolUse/PreCompact/Stop events routed
-    through `muvue adapter`) is still a cheap no-op -- pre-push strict-
-    mode enforcement is P4 scope (plan section 12 working rule 7: no
-    strict-mode airlock in P3). Stays well under the 50ms budget from
-    plan section 1 either way.
+    core/hooks.py).
+
+    `session-start`/`pre-tool-use`/`pre-compact`/`stop` (P3): the Claude
+    Code adapter's hook handlers (see core/claude_hooks.py). Claude Code
+    passes hook-specific JSON on stdin and reads a JSON decision back
+    from stdout; a `"decision": "block"` response exits 2 (Claude Code's
+    documented block convention) so its reason text reaches the model,
+    exit 0 otherwise.
+
+    `pre-push` is still a no-op -- pre-push strict-mode enforcement is P4
+    scope (plan section 12 working rule 7: no strict-mode airlock in P3).
+    Stays well under the 50ms budget from plan section 1 either way.
     """
-    if name != "post-commit":
+    if name == "post-commit":
+        repo_root = _find_repo_root(path)
+        conn = _db_connect(repo_root)
+        try:
+            core.hooks.handle_post_commit_from_git(conn, repo_root)
+        finally:
+            conn.close()
         return
+
+    if name not in _CLAUDE_HOOK_NAMES:
+        return
+
     repo_root = _find_repo_root(path)
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    node_id = payload.get("node_id")
+    if node_id is None:
+        node_id = core.adapters.get_current_node(repo_root)
+
     conn = _db_connect(repo_root)
     try:
-        core.hooks.handle_post_commit_from_git(conn, repo_root)
+        if name == "session-start":
+            result = core.claude_hooks.session_start(conn, node_id=node_id)
+        elif name == "pre-tool-use":
+            result = core.claude_hooks.pre_tool_use(
+                conn, tool_name=payload.get("tool_name", ""),
+                tool_input=payload.get("tool_input"), node_id=node_id,
+            )
+        elif name == "pre-compact":
+            result = core.claude_hooks.pre_compact(
+                conn, node_id=node_id, summary=payload.get("summary"),
+            )
+        else:  # stop
+            result = core.claude_hooks.stop(conn, node_id=node_id)
     finally:
         conn.close()
+
+    typer.echo(json.dumps(result))
+    if result.get("decision") == "block":
+        raise typer.Exit(2)
 
 
 # --------------------------------------------------------------------------
@@ -227,6 +296,11 @@ def start(
         )
     finally:
         conn.close()
+    if not result.get("noop"):
+        # Bridges `start` to the Claude Code adapter's hooks (P3), which
+        # have no other way to know which node an editor session is
+        # working on -- see core/adapters.py.
+        core.adapters.set_current_node(repo_root, node_id)
     _echo_json(result)
 
 
@@ -251,6 +325,8 @@ def done(
         )
     finally:
         conn.close()
+    if core.adapters.get_current_node(repo_root) == node_id:
+        core.adapters.clear_current_node(repo_root)
     _echo_json(result)
 
 
@@ -274,6 +350,8 @@ def fail(
         )
     finally:
         conn.close()
+    if core.adapters.get_current_node(repo_root) == node_id:
+        core.adapters.clear_current_node(repo_root)
     _echo_json(result)
 
 

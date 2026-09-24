@@ -5,7 +5,9 @@ it issues raw SQL against .muvue/muvue.db.
 """
 
 from . import (
+    adapters,
     asks,
+    claude_hooks,
     daemon,
     db,
     doctor,
@@ -26,7 +28,9 @@ from . import (
 from .config import ConfigError, MuvueConfig, load_config
 
 __all__ = [
+    "adapters",
     "asks",
+    "claude_hooks",
     "daemon",
     "db",
     "doctor",

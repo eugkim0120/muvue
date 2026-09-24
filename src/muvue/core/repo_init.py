@@ -78,6 +78,7 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         ".muvue/muvue.db-wal",
         ".muvue/muvue.db-shm",
         ".muvue/session",
+        ".muvue/current_node",
         end,
         "",
     ]

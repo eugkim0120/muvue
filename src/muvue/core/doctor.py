@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import adapters as adapters_mod
 from . import db as core_db
 from .config import ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim
@@ -32,11 +33,12 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
         return report
 
     config_path = muvue_dir / "config.toml"
+    config = None
     if not config_path.exists():
         report.fail(f"{config_path} missing")
     else:
         try:
-            load_config(config_path)
+            config = load_config(config_path)
         except ConfigError as e:
             report.fail(str(e))
 
@@ -71,5 +73,18 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
                     if not Path(interp).is_absolute():
                         report.fail(f"hook shim in {path} does not use an absolute path")
                     break
+
+    # Adapter protocol_version drift (plan section 7): a `.claude/
+    # settings.json` written by an older `muvue adapter install
+    # claude-code` (a stale protocol_version embedded) needs re-running
+    # after a protocol bump -- see docs/decisions.md.
+    if config is not None:
+        installed = adapters_mod.claude_code_protocol_version(repo_root)
+        if installed is not None and installed != config.protocol_version:
+            report.fail(
+                f".claude/settings.json was installed for protocol_version={installed}, "
+                f"repo is now protocol_version={config.protocol_version}; "
+                "re-run `muvue adapter install claude-code`"
+            )
 
     return report
