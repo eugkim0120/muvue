@@ -12,4 +12,5 @@ __pycache__/
 .muvue/muvue.db-shm
 .muvue/session
 .muvue/current_node
+.muvue/.init_manifest.json
 # <<< muvue <<<
