@@ -24,6 +24,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from . import db as db_mod
 from . import events as events_mod
 from . import history as history_mod
 from . import projects as projects_mod
@@ -209,6 +210,7 @@ def close_project(
     repo_root: str | Path,
     *,
     actor: str = "human",
+    actor_evidence: str = "tty",
     confirm: bool = False,
 ) -> dict:
     """`confirm=False` (default): dry-run, same shape as `preview_close`
@@ -228,30 +230,31 @@ def close_project(
 
     repo_root = Path(repo_root)
 
-    for c in preview["diff"]["components"]:
-        cur = conn.execute(
-            "INSERT INTO components (name, kind, purpose, anchors_json, status) "
-            "VALUES (?, ?, ?, '[]', 'current')",
-            (c["name"], c["kind"], c["purpose"]),
-        )
-        row = conn.execute("SELECT * FROM components WHERE id = ?", (cur.lastrowid,)).fetchone()
-        events_mod.record_event(
-            conn, project_id=project_id, node_id=None, actor=actor,
-            type_="component.created", payload=dict(row),
-        )
+    with db_mod.write_txn(conn):
+        for c in preview["diff"]["components"]:
+            cur = conn.execute(
+                "INSERT INTO components (name, kind, purpose, anchors_json, status) "
+                "VALUES (?, ?, ?, '[]', 'current')",
+                (c["name"], c["kind"], c["purpose"]),
+            )
+            row = conn.execute("SELECT * FROM components WHERE id = ?", (cur.lastrowid,)).fetchone()
+            events_mod.record_event(
+                conn, project_id=project_id, node_id=None, actor=actor, actor_evidence=actor_evidence,
+                type_="component.created", payload=dict(row),
+            )
 
-    for d in preview["diff"]["decisions"] + preview["diff"]["promoted_lessons"]:
-        cur = conn.execute(
-            "INSERT INTO decisions (title, context, choice, rejected_json, status, source_node_id) "
-            "VALUES (?, ?, ?, '[]', 'current', ?)",
-            (d["title"], d.get("context"), d.get("choice"), d.get("source_node_id")),
-        )
-        row = conn.execute("SELECT * FROM decisions WHERE id = ?", (cur.lastrowid,)).fetchone()
-        events_mod.record_event(
-            conn, project_id=project_id, node_id=d.get("source_node_id"), actor=actor,
-            type_="decision.created", payload=dict(row),
-        )
-    conn.commit()
+        for d in preview["diff"]["decisions"] + preview["diff"]["promoted_lessons"]:
+            cur = conn.execute(
+                "INSERT INTO decisions (title, context, choice, rejected_json, status, source_node_id) "
+                "VALUES (?, ?, ?, '[]', 'current', ?)",
+                (d["title"], d.get("context"), d.get("choice"), d.get("source_node_id")),
+            )
+            row = conn.execute("SELECT * FROM decisions WHERE id = ?", (cur.lastrowid,)).fetchone()
+            events_mod.record_event(
+                conn, project_id=project_id, node_id=d.get("source_node_id"), actor=actor,
+                actor_evidence=actor_evidence,
+                type_="decision.created", payload=dict(row),
+            )
 
     comp_path, dec_path = _write_structure_json(conn, repo_root)
 
@@ -265,7 +268,7 @@ def close_project(
     if commit.returncode != 0 and "nothing to commit" not in (commit.stdout + commit.stderr):
         raise CloseError(f"failed to commit structure diff: {commit.stderr}")
 
-    project_row = projects_mod.set_phase(conn, project_id, "closed", actor=actor)
+    project_row = projects_mod.set_phase(conn, project_id, "closed", actor=actor, actor_evidence=actor_evidence)
 
     history_path = history_mod.export_project(conn, project_id, repo_root)
 

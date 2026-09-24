@@ -18,6 +18,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import db as db_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
 
@@ -41,38 +42,43 @@ def _parse(ts: str) -> datetime:
 
 def reconcile_leases(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[dict]:
     """Revert every `in_progress` node whose `lease_until` is in the past
-    back to `ready` (or `failed` if that exhausts `max_attempts`), with
-    `attempts + 1` -- plan section 5 ("Expired leases revert to ready with
-    attempts + 1. Daemon reconciles on start"). Returns the list of
-    affected node rows (post-transition)."""
+    back to `ready`, with `lease_expiries + 1` -- v4 section 3/5:
+    "`lease_expiries` counts crash/timeout reclaims and never drives
+    `failed`. (v3 conflated them, so a daemon restart could burn a
+    node's retries.)" `attempts` (the *agent*-failure counter `core.
+    nodes.fail` owns) is left untouched here -- a lease expiry is never
+    routed to `failed`, regardless of how many times it's happened, so
+    there is no `max_attempts` check on this path at all. Emits an
+    explicit `node.lease_expired` event so "the *consequence* of the
+    clock is replayable even though the clock is not" (v4 section 3).
+    Returns the list of affected node rows (post-transition)."""
     current = now or _now()
     now_s = current.strftime(TS_FORMAT)
-    expired = conn.execute(
-        "SELECT * FROM nodes WHERE status = 'in_progress' AND lease_until IS NOT NULL "
-        "AND lease_until < ? AND deleted_at IS NULL",
-        (now_s,),
-    ).fetchall()
-    reverted = []
-    for node in expired:
-        attempts = node["attempts"] + 1
-        to_status = "failed" if attempts >= node["max_attempts"] else "ready"
-        row = nodes_mod._apply_transition(
-            conn,
-            node,
-            to_status=to_status,
-            lease_actor=node["owner"] or "",
-            event_actor_role="daemon",
-            event_type="node.lease_expired",
-            request_id=None,
-            extra_columns={
-                "attempts": attempts,
-                "owner": None,
-                "lease_until": None,
-            },
-        )
-        reverted.append(dict(row))
-    conn.commit()
-    return reverted
+    with db_mod.write_txn(conn):
+        expired = conn.execute(
+            "SELECT * FROM nodes WHERE status = 'in_progress' AND lease_until IS NOT NULL "
+            "AND lease_until < ? AND deleted_at IS NULL",
+            (now_s,),
+        ).fetchall()
+        reverted = []
+        for node in expired:
+            row = nodes_mod._apply_transition(
+                conn,
+                node,
+                to_status="ready",
+                lease_actor=node["owner"] or "",
+                event_actor_role="daemon",
+                event_type="node.lease_expired",
+                request_id=None,
+                extra_columns={
+                    "lease_expiries": node["lease_expiries"] + 1,
+                    "owner": None,
+                    "lease_until": None,
+                },
+                actor_evidence="subprocess",
+            )
+            reverted.append(dict(row))
+        return reverted
 
 
 # --------------------------------------------------------------------------
@@ -86,19 +92,19 @@ def reconcile_leases(conn: sqlite3.Connection, *, now: datetime | None = None) -
 def process_queue(conn: sqlite3.Connection, *, batch_size: int = 100) -> int:
     """Drain up to `batch_size` unacked events by marking `acked_at`. No
     consumer logic runs yet (documented no-op, see module docstring)."""
-    rows = conn.execute(
-        "SELECT id FROM events WHERE acked_at IS NULL ORDER BY id ASC LIMIT ?",
-        (batch_size,),
-    ).fetchall()
-    if not rows:
-        return 0
-    now_s = _now().strftime(TS_FORMAT)
-    ids = [r["id"] for r in rows]
-    conn.executemany(
-        "UPDATE events SET acked_at = ? WHERE id = ?", [(now_s, i) for i in ids]
-    )
-    conn.commit()
-    return len(ids)
+    with db_mod.write_txn(conn):
+        rows = conn.execute(
+            "SELECT id FROM events WHERE acked_at IS NULL ORDER BY id ASC LIMIT ?",
+            (batch_size,),
+        ).fetchall()
+        if not rows:
+            return 0
+        now_s = _now().strftime(TS_FORMAT)
+        ids = [r["id"] for r in rows]
+        conn.executemany(
+            "UPDATE events SET acked_at = ? WHERE id = ?", [(now_s, i) for i in ids]
+        )
+        return len(ids)
 
 
 def reconcile_on_start(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict:

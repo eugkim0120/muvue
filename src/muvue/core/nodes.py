@@ -3,6 +3,12 @@
 Every mutating function here is the single write path (plan working rule 3):
 the CLI never issues raw SQL. Each mutation appends a full-row-snapshot event
 so `rebuild` (see rebuild.py) can reconstruct live state by replay alone.
+
+Every mutating function opens its writes inside `core.db.write_txn` (v4
+section 1.2, working rule 3): a nested call (e.g. `fail` calling
+`add_note`) is a no-op re-entry into the same, already-open transaction
+(see `core.db.write_txn`'s docstring) -- so the whole verb commits or
+rolls back atomically, not slice-by-slice.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from . import db as db_mod
 from . import events, review, risk, state_machine
 
 DEFAULT_LEASE_MINUTES = 60
@@ -65,48 +72,51 @@ def create_node(
     max_attempts: int = 3,
     status: str = "pending",
     actor: str = "human",
+    actor_evidence: str = "tty",
     predicted_touches: list[str] | None = None,
 ) -> sqlite3.Row:
     criteria = criteria or []
     criteria_json = json.dumps(criteria)
-    # criteria_hash stays NULL until Gate 2 (or a plan-revision re-approval)
-    # freezes it -- see core.gates.approve_node. A non-NULL criteria_hash
-    # means "this criteria_json was approved"; that's the signal
-    # core.gates.edit_criteria uses to detect a post-freeze edit.
-    cur = conn.execute(
-        "INSERT INTO nodes (project_id, parent_id, kind, title, body_md, status, "
-        "criteria_json, criteria_mode, risk_tier, max_attempts) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            project_id,
-            parent_id,
-            kind,
-            title,
-            body_md,
-            status,
-            criteria_json,
-            criteria_mode,
-            risk_tier,
-            max_attempts,
-        ),
-    )
-    node_id = cur.lastrowid
-    for glob in predicted_touches or []:
-        conn.execute(
-            "INSERT OR IGNORE INTO predicted_touches (node_id, path_glob) VALUES (?, ?)",
-            (node_id, glob),
+    with db_mod.write_txn(conn):
+        # criteria_hash stays NULL until Gate 2 (or a plan-revision
+        # re-approval) freezes it -- see core.gates.approve_node. A
+        # non-NULL criteria_hash means "this criteria_json was
+        # approved"; that's the signal core.gates.edit_criteria uses to
+        # detect a post-freeze edit.
+        cur = conn.execute(
+            "INSERT INTO nodes (project_id, parent_id, kind, title, body_md, status, "
+            "criteria_json, criteria_mode, risk_tier, max_attempts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                project_id,
+                parent_id,
+                kind,
+                title,
+                body_md,
+                status,
+                criteria_json,
+                criteria_mode,
+                risk_tier,
+                max_attempts,
+            ),
         )
-    row = get_node(conn, node_id)
-    events.record_event(
-        conn,
-        project_id=project_id,
-        node_id=node_id,
-        actor=actor,
-        type_="node.created",
-        payload=dict(row),
-    )
-    conn.commit()
-    return row
+        node_id = cur.lastrowid
+        for glob in predicted_touches or []:
+            conn.execute(
+                "INSERT OR IGNORE INTO predicted_touches (node_id, path_glob) VALUES (?, ?)",
+                (node_id, glob),
+            )
+        row = get_node(conn, node_id)
+        events.record_event(
+            conn,
+            project_id=project_id,
+            node_id=node_id,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="node.created",
+            payload=dict(row),
+        )
+        return row
 
 
 def _apply_transition(
@@ -120,6 +130,7 @@ def _apply_transition(
     request_id: str | None,
     extra_columns: dict | None = None,
     block_reason: str | None = None,
+    actor_evidence: str = "subprocess",
 ) -> sqlite3.Row:
     """`lease_actor` is the identity checked against nodes.owner (plan
     section 3: "only the lease owner may transition a node"). Distinct from
@@ -131,45 +142,51 @@ def _apply_transition(
     columns = {"status": to_status, "block_reason": block_reason}
     if extra_columns:
         columns.update(extra_columns)
-    set_clause = ", ".join(f"{k} = ?" for k in columns)
-    conn.execute(
-        f"UPDATE nodes SET {set_clause} WHERE id = ?",
-        (*columns.values(), node["id"]),
-    )
-    row = get_node(conn, node["id"])
-    events.record_event(
-        conn,
-        project_id=row["project_id"],
-        node_id=row["id"],
-        actor=event_actor_role,
-        type_=event_type,
-        payload=dict(row),
-        request_id=request_id,
-    )
-    return row
+    with db_mod.write_txn(conn):
+        set_clause = ", ".join(f"{k} = ?" for k in columns)
+        conn.execute(
+            f"UPDATE nodes SET {set_clause} WHERE id = ?",
+            (*columns.values(), node["id"]),
+        )
+        row = get_node(conn, node["id"])
+        events.record_event(
+            conn,
+            project_id=row["project_id"],
+            node_id=row["id"],
+            actor=event_actor_role,
+            actor_evidence=actor_evidence,
+            type_=event_type,
+            payload=dict(row),
+            request_id=request_id,
+        )
+        return row
 
 
-def ready(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> sqlite3.Row:
-    node = get_node(conn, node_id)
-    row = _apply_transition(
-        conn, node, to_status="ready", lease_actor=node["owner"] or "",
-        event_actor_role=actor, event_type="node.ready", request_id=None,
-    )
-    conn.commit()
-    return row
+def ready(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> sqlite3.Row:
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        return _apply_transition(
+            conn, node, to_status="ready", lease_actor=node["owner"] or "",
+            event_actor_role=actor, event_type="node.ready", request_id=None,
+            actor_evidence=actor_evidence,
+        )
 
 
-def to_pending(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> sqlite3.Row:
+def to_pending(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> sqlite3.Row:
     """ready -> pending. Used by Gate 2 criteria-edit re-tiering (P1): a
     frozen node whose criteria change is pulled back out of `ready` until a
     human re-approves it (see core.gates.edit_criteria)."""
-    node = get_node(conn, node_id)
-    row = _apply_transition(
-        conn, node, to_status="pending", lease_actor=node["owner"] or "",
-        event_actor_role=actor, event_type="node.pending", request_id=None,
-    )
-    conn.commit()
-    return row
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        return _apply_transition(
+            conn, node, to_status="pending", lease_actor=node["owner"] or "",
+            event_actor_role=actor, event_type="node.pending", request_id=None,
+            actor_evidence=actor_evidence,
+        )
 
 
 def start(
@@ -178,6 +195,7 @@ def start(
     *,
     owner: str,
     actor: str = "agent",
+    actor_evidence: str = "tty",
     request_id: str | None = None,
     lease_minutes: int = DEFAULT_LEASE_MINUTES,
     config=None,
@@ -225,7 +243,9 @@ def start(
     # before touching the DB at all, so a `worktree_setup` failure fails
     # `start` cleanly -- the node is never left half-transitioned with a
     # worktree binding that didn't actually finish setting up (see
-    # core.strict.bind_worktree's docstring).
+    # core.strict.bind_worktree's docstring). Git mechanics stay outside
+    # `write_txn`: it's filesystem/subprocess work, not a DB write, and
+    # it must be able to fail *before* any DB transaction opens.
     extra_columns = {"owner": owner, "lease_until": lease_until}
     if config is not None and getattr(config, "mode", "light") == "strict":
         if repo_root is None:
@@ -239,22 +259,23 @@ def start(
         if node["worktree"] is None:
             extra_columns["worktree"] = str(worktree_path)
 
-    row = _apply_transition(
-        conn,
-        node,
-        to_status="in_progress",
-        lease_actor=owner,
-        event_actor_role="agent",
-        event_type="node.start",
-        request_id=request_id,
-        extra_columns=extra_columns,
-    )
-    conn.commit()
-    return {"noop": False, "node": dict(row)}
+    with db_mod.write_txn(conn):
+        row = _apply_transition(
+            conn,
+            node,
+            to_status="in_progress",
+            lease_actor=owner,
+            event_actor_role="agent",
+            event_type="node.start",
+            request_id=request_id,
+            extra_columns=extra_columns,
+            actor_evidence=actor_evidence,
+        )
+        return {"noop": False, "node": dict(row)}
 
 
 def bump_version(
-    conn: sqlite3.Connection, node_id: int, *, actor: str = "human"
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
 ) -> sqlite3.Row:
     """Optimistic concurrency counter (plan section 3: `nodes.version`).
     Called on human-visible edits made to a node while it may be leased
@@ -263,17 +284,19 @@ def bump_version(
     later `done(..., expected_version=...)` can detect "this node changed
     under me" instead of silently overwriting a human's edit (P3
     acceptance #2)."""
-    conn.execute("UPDATE nodes SET version = version + 1 WHERE id = ?", (node_id,))
-    row = get_node(conn, node_id)
-    events.record_event(
-        conn,
-        project_id=row["project_id"],
-        node_id=node_id,
-        actor=actor,
-        type_="node.version_bumped",
-        payload=dict(row),
-    )
-    return row
+    with db_mod.write_txn(conn):
+        conn.execute("UPDATE nodes SET version = version + 1 WHERE id = ?", (node_id,))
+        row = get_node(conn, node_id)
+        events.record_event(
+            conn,
+            project_id=row["project_id"],
+            node_id=node_id,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="node.version_bumped",
+            payload=dict(row),
+        )
+        return row
 
 
 class VersionMismatch(NodeError):
@@ -293,6 +316,7 @@ def done(
     expected_version: int | None = None,
     run_checks=None,
     cwd: str = ".",
+    actor_evidence: str = "tty",
 ) -> dict:
     """Mark a node done. Idempotent: a node already `done` is a no-op, and a
     duplicate request_id within the 24h dedupe window is a no-op (plan
@@ -326,89 +350,95 @@ def done(
             "and retry rather than overwrite)"
         )
 
-    reviewing = _apply_transition(
-        conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
-        event_type="node.review", request_id=None,
-    )
-
-    if config is None:
-        row = _apply_transition(
-            conn,
-            reviewing,
-            to_status="done",
-            lease_actor=owner,
-            event_actor_role="agent",
-            event_type="node.done",
-            request_id=request_id,
-            extra_columns={"lease_until": None, "summary": summary},
+    with db_mod.write_txn(conn):
+        reviewing = _apply_transition(
+            conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
+            event_type="node.review", request_id=None, actor_evidence=actor_evidence,
         )
-        conn.commit()
-        return {"noop": False, "node": dict(row), "auto_approved": True}
 
-    tier = risk.max_tier(risk.compute_tier(conn, reviewing, config), reviewing["risk_tier"])
-    flagged = risk.is_flagged(conn, reviewing, config)
-    conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
-    reviewing = get_node(conn, node_id)
+        if config is None:
+            row = _apply_transition(
+                conn,
+                reviewing,
+                to_status="done",
+                lease_actor=owner,
+                event_actor_role="agent",
+                event_type="node.done",
+                request_id=request_id,
+                extra_columns={"lease_until": None, "summary": summary},
+                actor_evidence=actor_evidence,
+            )
+            return {"noop": False, "node": dict(row), "auto_approved": True}
 
-    # Light-mode `review` dispatch (plan section 5, P3): auto/external/
-    # manual criteria modes each add their own reason to flag a node to
-    # `review`, on top of core.risk's tier/test-touch flag.
-    dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
-    if dispatch["flag"]:
-        flagged = True
+        tier = risk.max_tier(risk.compute_tier(conn, reviewing, config), reviewing["risk_tier"])
+        flagged = risk.is_flagged(conn, reviewing, config)
+        conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
+        reviewing = get_node(conn, node_id)
+
+        # Light-mode `review` dispatch (plan section 5, P3): auto/external/
+        # manual criteria modes each add their own reason to flag a node to
+        # `review`, on top of core.risk's tier/test-touch flag.
+        dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
+        if dispatch["flag"]:
+            flagged = True
+            events.record_event(
+                conn, project_id=reviewing["project_id"], node_id=node_id, actor="agent",
+                actor_evidence=actor_evidence,
+                type_=dispatch["event_type"], payload=dispatch["payload"],
+            )
+
+        if tier == "low" and not flagged:
+            row = _apply_transition(
+                conn,
+                reviewing,
+                to_status="done",
+                lease_actor=owner,
+                event_actor_role="agent",
+                event_type="node.done",
+                request_id=request_id,
+                extra_columns={"lease_until": None, "summary": summary},
+                actor_evidence=actor_evidence,
+            )
+            events.record_event(
+                conn,
+                project_id=row["project_id"],
+                node_id=node_id,
+                actor="daemon",
+                actor_evidence="subprocess",
+                type_="review.auto_approved",
+                payload={"tier": tier},
+            )
+            return {"noop": False, "node": dict(row), "auto_approved": True}
+
+        conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
+        row = get_node(conn, node_id)
+        # `node.`-prefixed so `rebuild.py` picks up the row snapshot with
+        # `summary` now set -- `review.awaiting` right below deliberately does
+        # *not* start with `node.` (same reason `review.auto_approved` doesn't,
+        # see docs/decisions.md), so it alone would leave the replayed
+        # `summary` stale (found by P5's rebuild-first test, this was a
+        # pre-existing gap since P2 introduced this branch).
         events.record_event(
-            conn, project_id=reviewing["project_id"], node_id=node_id, actor="agent",
-            type_=dispatch["event_type"], payload=dispatch["payload"],
-        )
-
-    if tier == "low" and not flagged:
-        row = _apply_transition(
-            conn,
-            reviewing,
-            to_status="done",
-            lease_actor=owner,
-            event_actor_role="agent",
-            event_type="node.done",
-            request_id=request_id,
-            extra_columns={"lease_until": None, "summary": summary},
+            conn, project_id=row["project_id"], node_id=node_id, actor="agent",
+            actor_evidence=actor_evidence,
+            type_="node.summary_recorded", payload=dict(row),
         )
         events.record_event(
             conn,
             project_id=row["project_id"],
             node_id=node_id,
-            actor="daemon",
-            type_="review.auto_approved",
-            payload={"tier": tier},
+            actor="agent",
+            actor_evidence=actor_evidence,
+            type_="review.awaiting",
+            payload={"tier": tier, "flagged": flagged},
+            request_id=request_id,
         )
-        conn.commit()
-        return {"noop": False, "node": dict(row), "auto_approved": True}
-
-    conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
-    row = get_node(conn, node_id)
-    # `node.`-prefixed so `rebuild.py` picks up the row snapshot with
-    # `summary` now set -- `review.awaiting` right below deliberately does
-    # *not* start with `node.` (same reason `review.auto_approved` doesn't,
-    # see docs/decisions.md), so it alone would leave the replayed
-    # `summary` stale (found by P5's rebuild-first test, this was a
-    # pre-existing gap since P2 introduced this branch).
-    events.record_event(
-        conn, project_id=row["project_id"], node_id=node_id, actor="agent",
-        type_="node.summary_recorded", payload=dict(row),
-    )
-    events.record_event(
-        conn,
-        project_id=row["project_id"],
-        node_id=node_id,
-        actor="agent",
-        type_="review.awaiting",
-        payload={"tier": tier, "flagged": flagged},
-        request_id=request_id,
-    )
-    conn.commit()
-    return {"noop": False, "node": dict(row), "auto_approved": False}
+        return {"noop": False, "node": dict(row), "auto_approved": False}
 
 
-def approve_review(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> dict:
+def approve_review(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> dict:
     """Human approval of a node sitting in `review` (plan section 5,
     "done -> review... manual waits for a human"). Transitions
     review -> done. The state machine's `review -> done` edge requires the
@@ -425,65 +455,73 @@ def approve_review(conn: sqlite3.Connection, node_id: int, *, actor: str = "huma
     node entered `review` is under 10 seconds (plan section 5: "Time-to-
     approve under 10s is logged as a rubber-stamp signal")."""
     _require_human(actor)
-    node = get_node(conn, node_id)
-    if node["status"] != "review":
-        raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
-    review_event = conn.execute(
-        "SELECT ts FROM events WHERE node_id = ? AND type = 'node.review' "
-        "ORDER BY id DESC LIMIT 1",
-        (node_id,),
-    ).fetchone()
-    row = _apply_transition(
-        conn,
-        node,
-        to_status="done",
-        lease_actor=node["owner"] or "",
-        event_actor_role=actor,
-        event_type="node.done",
-        request_id=None,
-        extra_columns={"lease_until": None},
-    )
-    if review_event is not None:
-        entered = datetime.strptime(review_event["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-            tzinfo=timezone.utc
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        if node["status"] != "review":
+            raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
+        review_event = conn.execute(
+            "SELECT ts FROM events WHERE node_id = ? AND type = 'node.review' "
+            "ORDER BY id DESC LIMIT 1",
+            (node_id,),
+        ).fetchone()
+        row = _apply_transition(
+            conn,
+            node,
+            to_status="done",
+            lease_actor=node["owner"] or "",
+            event_actor_role=actor,
+            event_type="node.done",
+            request_id=None,
+            extra_columns={"lease_until": None},
+            actor_evidence=actor_evidence,
         )
-        elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
-        if elapsed < 10:
-            events.record_event(
-                conn,
-                project_id=row["project_id"],
-                node_id=node_id,
-                actor=actor,
-                type_="metric.rubber_stamp",
-                payload={"elapsed_seconds": elapsed},
+        if review_event is not None:
+            entered = datetime.strptime(review_event["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+                tzinfo=timezone.utc
             )
-    conn.commit()
-    return {"node": dict(row)}
+            elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
+            if elapsed < 10:
+                events.record_event(
+                    conn,
+                    project_id=row["project_id"],
+                    node_id=node_id,
+                    actor=actor,
+                    actor_evidence=actor_evidence,
+                    type_="metric.rubber_stamp",
+                    payload={"elapsed_seconds": elapsed},
+                )
+        return {"node": dict(row)}
 
 
 def reject_review(
-    conn: sqlite3.Connection, node_id: int, *, feedback: str, actor: str = "human"
+    conn: sqlite3.Connection,
+    node_id: int,
+    *,
+    feedback: str,
+    actor: str = "human",
+    actor_evidence: str = "tty",
 ) -> dict:
     """Human rejection of a node in `review` (plan section 4 human verb
     `reject --feedback`): review -> in_progress, feedback recorded as a
     `feedback` note so the agent picks it up on its next `brief`/`show`.
     Refuses (`HumanOnly`) if `actor != "human"`."""
     _require_human(actor)
-    node = get_node(conn, node_id)
-    if node["status"] != "review":
-        raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
-    row = _apply_transition(
-        conn,
-        node,
-        to_status="in_progress",
-        lease_actor=node["owner"] or "",
-        event_actor_role=actor,
-        event_type="node.rejected",
-        request_id=None,
-    )
-    add_note(conn, node_id, kind="feedback", text=feedback, actor=actor)
-    conn.commit()
-    return {"node": dict(row)}
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        if node["status"] != "review":
+            raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
+        row = _apply_transition(
+            conn,
+            node,
+            to_status="in_progress",
+            lease_actor=node["owner"] or "",
+            event_actor_role=actor,
+            event_type="node.rejected",
+            request_id=None,
+            actor_evidence=actor_evidence,
+        )
+        add_note(conn, node_id, kind="feedback", text=feedback, actor=actor, actor_evidence=actor_evidence)
+        return {"node": dict(row)}
 
 
 def fail(
@@ -497,7 +535,13 @@ def fail(
     scope: str = "",
     request_id: str | None = None,
     expected_version: int | None = None,
+    actor_evidence: str = "tty",
 ) -> dict:
+    """`attempts` counts *agent* failures only (v4 section 3) -- this is
+    the one place that increments it. Crash/timeout reclaims go through
+    `core.daemon.reconcile_leases` instead, which increments the
+    separate `lease_expiries` counter and never routes to `failed` (see
+    that function's docstring)."""
     dup = events.find_recent_by_request_id(conn, request_id, "node.fail") if request_id else None
     if dup is not None:
         return {"noop": True, "node": dict(get_node(conn, node_id))}
@@ -510,26 +554,27 @@ def fail(
         )
     attempts = node["attempts"] + 1
     to_status = "failed" if attempts >= node["max_attempts"] else "ready"
-    row = _apply_transition(
-        conn,
-        node,
-        to_status=to_status,
-        lease_actor=owner,
-        event_actor_role="agent",
-        event_type="node.fail",
-        request_id=request_id,
-        extra_columns={
-            "attempts": attempts,
-            "owner": None if to_status != "in_progress" else owner,
-            "lease_until": None,
-        },
-    )
-    lesson_text = json.dumps(
-        {"trigger": trigger, "failure": lesson, "do_instead": do_instead, "scope": scope}
-    )
-    add_note(conn, node_id, kind="lesson", text=lesson_text, actor="agent")
-    conn.commit()
-    return {"noop": False, "node": dict(row)}
+    with db_mod.write_txn(conn):
+        row = _apply_transition(
+            conn,
+            node,
+            to_status=to_status,
+            lease_actor=owner,
+            event_actor_role="agent",
+            event_type="node.fail",
+            request_id=request_id,
+            extra_columns={
+                "attempts": attempts,
+                "owner": None if to_status != "in_progress" else owner,
+                "lease_until": None,
+            },
+            actor_evidence=actor_evidence,
+        )
+        lesson_text = json.dumps(
+            {"trigger": trigger, "failure": lesson, "do_instead": do_instead, "scope": scope}
+        )
+        add_note(conn, node_id, kind="lesson", text=lesson_text, actor="agent", actor_evidence=actor_evidence)
+        return {"noop": False, "node": dict(row)}
 
 
 def block(
@@ -541,6 +586,7 @@ def block(
     request_id: str | None = None,
     bump_attempts: bool = False,
     event_actor_role: str = "agent",
+    actor_evidence: str = "subprocess",
 ) -> sqlite3.Row:
     """`bump_attempts` (P5, `core.merge`'s conflict handling -- plan
     section 6 "Merging": "node -> blocked(conflict) ... attempts + 1") and
@@ -549,21 +595,22 @@ def block(
     pre-P5 call site's exact behavior."""
     if reason not in state_machine.BLOCK_REASONS:
         raise NodeError(f"unknown block reason: {reason!r}")
-    node = get_node(conn, node_id)
-    extra_columns = {"attempts": node["attempts"] + 1} if bump_attempts else None
-    row = _apply_transition(
-        conn,
-        node,
-        to_status="blocked",
-        lease_actor=actor,
-        event_actor_role=event_actor_role,
-        event_type="node.blocked",
-        request_id=request_id,
-        block_reason=reason,
-        extra_columns=extra_columns,
-    )
-    conn.commit()
-    return row
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        extra_columns = {"attempts": node["attempts"] + 1} if bump_attempts else None
+        row = _apply_transition(
+            conn,
+            node,
+            to_status="blocked",
+            lease_actor=actor,
+            event_actor_role=event_actor_role,
+            event_type="node.blocked",
+            request_id=request_id,
+            block_reason=reason,
+            extra_columns=extra_columns,
+            actor_evidence=actor_evidence,
+        )
+        return row
 
 
 def handoff(
@@ -572,6 +619,7 @@ def handoff(
     *,
     new_owner: str,
     actor: str = "human",
+    actor_evidence: str = "tty",
     lease_minutes: int = DEFAULT_LEASE_MINUTES,
 ) -> dict:
     """Human verb (plan section 6 "Handoff", section 4): reassign a node's
@@ -590,64 +638,67 @@ def handoff(
     node has no status change to validate, so its owner/lease are updated
     directly. Refuses (`HumanOnly`) if `actor != "human"`."""
     _require_human(actor)
-    node = get_node(conn, node_id)
-    if node["status"] not in ("in_progress", "blocked"):
-        raise NodeError(
-            f"cannot hand off node {node_id}: status is {node['status']!r}, "
-            "must be in_progress or blocked"
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        if node["status"] not in ("in_progress", "blocked"):
+            raise NodeError(
+                f"cannot hand off node {node_id}: status is {node['status']!r}, "
+                "must be in_progress or blocked"
+            )
+        lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
         )
-    lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ"
-    )
-    if node["status"] == "blocked":
-        row = _apply_transition(
-            conn,
-            node,
-            to_status="in_progress",
-            lease_actor=node["owner"] or "",
-            event_actor_role=actor,
-            event_type="node.handoff",
-            request_id=None,
-            extra_columns={"owner": new_owner, "lease_until": lease_until},
-        )
-    else:
+        if node["status"] == "blocked":
+            row = _apply_transition(
+                conn,
+                node,
+                to_status="in_progress",
+                lease_actor=node["owner"] or "",
+                event_actor_role=actor,
+                event_type="node.handoff",
+                request_id=None,
+                extra_columns={"owner": new_owner, "lease_until": lease_until},
+                actor_evidence=actor_evidence,
+            )
+        else:
+            conn.execute(
+                "UPDATE nodes SET owner = ?, lease_until = ? WHERE id = ?",
+                (new_owner, lease_until, node_id),
+            )
+            row = get_node(conn, node_id)
+            events.record_event(
+                conn,
+                project_id=row["project_id"],
+                node_id=node_id,
+                actor=actor,
+                actor_evidence=actor_evidence,
+                type_="node.handoff",
+                payload=dict(row),
+            )
+        return {"node": dict(row)}
+
+
+def soft_delete(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> sqlite3.Row:
+    """Soft delete only (plan section 5): nodes with commits attached are
+    never hard-deleted; set deleted_at instead."""
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
         conn.execute(
-            "UPDATE nodes SET owner = ?, lease_until = ? WHERE id = ?",
-            (new_owner, lease_until, node_id),
+            "UPDATE nodes SET deleted_at = ? WHERE id = ?", (_now(), node["id"])
         )
         row = get_node(conn, node_id)
         events.record_event(
             conn,
             project_id=row["project_id"],
-            node_id=node_id,
+            node_id=row["id"],
             actor=actor,
-            type_="node.handoff",
+            actor_evidence=actor_evidence,
+            type_="node.deleted",
             payload=dict(row),
         )
-    conn.commit()
-    return {"node": dict(row)}
-
-
-def soft_delete(
-    conn: sqlite3.Connection, node_id: int, *, actor: str = "human"
-) -> sqlite3.Row:
-    """Soft delete only (plan section 5): nodes with commits attached are
-    never hard-deleted; set deleted_at instead."""
-    node = get_node(conn, node_id)
-    conn.execute(
-        "UPDATE nodes SET deleted_at = ? WHERE id = ?", (_now(), node["id"])
-    )
-    row = get_node(conn, node_id)
-    events.record_event(
-        conn,
-        project_id=row["project_id"],
-        node_id=row["id"],
-        actor=actor,
-        type_="node.deleted",
-        payload=dict(row),
-    )
-    conn.commit()
-    return row
+        return row
 
 
 def add_note(
@@ -657,37 +708,39 @@ def add_note(
     kind: str,
     text: str,
     actor: str = "agent",
+    actor_evidence: str = "tty",
     pinned: bool = False,
 ) -> dict:
     """Notes dedupe by content hash (plan section 4)."""
     content_hash = hashlib.sha256(text.encode()).hexdigest()
-    existing = conn.execute(
-        "SELECT * FROM notes WHERE node_id = ? AND content_hash = ?",
-        (node_id, content_hash),
-    ).fetchone()
-    if existing is not None:
-        return {"noop": True, "note": dict(existing)}
-    cur = conn.execute(
-        "INSERT INTO notes (node_id, kind, text, content_hash, pinned) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (node_id, kind, text, content_hash, int(pinned)),
-    )
-    note_id = cur.lastrowid
-    row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
-    events.record_event(
-        conn,
-        project_id=get_node(conn, node_id)["project_id"],
-        node_id=node_id,
-        actor=actor,
-        type_="note.added",
-        payload=dict(row),
-    )
-    if actor == "human":
-        # Plan section 3/5: a human-visible edit made while a node may be
-        # leased out bumps `nodes.version`, so the lease holder's `done`
-        # can detect it (P3 acceptance #2). Agent-authored notes (lessons,
-        # discoveries the agent itself records) are not edits *by someone
-        # else* and don't bump it.
-        bump_version(conn, node_id, actor=actor)
-    conn.commit()
-    return {"noop": False, "note": dict(row)}
+    with db_mod.write_txn(conn):
+        existing = conn.execute(
+            "SELECT * FROM notes WHERE node_id = ? AND content_hash = ?",
+            (node_id, content_hash),
+        ).fetchone()
+        if existing is not None:
+            return {"noop": True, "note": dict(existing)}
+        cur = conn.execute(
+            "INSERT INTO notes (node_id, kind, text, content_hash, pinned) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (node_id, kind, text, content_hash, int(pinned)),
+        )
+        note_id = cur.lastrowid
+        row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        events.record_event(
+            conn,
+            project_id=get_node(conn, node_id)["project_id"],
+            node_id=node_id,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="note.added",
+            payload=dict(row),
+        )
+        if actor == "human":
+            # Plan section 3/5: a human-visible edit made while a node may be
+            # leased out bumps `nodes.version`, so the lease holder's `done`
+            # can detect it (P3 acceptance #2). Agent-authored notes (lessons,
+            # discoveries the agent itself records) are not edits *by someone
+            # else* and don't bump it.
+            bump_version(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        return {"noop": False, "note": dict(row)}

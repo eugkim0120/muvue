@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 
+from . import db as db_mod
 from . import events
 from . import nodes as nodes_mod
 from .config import MuvueConfig
@@ -32,6 +33,7 @@ def replan_add_subtask(
     body_md: str = "",
     criteria: list[str] | None = None,
     actor: str = "agent",
+    actor_evidence: str = "tty",
 ) -> dict:
     """Add a subtask within an approved task's stated scope. No new
     approval required (plan section 6): the subtask is created `ready`
@@ -54,6 +56,7 @@ def replan_add_subtask(
         criteria=criteria,
         status="ready",
         actor=actor,
+        actor_evidence=actor_evidence,
     )
     return dict(row)
 
@@ -64,32 +67,34 @@ def propose_revision(
     node_ids: list[int],
     *,
     actor: str = "agent",
+    actor_evidence: str = "tty",
 ) -> dict:
-    prev = conn.execute(
-        "SELECT MAX(n) m FROM plan_revisions WHERE project_id = ?", (project_id,)
-    ).fetchone()["m"]
-    n = (prev or 0) + 1
-    cur = conn.execute(
-        "INSERT INTO plan_revisions (project_id, n) VALUES (?, ?)", (project_id, n)
-    )
-    revision_id = cur.lastrowid
-    for node_id in node_ids:
-        node = nodes_mod.get_node(conn, node_id)
-        conn.execute(
-            "INSERT INTO plan_revision_nodes (revision_id, node_id, criteria_hash) "
-            "VALUES (?, ?, ?)",
-            (revision_id, node_id, _hash_criteria(node["criteria_json"])),
+    with db_mod.write_txn(conn):
+        prev = conn.execute(
+            "SELECT MAX(n) m FROM plan_revisions WHERE project_id = ?", (project_id,)
+        ).fetchone()["m"]
+        n = (prev or 0) + 1
+        cur = conn.execute(
+            "INSERT INTO plan_revisions (project_id, n) VALUES (?, ?)", (project_id, n)
         )
-    events.record_event(
-        conn,
-        project_id=project_id,
-        node_id=None,
-        actor=actor,
-        type_="revision.proposed",
-        payload={"n": n, "node_ids": list(node_ids)},
-    )
-    conn.commit()
-    return {"id": revision_id, "n": n}
+        revision_id = cur.lastrowid
+        for node_id in node_ids:
+            node = nodes_mod.get_node(conn, node_id)
+            conn.execute(
+                "INSERT INTO plan_revision_nodes (revision_id, node_id, criteria_hash) "
+                "VALUES (?, ?, ?)",
+                (revision_id, node_id, _hash_criteria(node["criteria_json"])),
+            )
+        events.record_event(
+            conn,
+            project_id=project_id,
+            node_id=None,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="revision.proposed",
+            payload={"n": n, "node_ids": list(node_ids)},
+        )
+        return {"id": revision_id, "n": n}
 
 
 def _revision_snapshot(conn: sqlite3.Connection, project_id: int, n: int) -> dict[int, str]:
@@ -130,38 +135,40 @@ def approve_revision(
     n: int,
     *,
     actor: str = "human",
+    actor_evidence: str = "tty",
     config: MuvueConfig | None = None,
 ) -> dict:
     _require_human(actor)
-    revision = conn.execute(
-        "SELECT * FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
-    ).fetchone()
-    if revision is None:
-        raise GateError(f"no plan revision n={n} for project {project_id}")
-    if revision["approved_at"] is not None:
-        return {"noop": True, "n": n}
+    with db_mod.write_txn(conn):
+        revision = conn.execute(
+            "SELECT * FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
+        ).fetchone()
+        if revision is None:
+            raise GateError(f"no plan revision n={n} for project {project_id}")
+        if revision["approved_at"] is not None:
+            return {"noop": True, "n": n}
 
-    diff = diff_revision(conn, project_id, n)
-    touched: list[int] = []
-    for node_id in diff["added"] + diff["changed"]:
-        approve_node(conn, node_id, actor=actor, config=config)
-        touched.append(node_id)
-    for node_id in diff["removed"]:
-        nodes_mod.soft_delete(conn, node_id, actor=actor)
-        touched.append(node_id)
+        diff = diff_revision(conn, project_id, n)
+        touched: list[int] = []
+        for node_id in diff["added"] + diff["changed"]:
+            approve_node(conn, node_id, actor=actor, actor_evidence=actor_evidence, config=config)
+            touched.append(node_id)
+        for node_id in diff["removed"]:
+            nodes_mod.soft_delete(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+            touched.append(node_id)
 
-    conn.execute(
-        "UPDATE plan_revisions SET approved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
-        "WHERE id = ?",
-        (revision["id"],),
-    )
-    events.record_event(
-        conn,
-        project_id=project_id,
-        node_id=None,
-        actor=actor,
-        type_="revision.approved",
-        payload={"n": n, "diff": diff, "touched_node_ids": touched},
-    )
-    conn.commit()
-    return {"noop": False, "n": n, "diff": diff, "touched_node_ids": touched}
+        conn.execute(
+            "UPDATE plan_revisions SET approved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE id = ?",
+            (revision["id"],),
+        )
+        events.record_event(
+            conn,
+            project_id=project_id,
+            node_id=None,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="revision.approved",
+            payload={"n": n, "diff": diff, "touched_node_ids": touched},
+        )
+        return {"noop": False, "n": n, "diff": diff, "touched_node_ids": touched}

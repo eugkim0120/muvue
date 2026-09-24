@@ -117,8 +117,6 @@ def brief_node(conn: sqlite3.Connection, node_id: int) -> dict:
     for n in lessons:
         if n["kind"] == "lesson":
             drift_mod.record_lesson_retrieval(conn, n["id"], detail["node"]["project_id"])
-    if any(n["kind"] == "lesson" for n in lessons):
-        conn.commit()
     open_questions = _rows_to_list(
         conn.execute(
             "SELECT * FROM questions WHERE node_id = ? AND status = 'open'", (node_id,)

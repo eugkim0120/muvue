@@ -17,6 +17,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from . import db as db_mod
 from . import events
 from . import nodes as nodes_mod
 
@@ -65,6 +66,7 @@ def ask(
     question: str,
     default: str | None,
     actor: str = "agent",
+    actor_evidence: str = "tty",
     request_id: str | None = None,
 ) -> dict:
     node = nodes_mod.get_node(conn, node_id)
@@ -72,50 +74,57 @@ def ask(
     if dup is not None:
         return {"noop": True, "question": json.loads(dup["payload"])}
 
-    cur = conn.execute(
-        "INSERT INTO questions (node_id, project_id, text, default_answer) "
-        "VALUES (?, ?, ?, ?)",
-        (node_id, node["project_id"], question, default),
-    )
-    question_id = cur.lastrowid
-    row = get_question(conn, question_id)
-    events.record_event(
-        conn,
-        project_id=node["project_id"],
-        node_id=node_id,
-        actor=actor,
-        type_="question.asked",
-        payload=dict(row),
-        request_id=request_id,
-    )
-    conn.commit()
-    return {"noop": False, "question": dict(row)}
+    with db_mod.write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO questions (node_id, project_id, text, default_answer) "
+            "VALUES (?, ?, ?, ?)",
+            (node_id, node["project_id"], question, default),
+        )
+        question_id = cur.lastrowid
+        row = get_question(conn, question_id)
+        events.record_event(
+            conn,
+            project_id=node["project_id"],
+            node_id=node_id,
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="question.asked",
+            payload=dict(row),
+            request_id=request_id,
+        )
+        return {"noop": False, "question": dict(row)}
 
 
 def answer(
-    conn: sqlite3.Connection, question_id: int, *, text: str, actor: str = "human"
+    conn: sqlite3.Connection,
+    question_id: int,
+    *,
+    text: str,
+    actor: str = "human",
+    actor_evidence: str = "tty",
 ) -> dict:
     _require_human(actor)
-    q = get_question(conn, question_id)
-    if q["status"] != "open":
-        return {"noop": True, "question": dict(q)}
-    conn.execute(
-        "UPDATE questions SET status = 'answered', answer = ?, "
-        "answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-        (text, question_id),
-    )
-    nodes_mod.add_note(conn, q["node_id"], kind="feedback", text=text, actor=actor)
-    row = get_question(conn, question_id)
-    events.record_event(
-        conn,
-        project_id=q["project_id"],
-        node_id=q["node_id"],
-        actor=actor,
-        type_="question.answered",
-        payload=dict(row),
-    )
-    conn.commit()
-    return {"noop": False, "question": dict(row)}
+    with db_mod.write_txn(conn):
+        q = get_question(conn, question_id)
+        if q["status"] != "open":
+            return {"noop": True, "question": dict(q)}
+        conn.execute(
+            "UPDATE questions SET status = 'answered', answer = ?, "
+            "answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (text, question_id),
+        )
+        nodes_mod.add_note(conn, q["node_id"], kind="feedback", text=text, actor=actor, actor_evidence=actor_evidence)
+        row = get_question(conn, question_id)
+        events.record_event(
+            conn,
+            project_id=q["project_id"],
+            node_id=q["node_id"],
+            actor=actor,
+            actor_evidence=actor_evidence,
+            type_="question.answered",
+            payload=dict(row),
+        )
+        return {"noop": False, "question": dict(row)}
 
 
 def wait(
@@ -125,6 +134,7 @@ def wait(
     timeout_minutes: int,
     default_ok: bool = False,
     now: datetime | None = None,
+    actor_evidence: str = "tty",
 ) -> dict:
     q = get_question(conn, question_id)
     if q["status"] == "answered":
@@ -138,29 +148,32 @@ def wait(
         return {"status": "pending"}
 
     if default_ok:
-        conn.execute(
-            "UPDATE questions SET status = 'answered', answer = ?, "
-            "answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (q["default_answer"], question_id),
-        )
-        nodes_mod.add_note(
-            conn, q["node_id"], kind="feedback", text=q["default_answer"] or "", actor="agent"
-        )
-        events.record_event(
-            conn,
-            project_id=q["project_id"],
-            node_id=q["node_id"],
-            actor="agent",
-            type_="question.default_applied",
-            payload={"question_id": question_id, "answer": q["default_answer"]},
-        )
-        conn.commit()
-        return {"status": "default_applied", "answer": q["default_answer"]}
+        with db_mod.write_txn(conn):
+            conn.execute(
+                "UPDATE questions SET status = 'answered', answer = ?, "
+                "answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                (q["default_answer"], question_id),
+            )
+            nodes_mod.add_note(
+                conn, q["node_id"], kind="feedback", text=q["default_answer"] or "",
+                actor="agent", actor_evidence=actor_evidence,
+            )
+            events.record_event(
+                conn,
+                project_id=q["project_id"],
+                node_id=q["node_id"],
+                actor="agent",
+                actor_evidence=actor_evidence,
+                type_="question.default_applied",
+                payload={"question_id": question_id, "answer": q["default_answer"]},
+            )
+            return {"status": "default_applied", "answer": q["default_answer"]}
 
-    conn.execute("UPDATE questions SET status = 'timed_out' WHERE id = ?", (question_id,))
-    node = nodes_mod.get_node(conn, q["node_id"])
-    nodes_mod.block(
-        conn, q["node_id"], reason="question", actor=node["owner"] or "agent"
-    )
-    conn.commit()
-    return {"status": "blocked"}
+    with db_mod.write_txn(conn):
+        conn.execute("UPDATE questions SET status = 'timed_out' WHERE id = ?", (question_id,))
+        node = nodes_mod.get_node(conn, q["node_id"])
+        nodes_mod.block(
+            conn, q["node_id"], reason="question", actor=node["owner"] or "agent",
+            actor_evidence=actor_evidence,
+        )
+        return {"status": "blocked"}

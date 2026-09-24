@@ -23,6 +23,7 @@ import subprocess
 import sqlite3
 from pathlib import Path
 
+from . import db as db_mod
 from . import events as events_mod
 
 # "K commits" for the drift KPI (plan section 9, item 5: "% components
@@ -99,18 +100,18 @@ def create_anchored_component(
     head = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
     content_hash = blob_hash(repo_root, head, file_path) if head else None
     anchors = {file_path: content_hash}
-    cur = conn.execute(
-        "INSERT INTO components (name, kind, purpose, anchors_json, status, verified_sha) "
-        "VALUES (?, ?, ?, ?, 'current', ?)",
-        (name, kind, purpose, json.dumps(anchors), head or None),
-    )
-    row = conn.execute("SELECT * FROM components WHERE id = ?", (cur.lastrowid,)).fetchone()
-    events_mod.record_event(
-        conn, project_id=None, node_id=None, actor=actor,
-        type_="component.created", payload=dict(row),
-    )
-    conn.commit()
-    return dict(row)
+    with db_mod.write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO components (name, kind, purpose, anchors_json, status, verified_sha) "
+            "VALUES (?, ?, ?, ?, 'current', ?)",
+            (name, kind, purpose, json.dumps(anchors), head or None),
+        )
+        row = conn.execute("SELECT * FROM components WHERE id = ?", (cur.lastrowid,)).fetchone()
+        events_mod.record_event(
+            conn, project_id=None, node_id=None, actor=actor, actor_evidence="tty",
+            type_="component.created", payload=dict(row),
+        )
+        return dict(row)
 
 
 def _rename_map(repo_root: str | Path, sha: str) -> dict[str, str]:
@@ -148,42 +149,43 @@ def mark_stale_for_commit(
     renames = _rename_map(repo_root, commit_sha)
     touched = set(files)
     newly_stale: list[int] = []
-    rows = conn.execute("SELECT * FROM components WHERE status != 'deprecated'").fetchall()
-    for row in rows:
-        anchors = _load_anchors(row)
-        if not anchors:
-            continue
-        new_anchors = dict(anchors)
-        changed = False
-        stale = False
-        for path, old_hash in anchors.items():
-            if path in renames:
-                new_path = renames[path]
-                new_anchors.pop(path, None)
-                new_anchors[new_path] = blob_hash(repo_root, commit_sha, new_path)
-                changed = True
+    with db_mod.write_txn(conn):
+        rows = conn.execute("SELECT * FROM components WHERE status != 'deprecated'").fetchall()
+        for row in rows:
+            anchors = _load_anchors(row)
+            if not anchors:
                 continue
-            if path not in touched:
+            new_anchors = dict(anchors)
+            changed = False
+            stale = False
+            for path, old_hash in anchors.items():
+                if path in renames:
+                    new_path = renames[path]
+                    new_anchors.pop(path, None)
+                    new_anchors[new_path] = blob_hash(repo_root, commit_sha, new_path)
+                    changed = True
+                    continue
+                if path not in touched:
+                    continue
+                new_hash = blob_hash(repo_root, commit_sha, path)
+                if new_hash != old_hash:
+                    new_anchors[path] = new_hash
+                    changed = True
+                    stale = True
+            if not changed:
                 continue
-            new_hash = blob_hash(repo_root, commit_sha, path)
-            if new_hash != old_hash:
-                new_anchors[path] = new_hash
-                changed = True
-                stale = True
-        if not changed:
-            continue
-        new_status = "stale" if stale else row["status"]
-        conn.execute(
-            "UPDATE components SET anchors_json = ?, status = ? WHERE id = ?",
-            (json.dumps(new_anchors), new_status, row["id"]),
-        )
-        updated = conn.execute("SELECT * FROM components WHERE id = ?", (row["id"],)).fetchone()
-        events_mod.record_event(
-            conn, project_id=None, node_id=None, actor=actor,
-            type_="component.updated", payload=dict(updated),
-        )
-        if stale:
-            newly_stale.append(row["id"])
+            new_status = "stale" if stale else row["status"]
+            conn.execute(
+                "UPDATE components SET anchors_json = ?, status = ? WHERE id = ?",
+                (json.dumps(new_anchors), new_status, row["id"]),
+            )
+            updated = conn.execute("SELECT * FROM components WHERE id = ?", (row["id"],)).fetchone()
+            events_mod.record_event(
+                conn, project_id=None, node_id=None, actor=actor, actor_evidence="hook",
+                type_="component.updated", payload=dict(updated),
+            )
+            if stale:
+                newly_stale.append(row["id"])
     return newly_stale
 
 
@@ -215,7 +217,7 @@ def flag_unattributed_commit(
     if not hit_components:
         return None
     return events_mod.record_event(
-        conn, project_id=None, node_id=None, actor=actor,
+        conn, project_id=None, node_id=None, actor=actor, actor_evidence="hook",
         type_="inbox.unattributed_commit",
         payload={"sha": commit_sha, "files": sorted(touched), "component_ids": hit_components},
     )
@@ -241,33 +243,33 @@ def run_audit(
     lesson not retrieved by `lesson_decay_k` distinct projects, unless
     pinned.
     """
-    rows = conn.execute(
-        "SELECT * FROM components WHERE status != 'deprecated' "
-        "ORDER BY (verified_sha IS NULL) DESC, id ASC LIMIT ?",
-        (n,),
-    ).fetchall()
-    drafted = []
-    for row in rows:
-        message = (
-            f"component {row['id']} ({row['name']}) last verified at "
-            f"{row['verified_sha'] or 'never'}; sampled by audit for review."
-        )
-        event_id = events_mod.record_event(
-            conn, project_id=None, node_id=None, actor=actor,
-            type_="inbox.audit_drift_signal",
-            payload={
-                "component_id": row["id"],
-                "name": row["name"],
-                "status": row["status"],
-                "verified_sha": row["verified_sha"],
-                "message": message,
-            },
-        )
-        drafted.append({"event_id": event_id, "component_id": row["id"], "message": message})
-    conn.commit()
+    with db_mod.write_txn(conn):
+        rows = conn.execute(
+            "SELECT * FROM components WHERE status != 'deprecated' "
+            "ORDER BY (verified_sha IS NULL) DESC, id ASC LIMIT ?",
+            (n,),
+        ).fetchall()
+        drafted = []
+        for row in rows:
+            message = (
+                f"component {row['id']} ({row['name']}) last verified at "
+                f"{row['verified_sha'] or 'never'}; sampled by audit for review."
+            )
+            event_id = events_mod.record_event(
+                conn, project_id=None, node_id=None, actor=actor, actor_evidence="subprocess",
+                type_="inbox.audit_drift_signal",
+                payload={
+                    "component_id": row["id"],
+                    "name": row["name"],
+                    "status": row["status"],
+                    "verified_sha": row["verified_sha"],
+                    "message": message,
+                },
+            )
+            drafted.append({"event_id": event_id, "component_id": row["id"], "message": message})
 
-    pruned = decay_lessons(conn, k=lesson_decay_k, actor=actor)
-    return {"drafted": drafted, "pruned_lessons": pruned}
+        pruned = decay_lessons(conn, k=lesson_decay_k, actor=actor)
+        return {"drafted": drafted, "pruned_lessons": pruned}
 
 
 def drift_pct(
@@ -300,14 +302,15 @@ def record_lesson_retrieval(
     `notes.last_retrieved_at` and appends a `note.retrieved` event --
     `decay_lessons` counts distinct `project_id`s from these events
     rather than a separate junction table (see docs/decisions.md)."""
-    conn.execute(
-        "UPDATE notes SET last_retrieved_at = ? WHERE id = ?",
-        (_now(conn), note_id),
-    )
-    events_mod.record_event(
-        conn, project_id=project_id, node_id=None, actor=actor,
-        type_="note.retrieved", payload={"note_id": note_id, "project_id": project_id},
-    )
+    with db_mod.write_txn(conn):
+        conn.execute(
+            "UPDATE notes SET last_retrieved_at = ? WHERE id = ?",
+            (_now(conn), note_id),
+        )
+        events_mod.record_event(
+            conn, project_id=project_id, node_id=None, actor=actor, actor_evidence="subprocess",
+            type_="note.retrieved", payload={"note_id": note_id, "project_id": project_id},
+        )
 
 
 def decay_lessons(
@@ -321,27 +324,27 @@ def decay_lessons(
     -- `notes` has no `deleted_at`, so a dedicated column is added
     instead of overloading one, see docs/decisions.md), recorded as a
     `note.archived` event. Returns the archived note ids."""
-    candidates = conn.execute(
-        "SELECT * FROM notes WHERE kind = 'lesson' AND pinned = 0 AND archived_at IS NULL"
-    ).fetchall()
-    archived: list[int] = []
-    for note in candidates:
-        distinct_projects = conn.execute(
-            "SELECT COUNT(DISTINCT json_extract(payload, '$.project_id')) c "
-            "FROM events WHERE type = 'note.retrieved' "
-            "AND json_extract(payload, '$.note_id') = ?",
-            (note["id"],),
-        ).fetchone()["c"]
-        if distinct_projects >= k:
-            continue
-        conn.execute(
-            "UPDATE notes SET archived_at = ? WHERE id = ?", (_now(conn), note["id"])
-        )
-        row = conn.execute("SELECT * FROM notes WHERE id = ?", (note["id"],)).fetchone()
-        events_mod.record_event(
-            conn, project_id=None, node_id=row["node_id"], actor=actor,
-            type_="note.archived", payload=dict(row),
-        )
-        archived.append(note["id"])
-    conn.commit()
-    return archived
+    with db_mod.write_txn(conn):
+        candidates = conn.execute(
+            "SELECT * FROM notes WHERE kind = 'lesson' AND pinned = 0 AND archived_at IS NULL"
+        ).fetchall()
+        archived: list[int] = []
+        for note in candidates:
+            distinct_projects = conn.execute(
+                "SELECT COUNT(DISTINCT json_extract(payload, '$.project_id')) c "
+                "FROM events WHERE type = 'note.retrieved' "
+                "AND json_extract(payload, '$.note_id') = ?",
+                (note["id"],),
+            ).fetchone()["c"]
+            if distinct_projects >= k:
+                continue
+            conn.execute(
+                "UPDATE notes SET archived_at = ? WHERE id = ?", (_now(conn), note["id"])
+            )
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (note["id"],)).fetchone()
+            events_mod.record_event(
+                conn, project_id=None, node_id=row["node_id"], actor=actor, actor_evidence="subprocess",
+                type_="note.archived", payload=dict(row),
+            )
+            archived.append(note["id"])
+        return archived

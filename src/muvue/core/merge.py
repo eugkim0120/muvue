@@ -27,6 +27,7 @@ import subprocess
 import sqlite3
 from pathlib import Path
 
+from . import db as db_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
 from . import strict as strict_mod
@@ -174,42 +175,44 @@ def attempt_merge(
     )
     if update.returncode != 0:
         raise MergeError(f"merged node {node_id} but failed to advance main: {update.stderr}")
-    events_mod.record_event(
-        conn, project_id=node["project_id"], node_id=node_id, actor=actor,
-        type_="merge.completed", payload={"node_id": node_id, "sha": sha, "branch": branch},
-    )
-    conn.commit()
+    with db_mod.write_txn(conn):
+        events_mod.record_event(
+            conn, project_id=node["project_id"], node_id=node_id, actor=actor,
+            actor_evidence="subprocess",
+            type_="merge.completed", payload={"node_id": node_id, "sha": sha, "branch": branch},
+        )
     return {"status": "merged", "sha": sha}
 
 
 def _handle_conflict(conn: sqlite3.Connection, node: sqlite3.Row, *, actor: str) -> dict:
-    nodes_mod.block(
-        conn, node["id"], reason="conflict", actor=actor,
-        bump_attempts=True, event_actor_role="daemon",
-    )
-    # "for the same owner" (plan section 6): not literally forced here --
-    # the runner's own owner string is deterministic per routed agent name
-    # (`f"runner:{agent_name}"`, core/runner.py), so re-scheduling this
-    # subtask through the same `[routing]` kind naturally lands on the
-    # same owner identity without needing a separate forced-assignment
-    # mechanism (see docs/decisions.md).
-    subtask = nodes_mod.create_node(
-        conn, project_id=node["project_id"], parent_id=node["id"], kind="subtask",
-        title=f"rebase onto main (node {node['id']})",
-        body_md=(
-            f"Merging node {node['id']}'s branch (node-{node['id']}) onto main "
-            f"conflicted. Rebase node-{node['id']} onto the airlock's current main "
-            "and resolve the conflicts; it can then be re-attempted."
-        ),
-        criteria=[f"node-{node['id']} merges onto main with no conflicts"],
-        criteria_mode="auto", status="ready", actor=actor,
-    )
-    events_mod.record_event(
-        conn, project_id=node["project_id"], node_id=node["id"], actor=actor,
-        type_="merge.conflict", payload={"node_id": node["id"], "subtask_id": subtask["id"]},
-    )
-    conn.commit()
-    return {"status": "conflict", "subtask": dict(subtask)}
+    with db_mod.write_txn(conn):
+        nodes_mod.block(
+            conn, node["id"], reason="conflict", actor=actor,
+            bump_attempts=True, event_actor_role="daemon", actor_evidence="subprocess",
+        )
+        # "for the same owner" (plan section 6): not literally forced here --
+        # the runner's own owner string is deterministic per routed agent name
+        # (`f"runner:{agent_name}"`, core/runner.py), so re-scheduling this
+        # subtask through the same `[routing]` kind naturally lands on the
+        # same owner identity without needing a separate forced-assignment
+        # mechanism (see docs/decisions.md).
+        subtask = nodes_mod.create_node(
+            conn, project_id=node["project_id"], parent_id=node["id"], kind="subtask",
+            title=f"rebase onto main (node {node['id']})",
+            body_md=(
+                f"Merging node {node['id']}'s branch (node-{node['id']}) onto main "
+                f"conflicted. Rebase node-{node['id']} onto the airlock's current main "
+                "and resolve the conflicts; it can then be re-attempted."
+            ),
+            criteria=[f"node-{node['id']} merges onto main with no conflicts"],
+            criteria_mode="auto", status="ready", actor=actor, actor_evidence="subprocess",
+        )
+        events_mod.record_event(
+            conn, project_id=node["project_id"], node_id=node["id"], actor=actor,
+            actor_evidence="subprocess",
+            type_="merge.conflict", payload={"node_id": node["id"], "subtask_id": subtask["id"]},
+        )
+        return {"status": "conflict", "subtask": dict(subtask)}
 
 
 def merge_pending(conn: sqlite3.Connection, repo_root: str | Path, *, project_id: int | None = None) -> list[dict]:

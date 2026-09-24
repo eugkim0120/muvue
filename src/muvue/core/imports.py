@@ -20,6 +20,7 @@ import sqlite3
 from pathlib import Path
 from typing import Callable
 
+from . import db as db_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
 
@@ -53,6 +54,7 @@ def import_github_issue(
     data_path: str | Path | None = None,
     fetch_fn: Callable[[int], dict] | None = None,
     actor: str = "human",
+    actor_evidence: str = "tty",
 ) -> dict:
     """Link `node_id` to `github#<issue_number>` in `external_refs`.
     Exactly one data source is needed -- `data` (inline), `data_path` (a
@@ -73,15 +75,16 @@ def import_github_issue(
         )
 
     url = data.get("url") or f"https://github.com/issues/{issue_number}"
-    cur = conn.execute(
-        "INSERT INTO external_refs (node_id, system, ext_id, url) VALUES (?, 'github', ?, ?)",
-        (node_id, str(issue_number), url),
-    )
-    row = conn.execute("SELECT * FROM external_refs WHERE id = ?", (cur.lastrowid,)).fetchone()
-    events_mod.record_event(
-        conn, project_id=node["project_id"], node_id=node_id, actor=actor,
-        type_="external_ref.added",
-        payload={**dict(row), "issue_title": data.get("title"), "issue_body": data.get("body")},
-    )
-    conn.commit()
-    return {"external_ref": dict(row), "issue": data}
+    with db_mod.write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO external_refs (node_id, system, ext_id, url) VALUES (?, 'github', ?, ?)",
+            (node_id, str(issue_number), url),
+        )
+        row = conn.execute("SELECT * FROM external_refs WHERE id = ?", (cur.lastrowid,)).fetchone()
+        events_mod.record_event(
+            conn, project_id=node["project_id"], node_id=node_id, actor=actor,
+            actor_evidence=actor_evidence,
+            type_="external_ref.added",
+            payload={**dict(row), "issue_title": data.get("title"), "issue_body": data.get("body")},
+        )
+        return {"external_ref": dict(row), "issue": data}

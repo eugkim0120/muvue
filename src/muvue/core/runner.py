@@ -31,6 +31,7 @@ from . import drivers
 from . import events as events_mod
 from . import nodes as nodes_mod
 from . import queries
+from . import spend as spend_mod
 from .config import MuvueConfig
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -103,7 +104,7 @@ def reconcile_rate_limits(conn, *, now: datetime | None = None) -> list[int]:
             continue
         retry_at = json.loads(latest["payload"]).get("retry_at")
         if retry_at is not None and retry_at <= current:
-            nodes_mod.ready(conn, node_id, actor="daemon")
+            nodes_mod.ready(conn, node_id, actor="daemon", actor_evidence="subprocess")
             unblocked.append(node_id)
     return unblocked
 
@@ -200,28 +201,53 @@ def select_batch(
 # --------------------------------------------------------------------------
 
 
-def _record_usage(conn, node_id: int, agent_name: str, result: drivers.DriverResult) -> None:
-    conn.execute(
-        "INSERT INTO node_usage (node_id, agent, model, in_tokens, out_tokens, requests, "
-        "cost, rate_limited) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            node_id, agent_name, result.model, result.in_tokens, result.out_tokens,
-            result.requests, result.cost, int(result.status == "rate_limited"),
-        ),
-    )
-    conn.commit()
+# v4 section 2: `[agents.<x>.budget].unit` must be "expressible by this
+# driver's cost_model" -- `cost_model` -> the `agent_spend` unit/amount
+# that model actually produces. Budget *enforcement* against a configured
+# limit is out of scope this phase (see core.spend's module docstring);
+# this just decides what to accumulate.
+_COST_MODEL_TO_SPEND = {
+    "usd": lambda r: ("usd", r.cost),
+    "tokens": lambda r: ("tokens", r.in_tokens + r.out_tokens),
+    "quota": lambda r: ("requests", r.requests),
+}
+
+
+def _record_usage(
+    conn, node_id: int, agent_name: str, result: drivers.DriverResult, *, cost_model: str | None = None
+) -> None:
+    with core_db.write_txn(conn):
+        conn.execute(
+            "INSERT INTO node_usage (node_id, agent, model, in_tokens, out_tokens, requests, "
+            "cost, rate_limited) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                node_id, agent_name, result.model, result.in_tokens, result.out_tokens,
+                result.requests, result.cost, int(result.status == "rate_limited"),
+            ),
+        )
+        if cost_model in _COST_MODEL_TO_SPEND:
+            unit, amount = _COST_MODEL_TO_SPEND[cost_model](result)
+            project_id = nodes_mod.get_node(conn, node_id)["project_id"]
+            spend_mod.record_spend(
+                conn, project_id, agent_name, unit, amount, actor="daemon",
+                actor_evidence="subprocess",
+            )
 
 
 def _apply_rate_limit(conn, node, owner: str, agent_name: str, result: drivers.DriverResult) -> str:
     retry_seconds = result.retry_after_seconds or 60
     retry_at = (_now() + timedelta(seconds=retry_seconds)).strftime(TS_FORMAT)
-    nodes_mod.block(conn, node["id"], reason="rate_limit", actor=owner, event_actor_role="daemon")
-    events_mod.record_event(
-        conn, project_id=node["project_id"], node_id=node["id"], actor="daemon",
-        type_="runner.rate_limited",
-        payload={"agent": agent_name, "retry_at": retry_at, "retry_after_seconds": retry_seconds},
-    )
-    conn.commit()
+    with core_db.write_txn(conn):
+        nodes_mod.block(
+            conn, node["id"], reason="rate_limit", actor=owner, event_actor_role="daemon",
+            actor_evidence="subprocess",
+        )
+        events_mod.record_event(
+            conn, project_id=node["project_id"], node_id=node["id"], actor="daemon",
+            actor_evidence="subprocess",
+            type_="runner.rate_limited",
+            payload={"agent": agent_name, "retry_at": retry_at, "retry_after_seconds": retry_seconds},
+        )
     return retry_at
 
 
@@ -243,7 +269,7 @@ def run_node(
     owner = f"runner:{agent_name}"
     started = nodes_mod.start(
         conn, node["id"], owner=owner, config=config, repo_root=repo_root,
-        lease_minutes=config.planning.lease_minutes,
+        lease_minutes=config.planning.lease_minutes, actor_evidence="subprocess",
     )
     if started["noop"]:
         return {"node_id": node["id"], "agent": agent_name, "outcome": "noop"}
@@ -257,7 +283,7 @@ def run_node(
     if result.status == "unavailable":
         return _handle_unavailable(conn, node_row, owner, agent_name, agent_cfg, config, repo_root, result, invoke)
 
-    _record_usage(conn, node["id"], agent_name, result)
+    _record_usage(conn, node["id"], agent_name, result, cost_model=agent_cfg.cost_model)
 
     if result.status == "rate_limited":
         retry_at = _apply_rate_limit(conn, node_row, owner, agent_name, result)
@@ -266,7 +292,7 @@ def run_node(
     if result.status == "done":
         outcome = nodes_mod.done(
             conn, node["id"], owner=owner, summary=result.summary or None, config=config,
-            run_checks=None, cwd=cwd,
+            run_checks=None, cwd=cwd, actor_evidence="subprocess",
         )
         node_status = outcome["node"]["status"]
         return {
@@ -278,7 +304,7 @@ def run_node(
     # "failed": the driver ran and cleanly reported it could not finish.
     nodes_mod.fail(
         conn, node["id"], owner=owner, lesson=result.error or "driver reported failure",
-        trigger="driver_failed",
+        trigger="driver_failed", actor_evidence="subprocess",
     )
     after = nodes_mod.get_node(conn, node["id"])
     return {
@@ -300,7 +326,7 @@ def _apply_on_rate_limit(conn, node, agent_name, agent_cfg, config, repo_root, r
                 "retry_at": retry_at,
                 "error": f"on_rate_limit fallback agent {fallback_name!r} is not configured",
             }
-        nodes_mod.ready(conn, node["id"], actor="daemon")
+        nodes_mod.ready(conn, node["id"], actor="daemon", actor_evidence="subprocess")
         fresh = nodes_mod.get_node(conn, node["id"])
         result = run_node(conn, fresh, fallback_name, fallback_cfg, config, repo_root, invoke=invoke)
         result["fallback_from"] = agent_name
@@ -322,18 +348,22 @@ def _handle_unavailable(conn, node_row, owner, agent_name, agent_cfg, config, re
         fallback_name = mode.split(":", 1)[1]
         fallback_cfg = config.agents.get(fallback_name)
         if fallback_cfg is not None:
-            nodes_mod.ready(conn, node_row["id"], actor="daemon")
+            nodes_mod.ready(conn, node_row["id"], actor="daemon", actor_evidence="subprocess")
             fresh = nodes_mod.get_node(conn, node_row["id"])
             res = run_node(conn, fresh, fallback_name, fallback_cfg, config, repo_root, invoke=invoke)
             res["fallback_from"] = agent_name
             res["fallback_reason"] = "driver_unavailable"
             return res
-    nodes_mod.block(conn, node_row["id"], reason="external", actor=owner, event_actor_role="daemon")
-    events_mod.record_event(
-        conn, project_id=node_row["project_id"], node_id=node_row["id"], actor="daemon",
-        type_="runner.driver_unavailable", payload={"agent": agent_name, "error": result.error},
-    )
-    conn.commit()
+    with core_db.write_txn(conn):
+        nodes_mod.block(
+            conn, node_row["id"], reason="external", actor=owner, event_actor_role="daemon",
+            actor_evidence="subprocess",
+        )
+        events_mod.record_event(
+            conn, project_id=node_row["project_id"], node_id=node_row["id"], actor="daemon",
+            actor_evidence="subprocess",
+            type_="runner.driver_unavailable", payload={"agent": agent_name, "error": result.error},
+        )
     return {
         "node_id": node_row["id"], "agent": agent_name, "outcome": "blocked_unavailable",
         "error": result.error,
@@ -403,11 +433,12 @@ def run(
                 paused = {"reason": "budget_exhausted", "budget": state}
                 break
             if state["warn"] and not warned:
-                events_mod.record_event(
-                    conn, project_id=None, node_id=None, actor="daemon",
-                    type_="runner.budget_warning", payload=state,
-                )
-                conn.commit()
+                with core_db.write_txn(conn):
+                    events_mod.record_event(
+                        conn, project_id=None, node_id=None, actor="daemon",
+                        actor_evidence="subprocess",
+                        type_="runner.budget_warning", payload=state,
+                    )
                 warned = True
 
             ready_rows = _ready_nodes(conn, project_id)

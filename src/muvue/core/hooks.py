@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from . import db as db_mod
 from . import drift as drift_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
@@ -46,53 +47,64 @@ def handle_post_commit(
     node_ids = trailers.parse_node_ids(message)
     files_json = json.dumps(files or [])
     linked: list[int] = []
-    for node_id in node_ids:
-        try:
-            node = nodes_mod.get_node(conn, node_id)
-        except LookupError:
-            continue
-        if node["deleted_at"] is not None:
-            continue
-        conn.execute(
-            "INSERT OR IGNORE INTO node_commits (node_id, sha, files) VALUES (?, ?, ?)",
-            (node_id, commit_sha, files_json),
-        )
-        events_mod.record_event(
-            conn,
-            project_id=node["project_id"],
-            node_id=node_id,
-            actor="hook",
-            type_="commit.linked",
-            payload={"sha": commit_sha, "files": files or []},
-        )
-        linked.append(node_id)
+    with db_mod.write_txn(conn):
+        for node_id in node_ids:
+            try:
+                node = nodes_mod.get_node(conn, node_id)
+            except LookupError:
+                continue
+            if node["deleted_at"] is not None:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO node_commits (node_id, sha, files) VALUES (?, ?, ?)",
+                (node_id, commit_sha, files_json),
+            )
+            # v4 section 3: "actual_touches -- written from commits; drift
+            # vs predicted is a KPI." One row per real file path this
+            # commit touched, linked to the node the trailer resolved --
+            # the KPI computation itself (drift vs predicted_touches) is
+            # P6/P7-scoped future work; this just gets the raw data in.
+            for path in files or []:
+                conn.execute(
+                    "INSERT OR IGNORE INTO actual_touches (node_id, path) VALUES (?, ?)",
+                    (node_id, path),
+                )
+            events_mod.record_event(
+                conn,
+                project_id=node["project_id"],
+                node_id=node_id,
+                actor="hook",
+                actor_evidence="hook",
+                type_="commit.linked",
+                payload={"sha": commit_sha, "files": files or []},
+            )
+            linked.append(node_id)
 
-    if linked:
-        # No-op queue entries (P2 pattern): a future daemon consumer
-        # drains these to compute real anchor hashes / staleness; for P3
-        # this hook only has to enqueue the signal, not resolve it (plan
-        # section 9 structure layer, P6+).
-        events_mod.record_event(
-            conn, project_id=None, node_id=None, actor="hook",
-            type_="anchor.hash_requested",
-            payload={"sha": commit_sha, "node_ids": linked},
+        if linked:
+            # No-op queue entries (P2 pattern): a future daemon consumer
+            # drains these to compute real anchor hashes / staleness; for P3
+            # this hook only has to enqueue the signal, not resolve it (plan
+            # section 9 structure layer, P6+).
+            events_mod.record_event(
+                conn, project_id=None, node_id=None, actor="hook", actor_evidence="hook",
+                type_="anchor.hash_requested",
+                payload={"sha": commit_sha, "node_ids": linked},
+            )
+            events_mod.record_event(
+                conn, project_id=None, node_id=None, actor="hook", actor_evidence="hook",
+                type_="staleness.flagged",
+                payload={"sha": commit_sha, "node_ids": linked},
+            )
+        # P7 drift loop item 2 (plan section 9): a commit with no
+        # `Muvue-Node:`/`Refs:` trailer at all (`node_ids` empty -- not just
+        # "nothing resolved") that touches a file a tracked component is
+        # anchored to flags straight to the inbox, DB-only (no git access
+        # needed: the anchor paths are already in `components.anchors_json`).
+        drift_mod.flag_unattributed_commit(
+            conn, commit_sha=commit_sha, files=files or [], node_ids=node_ids,
         )
-        events_mod.record_event(
-            conn, project_id=None, node_id=None, actor="hook",
-            type_="staleness.flagged",
-            payload={"sha": commit_sha, "node_ids": linked},
-        )
-    # P7 drift loop item 2 (plan section 9): a commit with no
-    # `Muvue-Node:`/`Refs:` trailer at all (`node_ids` empty -- not just
-    # "nothing resolved") that touches a file a tracked component is
-    # anchored to flags straight to the inbox, DB-only (no git access
-    # needed: the anchor paths are already in `components.anchors_json`).
-    drift_mod.flag_unattributed_commit(
-        conn, commit_sha=commit_sha, files=files or [], node_ids=node_ids,
-    )
-    conn.commit()
-    unresolved = [n for n in node_ids if n not in linked]
-    return {"commit_sha": commit_sha, "linked_node_ids": linked, "unresolved_ids": unresolved}
+        unresolved = [n for n in node_ids if n not in linked]
+        return {"commit_sha": commit_sha, "linked_node_ids": linked, "unresolved_ids": unresolved}
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -117,6 +129,5 @@ def handle_post_commit_from_git(conn: sqlite3.Connection, repo_root: Path) -> di
     files = [f for f in files_raw.splitlines() if f]
     result = handle_post_commit(conn, commit_sha=commit_sha, message=message, files=files)
     newly_stale = drift_mod.mark_stale_for_commit(conn, repo_root, commit_sha, files)
-    conn.commit()
     result["newly_stale_component_ids"] = newly_stale
     return result
