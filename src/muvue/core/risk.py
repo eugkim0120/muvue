@@ -51,6 +51,30 @@ def _node_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
     ]
 
 
+def _actual_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
+    return [
+        row["path"]
+        for row in conn.execute(
+            "SELECT path FROM actual_touches WHERE node_id = ?", (node_id,)
+        )
+    ]
+
+
+def touches_outside_predicted(conn: sqlite3.Connection, node_id: int) -> bool:
+    """v4 section 5 risk-tier input: "touches outside `predicted_touches`".
+    `actual_touches` (written from real commits by
+    `core.hooks.handle_post_commit`) is compared against the node's
+    `predicted_touches` globs. True if at least one real touch matches
+    none of the predicted globs; False if there are no actual touches
+    recorded yet (nothing to compare -- not a signal either way) or every
+    actual touch is covered by some predicted glob."""
+    predicted = _node_touches(conn, node_id)
+    actual = _actual_touches(conn, node_id)
+    if not actual:
+        return False
+    return any(not any(fnmatch.fnmatch(path, glob) for glob in predicted) for path in actual)
+
+
 def touches_globs(touches: list[str], globs: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, glob) for path in touches for glob in globs)
 
@@ -74,12 +98,25 @@ def compute_tier(
     *,
     criteria_edited: bool = False,
     has_deletions: bool = False,
+    touches_outside_predicted: bool = False,
 ) -> str:
     """Compute a node's risk tier from diff size, path globs, deletions,
-    and criteria edits (plan section 5). `criteria_edited=True`
-    unconditionally forces `high` -- this is the one place that rule
-    lives; `core.gates.edit_criteria` calls through here instead of
-    special-casing `high` itself."""
+    criteria edits, and touches outside `predicted_touches` (plan section
+    5). `criteria_edited=True` unconditionally forces `high` -- this is
+    the one place that rule lives; `core.gates.edit_criteria` calls
+    through here instead of special-casing `high` itself.
+
+    `touches_outside_predicted` (v4 section 5, new input) only ever
+    *raises* the tier, never lowers it -- callers pass the result of
+    `touches_outside_predicted()` above. It's only meaningful once real
+    commits exist (`actual_touches` is populated), so it's a signal at
+    `done`/review time (`core.nodes.done`), not at Gate 2 approval, when
+    no commit history exists yet to compare against. Per plan section
+    13's residual-risk statement ("`predicted_touches` is a heuristic...
+    not a safety guarantee"), this is scored, not hard-blocked: it bumps
+    the tier at least to `medium`, same severity class as exceeding
+    `max_files_per_task`, without overriding a higher tier some other
+    signal already produced."""
     if criteria_edited:
         return "high"
     if has_deletions:
@@ -91,10 +128,15 @@ def compute_tier(
 
     n_touches = len(touches)
     if n_touches > config.risk.max_diff_lines:
-        return "high"
-    if n_touches > config.planning.max_files_per_task:
-        return "medium"
-    return "low"
+        tier = "high"
+    elif n_touches > config.planning.max_files_per_task:
+        tier = "medium"
+    else:
+        tier = "low"
+
+    if touches_outside_predicted:
+        tier = max_tier(tier, "medium")
+    return tier
 
 
 def is_flagged(conn: sqlite3.Connection, node: sqlite3.Row, config: MuvueConfig) -> bool:

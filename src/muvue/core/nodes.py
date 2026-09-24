@@ -19,7 +19,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from . import db as db_mod
-from . import events, review, risk, state_machine
+from . import events, gitutil, review, risk, state_machine
 
 DEFAULT_LEASE_MINUTES = 60
 
@@ -207,7 +207,7 @@ def start(
 
     node = get_node(conn, node_id)
     project = conn.execute(
-        "SELECT phase FROM projects WHERE id = ?", (node["project_id"],)
+        "SELECT phase, branch FROM projects WHERE id = ?", (node["project_id"],)
     ).fetchone()
     if project is not None and project["phase"] in ("planning", "paused"):
         raise NodeError(
@@ -215,6 +215,42 @@ def start(
             f"{project['phase']} (Gate 2 not yet approved, or paused -- plan "
             "section 5 'Emergency stop': pause refuses start)"
         )
+
+    # v4 section 5: branch coherence. "doctor and every start compare
+    # current HEAD against the branch recorded at project start. On
+    # divergence: warn in light mode, refuse in strict mode." Compared
+    # against repo_root's OWN checkout -- never a per-node strict-mode
+    # worktree's HEAD, which is intentionally on its own node-<id> branch
+    # and would always "diverge" by design; that's not what this check is
+    # about (it's "the user checked out an unrelated branch in their own
+    # terminal mid-project"). Checked before the strict-mode worktree
+    # bind below, so a strict-mode refusal never leaves an orphan
+    # worktree behind. A no-op when repo_root wasn't passed (most
+    # pre-v4/light call sites, and any test not exercising this) or the
+    # project recorded no branch (created without a repo_root).
+    if repo_root is not None and project is not None and project["branch"]:
+        current_branch = gitutil.current_branch(repo_root)
+        if current_branch is not None and current_branch != project["branch"]:
+            mode = getattr(config, "mode", "light") if config is not None else "light"
+            if mode == "strict":
+                raise NodeError(
+                    f"cannot start node {node_id}: repo is on branch "
+                    f"{current_branch!r}, project {node['project_id']} started on "
+                    f"{project['branch']!r} (branch coherence, strict mode refuses "
+                    "-- v4 section 5)"
+                )
+            events.record_event(
+                conn,
+                project_id=node["project_id"],
+                node_id=node_id,
+                actor="hook",
+                actor_evidence="subprocess",
+                type_="branch.diverged",
+                payload={
+                    "expected_branch": project["branch"],
+                    "current_branch": current_branch,
+                },
+            )
     # P3 acceptance #1: a second driver cannot take an already-leased node.
     # `state_machine.TRANSITIONS` already refuses a second `start` once the
     # node is `in_progress` (there is no (in_progress, in_progress) edge),
@@ -370,7 +406,17 @@ def done(
             )
             return {"noop": False, "node": dict(row), "auto_approved": True}
 
-        tier = risk.max_tier(risk.compute_tier(conn, reviewing, config), reviewing["risk_tier"])
+        # v4 section 5: touches outside predicted_touches is a new
+        # tier input, only meaningful once real commits exist
+        # (actual_touches, populated by core.hooks.handle_post_commit) --
+        # so it's compared here, at done()/review time, not at Gate 2
+        # approval (core.gates.approve_node), which has no commit history
+        # yet. Never lowers the tier -- see core.risk.compute_tier.
+        touches_outside = risk.touches_outside_predicted(conn, node_id)
+        tier = risk.max_tier(
+            risk.compute_tier(conn, reviewing, config, touches_outside_predicted=touches_outside),
+            reviewing["risk_tier"],
+        )
         flagged = risk.is_flagged(conn, reviewing, config)
         conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
         reviewing = get_node(conn, node_id)

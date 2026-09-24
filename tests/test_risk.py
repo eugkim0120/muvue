@@ -85,3 +85,58 @@ def test_is_flagged_on_test_touch(conn, project, config):
 def test_is_flagged_false_when_no_test_touch(conn, project, config):
     task = _task(conn, project, touches=["a.py"])
     assert risk.is_flagged(conn, task, config) is False
+
+
+# -- v4 section 5: touches outside predicted_touches raise the tier ---------
+#
+# "Inputs: diff size, path globs, deletions, criteria edits, and *touches
+# outside predicted_touches*." P2b acceptance: "touch outside
+# predicted_touches raises the tier." Never lowers it (§13: predicted_
+# touches is a heuristic risk-scoring input, not a safety guarantee).
+
+
+def _record_actual_touch(conn, node_id, path):
+    conn.execute("INSERT INTO actual_touches (node_id, path) VALUES (?, ?)", (node_id, path))
+    conn.commit()
+
+
+def test_touches_outside_predicted_true_when_actual_touch_not_covered(conn, project):
+    task = _task(conn, project, touches=["src/a.py"])
+    _record_actual_touch(conn, task["id"], "src/unexpected.py")
+    assert risk.touches_outside_predicted(conn, task["id"]) is True
+
+
+def test_touches_outside_predicted_false_when_actual_touches_fully_covered(conn, project):
+    task = _task(conn, project, touches=["src/*.py"])
+    _record_actual_touch(conn, task["id"], "src/a.py")
+    assert risk.touches_outside_predicted(conn, task["id"]) is False
+
+
+def test_touches_outside_predicted_false_when_no_actual_touches_recorded(conn, project):
+    task = _task(conn, project, touches=["src/a.py"])
+    assert risk.touches_outside_predicted(conn, task["id"]) is False
+
+
+def test_compute_tier_raises_low_to_medium_on_touches_outside_predicted(conn, project, config):
+    task = _task(conn, project, touches=["a.py"])  # would otherwise be low
+    assert (
+        risk.compute_tier(conn, task, config, touches_outside_predicted=True) == "medium"
+    )
+
+
+def test_compute_tier_never_lowered_by_touches_outside_predicted(conn, project, config):
+    """The flag only ever raises; a signal that would already push the
+    node to 'high' (a glob match) is untouched by it."""
+    config.risk.globs = ["migrations/**"]
+    task = _task(conn, project, touches=["migrations/0001_init.sql"])
+    assert (
+        risk.compute_tier(conn, task, config, touches_outside_predicted=True) == "high"
+    )
+
+
+def test_compute_tier_isolates_touches_outside_predicted_from_other_signals(conn, project, config):
+    """A node whose actual touches ARE fully within predicted globs is
+    unaffected by this specific input -- isolating it from the touch-count
+    tier signals covered by the other tests above."""
+    task = _task(conn, project, touches=["a.py"])
+    assert risk.compute_tier(conn, task, config, touches_outside_predicted=False) == "low"

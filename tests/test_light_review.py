@@ -138,6 +138,42 @@ def test_default_run_checks_runs_a_real_subprocess(tmp_path: Path):
     assert bad is False
 
 
+# -- v4 section 5: touches outside predicted_touches raises tier at done ---
+
+
+def test_done_raises_tier_when_actual_touch_outside_predicted(conn, project, config):
+    task = _ready_task(conn, project, config, criteria_mode="auto", touches=["src/a.py"])
+    nodes.start(conn, task["id"], owner="agent-1")
+    conn.execute(
+        "INSERT INTO actual_touches (node_id, path) VALUES (?, ?)",
+        (task["id"], "src/unexpected.py"),
+    )
+    conn.commit()
+    result = nodes.done(
+        conn, task["id"], owner="agent-1", config=config, run_checks=lambda cmd, cwd: True,
+    )
+    # touch outside predicted_touches raises low -> medium, which stops
+    # auto-approval and sends the node to review instead.
+    assert result["node"]["risk_tier"] == "medium"
+    assert result["auto_approved"] is False
+    assert result["node"]["status"] == "review"
+
+
+def test_done_does_not_raise_tier_when_actual_touches_within_predicted(conn, project, config):
+    task = _ready_task(conn, project, config, criteria_mode="auto", touches=["src/*.py"])
+    nodes.start(conn, task["id"], owner="agent-1")
+    conn.execute(
+        "INSERT INTO actual_touches (node_id, path) VALUES (?, ?)", (task["id"], "src/a.py"),
+    )
+    conn.commit()
+    result = nodes.done(
+        conn, task["id"], owner="agent-1", config=config, run_checks=lambda cmd, cwd: True,
+    )
+    assert result["node"]["risk_tier"] == "low"
+    assert result["auto_approved"] is True
+    assert result["node"]["status"] == "done"
+
+
 def test_rebuild_matches_live_through_light_mode_review_dispatch(conn, project, config):
     from muvue.core import rebuild
 
