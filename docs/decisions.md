@@ -1262,3 +1262,77 @@ reading here. Real `decisions` table entries start once dogfooding begins
     "readiness line printed" and "socket accepts connections" are now
     the same moment for every caller of `muvue serve`, not just this
     phase's own tests.
+
+88. **The granularity-lint hard block (v4 §5, changelog item 9) reads
+    "no `auto` criterion" the same way #12 already resolved it for the
+    warning it upgrades**: at the node-mode granularity, `criteria_mode
+    != "auto"`, not a per-individual-criterion-string check. The schema
+    still stores one `criteria_mode` enum per node (a list of plain
+    strings in `criteria_json`, no per-string mode), so a per-criterion
+    reading was never available to begin with -- #12's reasoning applies
+    unchanged, just at a different (now hard-block, not warn) severity
+    for medium/high tier. `core.gates.approve_node` checks this using
+    the node's already-current `risk_tier` (freshly computed on initial
+    Gate 2 freeze; whatever `core.gates.edit_criteria` forced it to on a
+    re-approval) rather than a value recomputed inline, so the block
+    applies identically on both the initial-freeze and re-approval
+    paths -- a criteria edit that keeps a node non-`auto` and forces it
+    to `high` can't reopen the loophole by being waved through on
+    re-approval. Low tier is left exactly as `lint_task` already warns
+    it (v4's own wording names only "medium- or high-tier").
+
+89. **`touches_outside_predicted` is scored at `core.nodes.done`'s tier
+    recompute, never at Gate 2 approval.** v4 §5 lists it as one of
+    several risk-tier inputs without saying at which call site to
+    compare it; the plain reading is the only one that's even
+    computable: `actual_touches` (real commits) doesn't exist yet at
+    Gate 2 approval time, before any work has started, so there is
+    nothing yet to compare `predicted_touches` against. `core.risk.
+    touches_outside_predicted(conn, node_id)` is a pure query (any
+    `actual_touches` row whose `path` matches none of the node's
+    `predicted_touches` globs); `core.risk.compute_tier`'s new
+    `touches_outside_predicted` keyword only ever raises the touch-count
+    tier to at least `medium` via the existing `max_tier` never-
+    downgrade helper, consistent with v4 §13's own framing
+    ("`predicted_touches` is a heuristic... not a safety guarantee" --
+    scored, not hard-blocked, matching working rule 8's "no unrequested
+    features": the plan never asks for a hard block here, only P2b's
+    acceptance line "touch outside `predicted_touches` raises the
+    tier").
+
+90. **Branch coherence (v4 §5, changelog item 12) reuses `core.nodes.
+    start`'s existing `config`/`repo_root` optional keyword arguments**
+    (added for P4's strict-mode worktree binding, decision #44) rather
+    than adding new ones, and is checked *before* `core.strict.
+    bind_worktree` runs so a strict-mode refusal never leaves an orphan
+    worktree on disk. Per decision #44's own precedent, this is read as
+    an internal behavior extension of an existing verb, not a
+    caller-visible contract change -- `protocol_version` is **not**
+    bumped for this session's three deltas, same reasoning as #44:
+    every existing call site (light mode, no divergence, or no
+    `repo_root` passed at all) reproduces its exact prior behavior.
+
+    `core.nodes.start`'s API (`POST /nodes/{id}/start`) and MCP (`start`
+    tool) entry points previously called `core.nodes.start` with neither
+    `config` nor `repo_root` at all -- meaning strict-mode worktree
+    binding, not just this phase's branch check, was silently never
+    exercised through those two paths. Wiring both through (API: already
+    had `config`/`repo_root` in `create_app`'s closure; MCP: `_call_tool`
+    now special-cases `"start"` to pass `repo_root`, the only verb whose
+    handler needs it) was necessary to make "every `start`" (v4 §5's own
+    wording) actually true, not just the CLI's. Fixing the *strict-mode*
+    gap this incidentally exposes is in scope only as far as making the
+    branch check reachable everywhere `start` is callable -- no other
+    strict-mode behavior was added or changed at the API/MCP layer this
+    session.
+
+    `projects.branch` (SCHEMA_VERSION 4 -> 5, `core.migrate` `ALTER
+    TABLE`s it into existing databases) is `NULL` whenever
+    `create_project` isn't given a `repo_root` -- every pre-v4 call site
+    and most unit tests -- which is read as "no baseline recorded", not
+    an error; the coherence check is then a no-op rather than treating a
+    missing baseline as a divergence. `core.rebuild`'s project-row
+    projection (`_PROJECT_COLUMNS`) gained `branch`: it's set once, at
+    creation, and carried unchanged in the `project.created` event
+    payload, so it's fully within the replayable projection (v4 §3) with
+    no new exclusion needed.

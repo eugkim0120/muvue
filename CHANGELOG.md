@@ -2,6 +2,56 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 §5: enforcement deltas (granularity hard block, touch-drift tier, branch coherence)
+
+Branch `feat/v4-enforcement-deltas`, built on §1.2/§3 (txn discipline),
+§4a (hook fast path) and §8a (daemon security). Three independent v4 §5
+deltas, changelog items 9/(P2b acceptance)/12.
+
+### Changed
+- `core.gates.approve_node` (changelog item 9): a medium- or high-tier
+  task/subtask node whose `criteria_mode != "auto"` is now **refused**
+  (`GateError`), not merely warned by `lint_task` -- "otherwise an agent
+  closes the loophole by declaring every criterion `external` and
+  self-attesting" (v4 §5). Checked on every `approve_node` call, both
+  the initial Gate 2 freeze and re-approval after a criteria edit (a
+  criteria edit that keeps a node non-auto and forces it to `high` via
+  `core.gates.edit_criteria` hits the same block on re-approval).
+  Matches plan §11's literal P1 acceptance bar: "all-`external`
+  medium-tier task is refused." Low tier is unaffected -- still only
+  warned, as before. "No auto criterion" reads at the same node-mode
+  granularity `lint_task`'s pre-existing warning already used
+  (`criteria_mode != "auto"`; docs/decisions.md #12), now applied as a
+  decision entry #88.
+- `core.risk.compute_tier`: new `touches_outside_predicted` input (v4
+  §5's risk-tier inputs list). `core.risk.touches_outside_predicted(conn,
+  node_id)` compares a node's `actual_touches` (real commits, written by
+  `core.hooks.handle_post_commit`) against its `predicted_touches` globs;
+  a real touch matching no predicted glob raises the tier to at least
+  `medium`, never lowers it. Wired into `core.nodes.done`'s tier
+  recompute (when `config` is given) -- the point at which real commits
+  and their `actual_touches` rows actually exist -- not into Gate 2
+  approval, which has no commit history yet.
+- `core.nodes.start` / `core.doctor.run_doctor` (changelog item 12):
+  branch-coherence check. `core.projects.create_project` now records the
+  branch checked out in `repo_root` (via new `core.gitutil.
+  current_branch`) into new `projects.branch` (SCHEMA_VERSION 4 -> 5).
+  Every `start` (CLI, API, MCP -- all three now pass `repo_root`/`config`
+  through) and every `doctor` run compares the repo's *own working
+  tree's* current branch (never a strict-mode per-node worktree's, which
+  is intentionally on its own `node-<id>` branch) against the recorded
+  one: light mode records a `branch.diverged` event and proceeds;
+  strict mode refuses `start` (`NodeError`) before any worktree bind,
+  and `doctor` reports it as a failing issue (light mode: a warning).
+
+### Added
+- `core.gitutil.current_branch(repo_root)`: the one `git rev-parse
+  --abbrev-ref HEAD` helper shared by all three of the above call sites.
+- `projects.branch` column (SCHEMA_VERSION 5); `core.migrate` `ALTER
+  TABLE`s it into pre-existing databases; `core.rebuild`'s replayable
+  project-row projection includes it (fully replayable -- set once at
+  project creation, carried in the `project.created` event payload).
+
 ## [Unreleased] - v4 §8a / P2a: daemon security hardening
 
 Branch `feat/v4-daemon-security`, built on the §1.2/§3 txn-discipline

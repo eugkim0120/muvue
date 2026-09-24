@@ -93,9 +93,13 @@ Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
   called from `approve_gate2` for every node it approves — see
   `docs/decisions.md` for why approval time was chosen over decomposition-
   submission time). Warns, never blocks, when a task's `predicted_touches`
-  count exceeds `planning.max_files_per_task`, its subtask count exceeds
-  `planning.max_subtasks`, or `criteria_mode != "auto"` (P1's reading of
-  "lacks an auto criterion" — see `docs/decisions.md`).
+  count exceeds `planning.max_files_per_task` or its subtask count exceeds
+  `planning.max_subtasks`. `criteria_mode != "auto"` (P1's reading of
+  "lacks an auto criterion" — see `docs/decisions.md` #12) is still a
+  warning at **low** tier, but is a **hard block** (v4 §5, `GateError`,
+  refused rather than approved) once the node's computed `risk_tier` is
+  `medium` or `high` — see `core.gates.approve_node` below and
+  `docs/decisions.md` #88.
 - **Criteria edit after freeze.** `core.gates.edit_criteria` on an already-
   frozen node (`criteria_hash` not `NULL`) whose new criteria hash differs
   from the frozen one: bumps `risk_tier` to `high` and, if the node was
@@ -104,7 +108,10 @@ Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
   `approve node:ID` (`core.gates.approve_node`, which re-freezes
   `criteria_hash` and moves `pending -> ready`). Editing criteria on a
   node that was never frozen (no prior approval) is a normal edit — no
-  re-tier, no re-approval required.
+  re-tier, no re-approval required. The v4 §5 hard block above also
+  applies on this re-approval path: a node forced to `high` by this edit
+  and still non-`auto` is refused on `approve_node`, not silently waved
+  through.
 
 ### `ask` / `wait` (P1)
 
@@ -178,9 +185,19 @@ after a criteria edit never recomputes down, see below) and by
 - Any `predicted_touches` path matches `risk.globs` -> `high`.
 - Touch count over `risk.max_diff_lines` -> `high`; over
   `planning.max_files_per_task` -> `medium`; else `low`.
+- `touches_outside_predicted=True` (v4 §5, new tier input) raises the
+  touch-count tier above to at least `medium`, never lowers it --
+  `core.risk.touches_outside_predicted(conn, node_id)` compares
+  `actual_touches` (real commits, written by
+  `core.hooks.handle_post_commit`) against `predicted_touches`; a real
+  touch matching none of the predicted globs sets the flag. Only
+  meaningful once commits exist, so `core.nodes.done`'s tier recompute
+  passes it (Gate 2 approval has no commit history yet to compare
+  against -- see `docs/decisions.md` #89).
 - `core.risk.max_tier(a, b)` merges two tiers, keeping the more severe --
   used so a `done`-time diff-signal recompute can never downgrade a tier a
-  criteria edit already forced to `high` (P2 acceptance #4).
+  criteria edit already forced to `high` (P2 acceptance #4), and so the
+  touches-outside-predicted signal above never downgrades either.
 - `core.risk.is_flagged` -- true if any predicted touch looks test-shaped.
   "Diffs touching test files or criteria are always flagged" (plan
   section 5): always overrides auto-approval regardless of tier.
@@ -476,6 +493,34 @@ to stdout: `session-start` -> `brief` as `additionalContext`;
 `stop` -> blocks ending the turn with an `in_progress` node that has
 zero notes logged. A `"decision": "block"` response exits 2 (Claude
 Code's documented convention).
+
+## Branch coherence (v4 §5, changelog item 12)
+
+`projects.branch` (SCHEMA_VERSION 5) records the branch `core.gitutil.
+current_branch(repo_root)` reports at `core.projects.create_project`
+time (`NULL` when created without a `repo_root`, e.g. most unit tests --
+the check is then a no-op everywhere below). `core.nodes.start` and
+`core.doctor.run_doctor` each compare that recorded branch against the
+repo's *current* branch on every call:
+
+- **`start`** (`core.nodes.start`, given both `repo_root` and `config`):
+  checked against `repo_root`'s own working-tree `HEAD` -- **never** a
+  strict-mode per-node worktree's `HEAD` (a worktree is intentionally on
+  its own `node-<id>` branch and would always "diverge" by design; the
+  check happens before `core.strict.bind_worktree` runs, so a refusal
+  never leaves an orphan worktree behind). Light mode (or no `config`):
+  records a `branch.diverged` event (`actor="hook"`) and lets `start`
+  proceed. Strict mode: refuses with `NodeError` before any other side
+  effect. All three `start` entry points (CLI, API, MCP) now pass
+  `repo_root`/`config` through so the check runs everywhere the verb is
+  callable, not just the CLI.
+- **`doctor`** (`core.doctor.run_doctor`): for every project in
+  `planning`/`executing`/`paused` phase with a recorded `branch`,
+  compares it against `repo_root`'s current branch. `doctor` has no
+  `start`-style refuse/proceed distinction of its own (it's a
+  diagnostic, not a gate) -- light mode surfaces a `report.warn`, strict
+  mode a `report.fail` (flips `ok` to `False`, same severity as every
+  other strict-mode-only check `doctor` already runs).
 
 ## Light-mode `review` dispatch (P3)
 
