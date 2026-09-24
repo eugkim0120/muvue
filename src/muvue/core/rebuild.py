@@ -1,9 +1,43 @@
-"""Rebuild live state by replaying `events` only (plan P0 acceptance #2).
+"""Rebuild live state by replaying `events` only.
 
 Every mutation in nodes.py/projects.py appends an event whose payload is a
 full snapshot of the row after the mutation. Replay is therefore
 last-write-wins per (table, id): folding the event stream in id order
-reproduces the live `projects` and `nodes` tables exactly.
+reproduces the live `projects` and `nodes` tables' *replayable* columns
+exactly.
+
+v4 section 3 ("Events, replay, and what replay does *not* cover")
+narrows what "replay equals live DB" actually means -- v3's P0
+acceptance as originally written ("replay equals live DB") was false: it
+included clock- and read-derived fields that events can never
+reproduce, because they aren't decisions the system made, they're
+observations of the outside world (wall-clock time, "was this read
+recently").
+
+- **Replayable** (the P0 acceptance applies): node existence, status,
+  parent/dep edges, criteria + criteria_hash, owner, attempts,
+  `lease_expiries` (the *consequence* of a lease clock expiring is
+  replayable even though the clock itself is not -- v4 section 3), notes,
+  commits, approvals, spend.
+- **Not replayable, excluded from the equality check:** `lease_until`
+  (wall-clock -- it's set to "now + lease_minutes" at `start` time, and a
+  replay run happening at a different wall-clock moment than the
+  original `start` call cannot reproduce the same absolute timestamp),
+  `last_retrieved_at` (read-side telemetry -- set by `core.queries.
+  brief_node`/`core.drift.record_lesson_retrieval` merely *reading* a
+  lesson, not a decision the write path made), FTS5 index contents (a
+  derived search index, not project state), `verified_sha` freshness
+  (whether a component's `verified_sha` reflects a *recent* audit is a
+  time-relative judgment `core.drift.drift_pct` makes against the
+  outside world's current git history, not something replay owns --
+  the `verified_sha` *value* itself, set once by an event payload, is
+  still compared normally).
+
+`_REPLAYABLE_NODE_COLUMNS`/`_REPLAYABLE_NOTE_COLUMNS` below are the
+column lists `diff_state`/`diff_project_from_archive` actually compare;
+`_NODE_COLUMNS`/`_NOTE_COLUMNS` (the full row shape) still exist for
+`live_state`'s general-purpose snapshot (used elsewhere, e.g. the
+history export's replay target), just not for the equality check.
 """
 
 from __future__ import annotations
@@ -12,13 +46,13 @@ import json
 import sqlite3
 
 _PROJECT_COLUMNS = [
-    "id", "goal", "phase", "budget_unit", "budget_limit", "spent", "created_at",
+    "id", "goal", "phase", "budget_unit", "budget_limit", "spent", "created_at", "closed_at",
 ]
 _NODE_COLUMNS = [
     "id", "project_id", "parent_id", "kind", "title", "body_md", "status",
     "block_reason", "criteria_json", "criteria_hash", "criteria_mode",
-    "risk_tier", "version", "owner", "lease_until", "attempts", "max_attempts",
-    "summary", "worktree", "deleted_at", "created_at",
+    "risk_tier", "version", "owner", "lease_until", "attempts", "lease_expiries",
+    "max_attempts", "summary", "worktree", "deleted_at", "created_at",
 ]
 # P7: `core.drift.mark_stale_for_commit`/`decay_lessons` are the first
 # mutations against `components`/`notes` (plan section 9's drift loop
@@ -30,6 +64,20 @@ _NOTE_COLUMNS = [
     "id", "node_id", "kind", "text", "content_hash", "pinned",
     "last_retrieved_at", "archived_at", "created_at",
 ]
+
+# v4 section 3: the columns actually compared by `diff_state`/
+# `diff_project_from_archive` -- `lease_until` and `last_retrieved_at`
+# excluded per the module docstring above. `projects`/`components` have
+# no non-replayable columns of their own this phase (a project's
+# `created_at`/`closed_at` are set once, from an event payload, exactly
+# like any other column -- not re-derived from "now" on each replay --
+# so they stay replayable; `verified_sha`'s *value* likewise stays in,
+# only its real-time "freshness" judgment, computed elsewhere in
+# `core.drift.drift_pct`, is out of scope for this equality check).
+_REPLAYABLE_PROJECT_COLUMNS = list(_PROJECT_COLUMNS)
+_REPLAYABLE_NODE_COLUMNS = [c for c in _NODE_COLUMNS if c != "lease_until"]
+_REPLAYABLE_COMPONENT_COLUMNS = list(_COMPONENT_COLUMNS)
+_REPLAYABLE_NOTE_COLUMNS = [c for c in _NOTE_COLUMNS if c != "last_retrieved_at"]
 
 
 def rebuild_state_from_events(events: list[dict]) -> dict:
@@ -106,14 +154,18 @@ def live_state(conn: sqlite3.Connection) -> dict:
 
 
 _TABLE_COLUMNS = {
-    "projects": _PROJECT_COLUMNS,
-    "nodes": _NODE_COLUMNS,
-    "components": _COMPONENT_COLUMNS,
-    "notes": _NOTE_COLUMNS,
+    "projects": _REPLAYABLE_PROJECT_COLUMNS,
+    "nodes": _REPLAYABLE_NODE_COLUMNS,
+    "components": _REPLAYABLE_COMPONENT_COLUMNS,
+    "notes": _REPLAYABLE_NOTE_COLUMNS,
 }
 
 
 def _diff_tables(replayed: dict, live: dict, tables: tuple[str, ...] = ("projects", "nodes")) -> dict:
+    """Compare only the **replayable projection** (v4 section 3) of each
+    table -- `_TABLE_COLUMNS` above already excludes `lease_until`/
+    `last_retrieved_at`, so a live/replayed difference confined to those
+    columns alone never shows up as a mismatch here."""
     mismatches: dict = {}
     for table in tables:
         cols = _TABLE_COLUMNS[table]
@@ -121,7 +173,15 @@ def _diff_tables(replayed: dict, live: dict, tables: tuple[str, ...] = ("project
         if set(r_table) != set(l_table):
             mismatches[table] = {"id_mismatch": (set(r_table), set(l_table))}
             continue
-        for id_, live_row in l_table.items():
+        for id_, live_row_full in l_table.items():
+            # `live_row_full` comes from `live_state`, which snapshots the
+            # *full* row shape (all of `_NODE_COLUMNS`, including
+            # `lease_until`) -- project it down to the replayable columns
+            # here too, so a live/replayed difference confined to a
+            # non-replayable column (e.g. real wall-clock time having
+            # passed between `live_state()` and `rebuild_state()`) is
+            # never compared at all, not just tolerated.
+            live_row = {c: live_row_full.get(c) for c in cols}
             replayed_row = {c: r_table[id_].get(c) for c in cols}
             if replayed_row != live_row:
                 mismatches.setdefault(table, {})[id_] = {

@@ -48,7 +48,8 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
   shims.
 - `migrate [PATH]` — bring `muvue.db` to the current `SCHEMA_VERSION`.
 - `rebuild [PATH]` — replay `events` and report any mismatch against the
-  live DB.
+  **replayable projection** of the live DB (v4 section 3, narrowed from
+  v3's "replay equals live DB" -- see the Events section below).
 - `export [PATH]` — minimal events dump to `.muvue/history/events.json`.
   `export --project-id ID [PATH]` (P6, see below) writes the real
   per-project `.muvue/history/<id>.jsonl.gz` archive instead.
@@ -473,12 +474,34 @@ Notes dedupe by SHA-256 content hash, independent of request-id.
 
 ## Events
 
-`events` is append-only and is the source of truth: every mutation in
-`muvue.core.nodes` / `muvue.core.projects` inserts a row whose `payload`
-is a full JSON snapshot of the row after the mutation. `rebuild` folds the
-event stream (last-write-wins per `(table, id)`) and must equal the live
-`projects`/`nodes` tables — this is asserted by property-style tests in
-`tests/test_rebuild_property.py`.
+`events` is append-only and is the primary source of truth for state
+transitions, but — per v4 section 3 — it is **not a complete projection
+source**, and `rebuild`'s guarantee is stated precisely rather than as
+the broader ("replay equals live DB") claim v3 made:
+
+- **Replayable** (the equality check below applies): node existence,
+  status, parent/dep edges, criteria + `criteria_hash`, owner,
+  `attempts`, `lease_expiries` (the consequence of a lease expiring is
+  replayable even though the wall-clock lease itself is not), notes,
+  commits, approvals, spend.
+- **Not replayable, excluded from the equality check:** `lease_until`
+  (wall-clock — a replay run happening at a different real time than the
+  original `start` cannot reproduce the same absolute timestamp),
+  `last_retrieved_at` (read-side telemetry, set by *reading* a lesson,
+  not a write-path decision), FTS5 index contents (a derived search
+  index), `verified_sha` freshness (a real-time judgment against current
+  git history, made elsewhere by `core.drift.drift_pct` — the
+  `verified_sha` *value* itself, written once by an event payload, is
+  still compared).
+
+`rebuild` folds the event stream (last-write-wins per `(table, id)`),
+projects both the replayed and live rows down to the replayable columns
+listed above, and must find them equal — this is asserted by
+property-style tests in `tests/test_rebuild_property.py`, including a
+test that a genuine replayable-field discrepancy is still caught and a
+test that a difference confined to a non-replayable field (e.g.
+`lease_until`, because real time passed between taking the live
+snapshot and replaying) is no longer flagged.
 
 ## Runner, drivers, merge, handoff (P5)
 
