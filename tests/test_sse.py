@@ -74,3 +74,36 @@ def test_sse_emits_a_second_message_after_a_mutation(repo):
     v1 = json.loads(first[len("data: "):].strip())["data_version"]
     v2 = json.loads(second[len("data: "):].strip())["data_version"]
     assert v2 > v1
+
+
+def test_sse_loop_drains_the_hook_fast_path_queue(repo):
+    """v4 section 4a: "the daemon drains continuously" -- this SSE loop
+    is the daemon's one continuous, restart-safe loop today (P2a's
+    dedicated daemon process doesn't exist yet), so it rides the
+    bounded drain as a periodic task. A spooled queue line with no
+    external write should still get processed (and its `hook.<event>`
+    audit event bump `PRAGMA data_version`) purely from the loop's own
+    periodic drain call, with no test-injected mutation in between."""
+    queue_path = repo / ".muvue" / "queue.jsonl"
+    queue_path.write_text('{"event": "stop", "ts": "t0", "node_id": null}\n')
+
+    app = create_app(repo, config=MuvueConfig())
+    endpoint = _stream_endpoint(app)
+
+    async def run():
+        response = await endpoint()
+        agen = response.body_iterator
+        first = await agen.__anext__()  # initial data_version snapshot
+        second = await agen.__anext__()  # after >=1 drain-call iteration
+        return first, second
+
+    first, second = asyncio.run(run())
+    v1 = json.loads(first[len("data: "):].strip())["data_version"]
+    v2 = json.loads(second[len("data: "):].strip())["data_version"]
+    assert v2 > v1
+    assert queue_path.read_text().strip() == ""
+
+    conn = core_db.connect(repo / ".muvue" / "muvue.db")
+    row = conn.execute("SELECT type FROM events WHERE type = 'hook.stop'").fetchone()
+    conn.close()
+    assert row is not None

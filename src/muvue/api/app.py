@@ -118,12 +118,30 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             # and losing it costs nothing on restart.
             last_version: int | None = None
             iterations = 0
-            with _conn() as conn:
+            # Two connections on purpose: `PRAGMA data_version` only
+            # reliably reflects writes committed by *other* connections
+            # (see this function's docstring/docs/decisions.md) -- a
+            # drain-caused write issued on `conn` itself would never
+            # show up in `conn`'s own subsequent `data_version` read.
+            # `drain_conn` is the dedicated write connection for the
+            # periodic drain task below.
+            with _conn() as conn, _conn() as drain_conn:
                 while iterations < 600:  # ~60s safety cap
                     version = conn.execute("PRAGMA data_version").fetchone()[0]
                     if version != last_version:
                         last_version = version
                         yield f"data: {json.dumps({'data_version': version})}\n\n"
+                    # v4 section 4a: "the daemon drains continuously" --
+                    # this SSE loop is the only continuous, restart-safe
+                    # loop the daemon runs today (P2a's dedicated daemon
+                    # process/task doesn't exist yet), so the bounded
+                    # drain rides along as another periodic task here
+                    # rather than a new competing loop. Best-effort: a
+                    # drain failure must never break the SSE stream.
+                    try:
+                        core.hooks.drain_queue(drain_conn, repo_root)
+                    except Exception:
+                        pass
                     await asyncio.sleep(0.1)
                     iterations += 1
 

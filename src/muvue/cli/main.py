@@ -45,6 +45,36 @@ def _echo_json(obj) -> None:
     typer.echo(json.dumps(obj, default=str, indent=2))
 
 
+@app.callback()
+def _drain_before_every_command() -> None:
+    """v4 section 4a: "absent a daemon, the next CLI call drains at
+    most 200 items or 200 ms, whichever comes first" -- `muvue._hook`
+    (the fast path) never does this itself, so any normal CLI
+    invocation is the catch-up point when no daemon is running. This is
+    the "next CLI call" the plan text describes, applied globally as a
+    Typer app callback rather than duplicated into every command.
+
+    Best-effort and silent: no `.muvue/` yet (`init` itself, or any
+    command run outside a muvue repo) or any error draining is not this
+    callback's problem to report -- the command it's a prefix to either
+    doesn't need a repo at all or will raise its own, clearer error a
+    moment later."""
+    try:
+        repo_root = _find_repo_root()
+    except typer.BadParameter:
+        return
+    try:
+        conn = _db_connect(repo_root)
+    except Exception:
+        return
+    try:
+        core.hooks.drain_queue(conn, repo_root)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------
 # Ops verbs
 # --------------------------------------------------------------------------
@@ -93,6 +123,8 @@ def doctor(
         typer.echo(f"repaired: {r}")
     for issue in report.issues:
         typer.echo(f"issue: {issue}")
+    for warning in report.warnings:
+        typer.echo(f"warning: {warning}")
     if report.ok:
         typer.echo("doctor: ok")
     else:

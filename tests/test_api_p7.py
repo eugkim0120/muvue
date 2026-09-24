@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muvue.api import create_app
-from muvue.core import db as core_db, drift, events as events_mod, projects
+from muvue.core import db as core_db, drift, events as events_mod, hooks, projects
 from muvue.core.config import MuvueConfig
 from muvue.core.repo_init import init_repo
 
@@ -77,10 +77,16 @@ def test_inbox_surfaces_unattributed_commit_signal(client, conn, repo):
     drift.create_anchored_component(conn, name="anchored", file_path="anchored.py", repo_root=repo)
     (repo / "anchored.py").write_text("value = 2\n")
     _git(repo, "add", "-A")
-    # `repo` has muvue's post-commit hook installed (`init_repo`), so this
-    # commit alone already fires it (see docs/decisions.md) -- no need to
-    # invoke `hooks.handle_post_commit_from_git` again by hand here.
+    # `repo` has muvue's post-commit hook installed (`init_repo`), but
+    # (v4 section 4a, P0.5) that shim now invokes the stdlib-only
+    # `muvue._hook` fast path, which only spools a minimal
+    # `{"event": "post-commit", "sha": ...}` line to `.muvue/queue.jsonl`
+    # -- the real processing (trailer parsing, unattributed-commit inbox
+    # flag) happens later, at drain time. Drain explicitly here rather
+    # than relying on the SSE loop's periodic drain, which this
+    # `TestClient`-driven test never runs long enough to observe.
     _git(repo, "commit", "-q", "-m", "no trailer")
+    hooks.drain_queue(conn, repo)
 
     r = client.get("/inbox")
     assert r.status_code == 200
