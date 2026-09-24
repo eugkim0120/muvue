@@ -162,6 +162,17 @@ def serve(
 
 
 @app.command()
+def mcp(path: Path = typer.Argument(Path("."), help="Repo root to serve")) -> None:
+    """MCP stdio server (plan section 4/7): agent verbs only, never the
+    human verbs -- see src/muvue/mcp_server.py."""
+    from muvue.mcp_server import run_stdio
+
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    run_stdio(repo_root, config=config)
+
+
+@app.command()
 def audit() -> None:
     """Structure-graph drift audit. Ships P7."""
     typer.echo(NOT_IMPLEMENTED)
