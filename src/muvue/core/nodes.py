@@ -46,14 +46,18 @@ def create_node(
     max_attempts: int = 3,
     status: str = "pending",
     actor: str = "human",
+    predicted_touches: list[str] | None = None,
 ) -> sqlite3.Row:
     criteria = criteria or []
     criteria_json = json.dumps(criteria)
-    criteria_hash = hashlib.sha256(criteria_json.encode()).hexdigest()
+    # criteria_hash stays NULL until Gate 2 (or a plan-revision re-approval)
+    # freezes it -- see core.gates.approve_node. A non-NULL criteria_hash
+    # means "this criteria_json was approved"; that's the signal
+    # core.gates.edit_criteria uses to detect a post-freeze edit.
     cur = conn.execute(
         "INSERT INTO nodes (project_id, parent_id, kind, title, body_md, status, "
-        "criteria_json, criteria_hash, criteria_mode, risk_tier, max_attempts) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "criteria_json, criteria_mode, risk_tier, max_attempts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             project_id,
             parent_id,
@@ -62,13 +66,17 @@ def create_node(
             body_md,
             status,
             criteria_json,
-            criteria_hash,
             criteria_mode,
             risk_tier,
             max_attempts,
         ),
     )
     node_id = cur.lastrowid
+    for glob in predicted_touches or []:
+        conn.execute(
+            "INSERT OR IGNORE INTO predicted_touches (node_id, path_glob) VALUES (?, ?)",
+            (node_id, glob),
+        )
     row = get_node(conn, node_id)
     events.record_event(
         conn,
@@ -132,6 +140,19 @@ def ready(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> sq
     return row
 
 
+def to_pending(conn: sqlite3.Connection, node_id: int, *, actor: str = "human") -> sqlite3.Row:
+    """ready -> pending. Used by Gate 2 criteria-edit re-tiering (P1): a
+    frozen node whose criteria change is pulled back out of `ready` until a
+    human re-approves it (see core.gates.edit_criteria)."""
+    node = get_node(conn, node_id)
+    row = _apply_transition(
+        conn, node, to_status="pending", lease_actor=node["owner"] or "",
+        event_actor_role=actor, event_type="node.pending", request_id=None,
+    )
+    conn.commit()
+    return row
+
+
 def start(
     conn: sqlite3.Connection,
     node_id: int,
@@ -146,6 +167,14 @@ def start(
         return {"noop": True, "node": dict(get_node(conn, node_id))}
 
     node = get_node(conn, node_id)
+    project = conn.execute(
+        "SELECT phase FROM projects WHERE id = ?", (node["project_id"],)
+    ).fetchone()
+    if project is not None and project["phase"] == "planning":
+        raise NodeError(
+            f"cannot start node {node_id}: project {node['project_id']} is still "
+            "in planning phase (Gate 2 not yet approved)"
+        )
     lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )

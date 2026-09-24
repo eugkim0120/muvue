@@ -4,18 +4,34 @@ The CLI, daemon and git hooks all call into this package; nothing outside
 it issues raw SQL against .muvue/muvue.db.
 """
 
-from . import db, doctor, events, migrate, nodes, projects, rebuild, repo_init, state_machine
+from . import (
+    asks,
+    db,
+    doctor,
+    events,
+    gates,
+    migrate,
+    nodes,
+    projects,
+    rebuild,
+    repo_init,
+    revisions,
+    state_machine,
+)
 from .config import ConfigError, MuvueConfig, load_config
 
 __all__ = [
+    "asks",
     "db",
     "doctor",
     "events",
+    "gates",
     "migrate",
     "nodes",
     "projects",
     "rebuild",
     "repo_init",
+    "revisions",
     "state_machine",
     "ConfigError",
     "MuvueConfig",

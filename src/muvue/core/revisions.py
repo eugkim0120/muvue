@@ -1,0 +1,166 @@
+"""Plan revisions: append-only, diff-only approval (plan section 3/6).
+
+`replan` may add subtasks within an already-approved task's stated scope
+without a new approval. New tasks, deletions, and criteria changes go
+through a plan revision instead: `propose_revision` snapshots the current
+criteria hash of a set of nodes under revision `n`; `approve_revision`
+diffs revision `n` against `n - 1` and re-validates/re-approves only the
+nodes that changed. Nodes untouched by the diff keep their existing
+`status` and `criteria_hash` (P1 acceptance #5).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+
+from . import events
+from . import nodes as nodes_mod
+from .config import MuvueConfig
+from .gates import GateError, approve_node
+
+
+def _hash_criteria(criteria_json: str) -> str:
+    return hashlib.sha256(criteria_json.encode()).hexdigest()
+
+
+def replan_add_subtask(
+    conn: sqlite3.Connection,
+    *,
+    parent_task_id: int,
+    title: str,
+    body_md: str = "",
+    criteria: list[str] | None = None,
+    actor: str = "agent",
+) -> dict:
+    """Add a subtask within an approved task's stated scope. No new
+    approval required (plan section 6): the subtask is created `ready`
+    directly, since it inherits scope from its already-approved parent."""
+    parent = nodes_mod.get_node(conn, parent_task_id)
+    if parent["kind"] != "task":
+        raise GateError(f"node {parent_task_id} is kind={parent['kind']!r}, not a task")
+    if parent["criteria_hash"] is None:
+        raise GateError(
+            f"task {parent_task_id} has not been Gate 2 approved yet; "
+            "replan cannot add subtasks to an unapproved task"
+        )
+    row = nodes_mod.create_node(
+        conn,
+        project_id=parent["project_id"],
+        parent_id=parent_task_id,
+        kind="subtask",
+        title=title,
+        body_md=body_md,
+        criteria=criteria,
+        status="ready",
+        actor=actor,
+    )
+    return dict(row)
+
+
+def propose_revision(
+    conn: sqlite3.Connection,
+    project_id: int,
+    node_ids: list[int],
+    *,
+    actor: str = "agent",
+) -> dict:
+    prev = conn.execute(
+        "SELECT MAX(n) m FROM plan_revisions WHERE project_id = ?", (project_id,)
+    ).fetchone()["m"]
+    n = (prev or 0) + 1
+    cur = conn.execute(
+        "INSERT INTO plan_revisions (project_id, n) VALUES (?, ?)", (project_id, n)
+    )
+    revision_id = cur.lastrowid
+    for node_id in node_ids:
+        node = nodes_mod.get_node(conn, node_id)
+        conn.execute(
+            "INSERT INTO plan_revision_nodes (revision_id, node_id, criteria_hash) "
+            "VALUES (?, ?, ?)",
+            (revision_id, node_id, _hash_criteria(node["criteria_json"])),
+        )
+    events.record_event(
+        conn,
+        project_id=project_id,
+        node_id=None,
+        actor=actor,
+        type_="revision.proposed",
+        payload={"n": n, "node_ids": list(node_ids)},
+    )
+    conn.commit()
+    return {"id": revision_id, "n": n}
+
+
+def _revision_snapshot(conn: sqlite3.Connection, project_id: int, n: int) -> dict[int, str]:
+    """{node_id: criteria_hash} snapshot for revision n, or {} if n < 1."""
+    if n < 1:
+        return {}
+    row = conn.execute(
+        "SELECT id FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
+    ).fetchone()
+    if row is None:
+        return {}
+    rows = conn.execute(
+        "SELECT node_id, criteria_hash FROM plan_revision_nodes WHERE revision_id = ?",
+        (row["id"],),
+    ).fetchall()
+    return {r["node_id"]: r["criteria_hash"] for r in rows}
+
+
+def diff_revision(conn: sqlite3.Connection, project_id: int, n: int) -> dict:
+    """Diff revision n against n - 1: which nodes were added, removed,
+    changed (criteria hash differs), or left unchanged."""
+    current = _revision_snapshot(conn, project_id, n)
+    previous = _revision_snapshot(conn, project_id, n - 1)
+    added = sorted(nid for nid in current if nid not in previous)
+    removed = sorted(nid for nid in previous if nid not in current)
+    changed = sorted(
+        nid for nid in current if nid in previous and current[nid] != previous[nid]
+    )
+    unchanged = sorted(
+        nid for nid in current if nid in previous and current[nid] == previous[nid]
+    )
+    return {"added": added, "removed": removed, "changed": changed, "unchanged": unchanged}
+
+
+def approve_revision(
+    conn: sqlite3.Connection,
+    project_id: int,
+    n: int,
+    *,
+    actor: str = "human",
+    config: MuvueConfig | None = None,
+) -> dict:
+    revision = conn.execute(
+        "SELECT * FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
+    ).fetchone()
+    if revision is None:
+        raise GateError(f"no plan revision n={n} for project {project_id}")
+    if revision["approved_at"] is not None:
+        return {"noop": True, "n": n}
+
+    diff = diff_revision(conn, project_id, n)
+    touched: list[int] = []
+    for node_id in diff["added"] + diff["changed"]:
+        approve_node(conn, node_id, actor=actor, config=config)
+        touched.append(node_id)
+    for node_id in diff["removed"]:
+        nodes_mod.soft_delete(conn, node_id, actor=actor)
+        touched.append(node_id)
+
+    conn.execute(
+        "UPDATE plan_revisions SET approved_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+        "WHERE id = ?",
+        (revision["id"],),
+    )
+    events.record_event(
+        conn,
+        project_id=project_id,
+        node_id=None,
+        actor=actor,
+        type_="revision.approved",
+        payload={"n": n, "diff": diff, "touched_node_ids": touched},
+    )
+    conn.commit()
+    return {"noop": False, "n": n, "diff": diff, "touched_node_ids": touched}

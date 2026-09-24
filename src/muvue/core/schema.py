@@ -124,6 +124,26 @@ CREATE TABLE IF NOT EXISTS node_usage (
     rate_limited INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS plan_revision_nodes (
+    revision_id INTEGER NOT NULL REFERENCES plan_revisions(id),
+    node_id INTEGER NOT NULL REFERENCES nodes(id),
+    criteria_hash TEXT NOT NULL,
+    PRIMARY KEY (revision_id, node_id)
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL REFERENCES nodes(id),
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    text TEXT NOT NULL,
+    default_answer TEXT,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'answered', 'timed_out')),
+    answer TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    answered_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS external_refs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id INTEGER NOT NULL REFERENCES nodes(id),

@@ -19,6 +19,10 @@ def conn(tmp_path: Path):
 @pytest.fixture
 def node_row(conn):
     project = projects.create_project(conn, goal="test project")
+    # P1 refuses `start` while project.phase == 'planning'; flip straight to
+    # 'executing' as if Gate 2 had already passed (this fixture only
+    # exercises done()/fail() idempotency, not the gate flow).
+    projects.set_phase(conn, project["id"], "executing")
     node = nodes.create_node(
         conn, project_id=project["id"], kind="task", title="do the thing", status="ready"
     )

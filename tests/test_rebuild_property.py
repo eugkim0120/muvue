@@ -21,8 +21,17 @@ def conn(tmp_path: Path):
     c.close()
 
 
+def _executing_project(conn, goal: str):
+    """P1 refuses `start` while project.phase == 'planning' (Gate 2 not yet
+    approved). These P0-era property tests exercise the node lifecycle
+    directly, so flip phase straight to 'executing' as if Gate 2 had
+    already passed."""
+    project = projects.create_project(conn, goal=goal)
+    return projects.set_phase(conn, project["id"], "executing")
+
+
 def test_rebuild_matches_live_after_scripted_sequence(conn):
-    project = projects.create_project(conn, goal="rebuild test project")
+    project = _executing_project(conn, "rebuild test project")
     n1 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t1", status="ready")
     n2 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t2", status="ready")
     n3 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t3", status="ready")
@@ -42,7 +51,7 @@ def test_rebuild_matches_live_after_scripted_sequence(conn):
 @pytest.mark.parametrize("seed", range(10))
 def test_rebuild_matches_live_after_random_sequence(conn, seed):
     rng = random.Random(seed)
-    project = projects.create_project(conn, goal=f"seed-{seed}")
+    project = _executing_project(conn, f"seed-{seed}")
     node_ids = [
         nodes.create_node(
             conn, project_id=project["id"], kind="task", title=f"n{i}", status="ready",
