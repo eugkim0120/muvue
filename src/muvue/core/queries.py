@@ -10,13 +10,65 @@ for (node + notes + commits + predicted_touches)."""
 
 from __future__ import annotations
 
+import re
 import sqlite3
 
 from . import nodes as nodes_mod
 
+STRUCTURE_SEARCH_LIMIT = 3
+
 
 def _rows_to_list(rows) -> list[dict]:
     return [dict(r) for r in rows]
+
+
+def _fts_query(text: str) -> str | None:
+    """Turn free text (a node's own title/body) into an FTS5 MATCH query:
+    every alphanumeric word of length > 2, quoted (so punctuation/FTS5
+    syntax characters in the source text can't be interpreted as query
+    operators) and OR'd together, so a hit on *any* shared term surfaces
+    the row -- ranked afterwards by `bm25()`. `None` if there's nothing
+    worth searching on."""
+    words = re.findall(r"[A-Za-z0-9_]+", text or "")
+    words = [w for w in words if len(w) > 2]
+    if not words:
+        return None
+    return " OR ".join(f'"{w}"' for w in dict.fromkeys(words))
+
+
+def search_decisions(
+    conn: sqlite3.Connection, text: str, limit: int = STRUCTURE_SEARCH_LIMIT
+) -> list[dict]:
+    """FTS5 search over `decisions.title`/`context`/`choice` (plan
+    section 4: `brief`'s ranking "over notes, decisions, component
+    purposes"), current (non-superseded) decisions only, ranked by
+    `bm25()` -- best match first."""
+    query = _fts_query(text)
+    if query is None:
+        return []
+    rows = conn.execute(
+        "SELECT d.* FROM decisions_fts f JOIN decisions d ON d.id = f.rowid "
+        "WHERE decisions_fts MATCH ? AND d.status = 'current' "
+        "ORDER BY bm25(decisions_fts) LIMIT ?",
+        (query, limit),
+    ).fetchall()
+    return _rows_to_list(rows)
+
+
+def search_components(
+    conn: sqlite3.Connection, text: str, limit: int = STRUCTURE_SEARCH_LIMIT
+) -> list[dict]:
+    """Same as `search_decisions`, over `components.name`/`purpose`."""
+    query = _fts_query(text)
+    if query is None:
+        return []
+    rows = conn.execute(
+        "SELECT c.* FROM components_fts f JOIN components c ON c.id = f.rowid "
+        "WHERE components_fts MATCH ? AND c.status = 'current' "
+        "ORDER BY bm25(components_fts) LIMIT ?",
+        (query, limit),
+    ).fetchall()
+    return _rows_to_list(rows)
 
 
 def show_node(conn: sqlite3.Connection, node_id: int) -> dict:
@@ -42,9 +94,13 @@ def show_node(conn: sqlite3.Connection, node_id: int) -> dict:
 def brief_node(conn: sqlite3.Connection, node_id: int) -> dict:
     """What an agent needs to start work on a node: the node itself, any
     pinned/lesson notes (context carried across attempts -- plan section
-    4: `fail`'s lesson is meant to be read back on the next attempt), and
-    any open question still awaiting an answer. This is what the Claude
-    Code adapter's SessionStart hook calls (see adapters.claude_code)."""
+    4: `fail`'s lesson is meant to be read back on the next attempt), any
+    open question still awaiting an answer, and (P6) structure-aware
+    context pulled by FTS5 over the node's own title/body: prior
+    `decisions` and `components` whose text overlaps -- e.g. a decision
+    made and `close`d on an earlier, unrelated project. This is what the
+    Claude Code adapter's SessionStart hook calls (see
+    adapters.claude_code)."""
     detail = show_node(conn, node_id)
     lessons = [n for n in detail["notes"] if n["kind"] == "lesson" or n["pinned"]]
     open_questions = _rows_to_list(
@@ -52,7 +108,16 @@ def brief_node(conn: sqlite3.Connection, node_id: int) -> dict:
             "SELECT * FROM questions WHERE node_id = ? AND status = 'open'", (node_id,)
         ).fetchall()
     )
-    return {**detail, "lessons": lessons, "open_questions": open_questions}
+    query_text = f"{detail['node']['title']} {detail['node']['body_md']}"
+    relevant_decisions = search_decisions(conn, query_text)
+    relevant_components = search_components(conn, query_text)
+    return {
+        **detail,
+        "lessons": lessons,
+        "open_questions": open_questions,
+        "relevant_decisions": relevant_decisions,
+        "relevant_components": relevant_components,
+    }
 
 
 def status_summary(conn: sqlite3.Connection, project_id: int | None = None) -> dict:
