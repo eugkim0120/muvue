@@ -115,10 +115,22 @@ def uninit(path: Path = typer.Argument(Path("."), help="Repo root to uninitializ
 def doctor(
     repair: bool = typer.Option(False, "--repair", help="Attempt to fix issues found"),
     path: Path = typer.Argument(Path("."), help="Repo root to check"),
+    skip_security_probes: bool = typer.Option(
+        False, "--skip-security-probes",
+        help="skip the live daemon-security probes (v4 section 8a control 7)",
+    ),
+    daemon_port: int = typer.Option(
+        None, "--daemon-port",
+        help="port to probe/spin up a throwaway daemon on for the security checks "
+        "(default: the `serve` default, 8765)",
+    ),
 ) -> None:
     """Sanity-check an existing .muvue/ install."""
     repo_root = path.resolve()
-    report = core.doctor.run_doctor(repo_root, repair=repair)
+    report = core.doctor.run_doctor(
+        repo_root, repair=repair,
+        skip_security_probes=skip_security_probes, daemon_port=daemon_port,
+    )
     for r in report.repaired:
         typer.echo(f"repaired: {r}")
     for issue in report.issues:
@@ -208,6 +220,10 @@ def serve(
     path: Path = typer.Argument(Path("."), help="Repo root to serve"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8765, "--port"),
+    i_know_this_is_exposed: bool = typer.Option(
+        False, "--i-know-this-is-exposed",
+        help="required to bind anything other than 127.0.0.1/localhost (v4 section 8a control 1)",
+    ),
 ) -> None:
     """One daemon per repo (plan section 8): HTTP API + SSE dashboard.
 
@@ -215,14 +231,40 @@ def serve(
     (`core.daemon.reconcile_on_start`) before opening the socket -- this
     is what makes a killed-and-restarted daemon self-healing (P2
     acceptance #2), since the daemon itself holds no in-memory state.
-    Mints a fresh session token for human-verb API calls and prints it
-    once; it is also written to `.muvue/session` for the dashboard to
-    read, per `core.daemon.create_session`.
+
+    Security (plan v4 section 8a): binds loopback-only unless
+    `--i-know-this-is-exposed` is passed (control 1). Mints a fresh
+    256-bit session token in memory -- never written to disk, never
+    logged anywhere but this one-time stdout line (control 5/6) -- and
+    prints the dashboard URL with it in a one-time `#fragment`; the
+    dashboard's own JS exchanges that fragment for an HttpOnly session
+    cookie on first load (`POST /auth/exchange`) and the fragment is
+    then irrelevant. v3's `~/.muvue/session` file is gone entirely.
     """
+    import socket
+
     import uvicorn
 
     from muvue.api import create_app
     from muvue.core import daemon as daemon_mod
+
+    hostname = host.split("%", 1)[0].strip().lower()
+    if hostname not in ("127.0.0.1", "localhost") and not i_know_this_is_exposed:
+        typer.echo(
+            f"refusing to bind {host!r}: only 127.0.0.1/localhost is allowed without "
+            "--i-know-this-is-exposed (v4 section 8a control 1 -- this daemon can launch "
+            "agent CLI subprocesses; do not expose it beyond loopback without understanding "
+            "the risk)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if hostname not in ("127.0.0.1", "localhost") and i_know_this_is_exposed:
+        typer.echo(
+            f"WARNING: binding {host!r} -- this daemon is a local code-execution surface "
+            "(plan v4 section 1, principle 8) and this bind is now reachable beyond this "
+            "machine's loopback interface. Proceed only if you understand the risk.",
+            err=True,
+        )
 
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
@@ -234,12 +276,27 @@ def serve(
     for reverted in result["reverted_nodes"]:
         typer.echo(f"reconciled expired lease: node {reverted['id']} -> {reverted['status']}")
 
-    token = daemon_mod.create_session(repo_root)
-    typer.echo(f"session token (human verbs): {token}")
+    session = daemon_mod.SessionManager()
+    dashboard_url = f"http://{host}:{port}/#t={session.token}"
+    typer.echo(f"dashboard (one-time link, do not share or log elsewhere): {dashboard_url}")
 
-    app_instance = create_app(repo_root, config=config)
+    app_instance = create_app(repo_root, config=config, session=session, port=port)
+
+    # Bind the socket ourselves and start listening *before* printing
+    # the readiness line, so a caller that waits for "listening on"
+    # (the CLI/daemon-security integration tests; a supervising
+    # process) never races a not-yet-accepting port -- handing
+    # `uvicorn.run` the already-listening socket's fd (rather than
+    # `host=`/`port=`, which lets uvicorn bind on its own schedule
+    # after this function has already returned control to it) makes
+    # "the readiness line was printed" and "the socket accepts
+    # connections" the same moment.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(2048)
     typer.echo(f"muvue daemon listening on http://{host}:{port}")
-    uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+    uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
 
 
 @adapter_app.command("install")
