@@ -35,6 +35,7 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
 | in_progress | failed | yes |
 | blocked | failed | yes |
 | in_progress | ready | yes (retry after `fail()` below `max_attempts`) |
+| done | blocked | no (P5: a merge conflict discovered after `done`) |
 
 ## Verbs implemented in P0
 
@@ -477,3 +478,100 @@ is a full JSON snapshot of the row after the mutation. `rebuild` folds the
 event stream (last-write-wins per `(table, id)`) and must equal the live
 `projects`/`nodes` tables — this is asserted by property-style tests in
 `tests/test_rebuild_property.py`.
+
+## Runner, drivers, merge, handoff (P5)
+
+### `muvue run [--agent X] [--parallel N] [--project-id ID]`
+
+Unattended runner (`core.runner.run`), scoped to `task`/`subtask` nodes
+(a `ready` `spec` node means "ready for decomposition" — a distinct
+workflow this runner doesn't drive, see `docs/decisions.md`).
+
+- At the top of every run: reverts expired leases
+  (`core.daemon.reconcile_leases`) and un-blocks any
+  `blocked(rate_limit)` node whose recorded `retry_at` has passed
+  (`core.runner.reconcile_rate_limits`) — the same reconcile-on-start
+  pattern `muvue serve` already uses (plan section 5), extended here.
+- Each cycle: if any node in the run's scope is already
+  `awaiting_approval`/`blocked`/`failed`, the run pauses immediately
+  without scheduling anything new (`{"paused": {"reason":
+  "nodes_need_attention", ...}}`) — the simplest deterministic reading of
+  "pauses ... when it hits a node in that state" (see
+  `docs/decisions.md`). Otherwise: checks the budget
+  (`core.runner.budget_state`, reading `config.budget.unit`/`limit`
+  against `node_usage`) — exhausted (spend >= limit) stops the run
+  (`{"reason": "budget_exhausted"}`); >= 80% logs one
+  `runner.budget_warning` event, doesn't stop scheduling.
+- Selects a batch of ready nodes via `core.runner.select_batch`: routes
+  each by `[routing]` (or `--agent` override), skips a node whose routed
+  agent isn't configured, and greedily picks up to `--parallel N` nodes
+  whose `predicted_touches` don't overlap any other selected node's,
+  never exceeding any one agent's own `max_concurrency` within the batch.
+  `--parallel 1` (default) processes nodes serially; `> 1` runs the batch
+  concurrently via a thread pool, each thread opening its own SQLite
+  connection (no shared connection across threads).
+- For each selected node (`core.runner.run_node`): `start` (binds a
+  strict-mode worktree if configured), `brief` piped to the driver
+  (`core.drivers.invoke_driver`) as a fresh subprocess, then `done`/
+  `fail`/`block(rate_limit)` based on what the driver reports. A node
+  that lands in `failed`, stays `review` (flagged, not auto-approved),
+  or `blocked` after this cycle's batch pauses the run for the *next*
+  cycle (existing in-flight work in the same batch still finishes).
+
+### Drivers (`config.agents.<name>`)
+
+Real invocation, `core.drivers.invoke_driver`:
+
+1. If `auth_check` is set, run it first. A non-zero exit ->
+   `status="unavailable"` (never a crash) — the runner then applies the
+   agent's own `on_rate_limit` `fallback:<agent>` policy if configured
+   (reused for driver-unavailable too — plan defines no separate
+   `on_unavailable` key), else `block(external)`.
+2. Spawn `command` (`shell=True`, `brief` JSON on stdin), capture
+   stdout/stderr.
+3. Parse usage via `usage_parser`:
+   - `claude_stream_json` / `codex_json` / `gemini_json` — **synthetic,
+     unverified against a real vendor CLI** (no network access / logged-
+     in CLI in this environment — see `docs/providers.md` and
+     `tests/fixtures/vendor_samples/`).
+   - `fake` — real, tested against a real `muvue-fake-agent` subprocess.
+4. A rate-limit signal (vendor-specific error text containing a
+   `rate limit`/`429`-shaped marker, or `muvue-fake-agent`'s own scripted
+   `status: "rate_limited"`) -> the node goes `blocked(rate_limit)` with
+   a `retry_at` (a `runner.rate_limited` event; a non-`node.`-prefixed
+   type, like `review.auto_approved`, so `rebuild` doesn't misparse it as
+   a row snapshot), and `on_rate_limit` (`wait`/`fallback:<agent>`/
+   `pause`) is applied.
+
+Never reads, stores, or passes a vendor credential (plan principle 7):
+only shells out and inherits the caller's own environment.
+
+### `muvue-fake-agent`
+
+A real, invocable console script (`src/muvue/fake_agent.py`), distinct
+from P3's `tests/fake_agent.py` in-process test fixture. Reads a brief
+off stdin, prints JSON lines, scripted via `--behavior`/
+`MUVUE_FAKE_BEHAVIOR`: `cooperative`, `lazy`, `adversarial` (noisy/
+malformed extra output around a real result line), `rate_limited`,
+`crash` (non-zero exit, no result line), `failed`. `--check`/
+`MUVUE_FAKE_AUTH_FAIL` simulates `auth_check` (a logged-out CLI).
+
+### `muvue merge [NODE_ID]`
+
+`core.merge.attempt_merge`/`merge_pending` (plan section 6 "Merging").
+Strict-mode only (light-mode / never-strict-started nodes: `{"status":
+"no_worktree"}`, a documented no-op). Merges a `done` node's branch onto
+the airlock's `main`, respecting `deps` order (`deferred` if a dependency
+hasn't merged yet). On conflict: `node -> blocked(conflict)`,
+`attempts + 1`, a `kind=subtask` "rebase onto main" node created under
+it, `status=ready`. Never touches `repo_root`'s own checkout or a remote
+— propagating the airlock's `main` back out is out of P5 scope (`merge
+--pr` is P6).
+
+### `muvue handoff NODE_ID --to OWNER`
+
+`core.nodes.handoff` (plan section 6 "Handoff"). Human verb, never
+exposed over MCP. Reassigns `owner`/`lease_until` on an `in_progress` or
+`blocked` node (un-blocking it back to `in_progress` first if needed) so
+a different driver can resume purely from DB state — no in-memory
+handoff (plan principle 1).

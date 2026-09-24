@@ -71,6 +71,13 @@ def test_main_happy_path_is_legal():
     assert sm.can_transition("review", "done")
 
 
-def test_done_is_terminal():
+def test_done_is_terminal_except_for_a_p5_merge_conflict():
+    """`done` is terminal for every ordinary verb (start/fail/review/etc)
+    -- the one deliberate exception, added in P5, is `(done, blocked)`:
+    `core.merge.attempt_merge` discovers a conflict only after a node is
+    already `done` (plan section 6 "Merging"). See docs/decisions.md."""
     for status in ALL_STATUSES:
-        assert not sm.can_transition("done", status)
+        if status == "blocked":
+            assert sm.can_transition("done", status)
+        else:
+            assert not sm.can_transition("done", status)

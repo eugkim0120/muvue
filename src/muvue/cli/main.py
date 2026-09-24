@@ -684,8 +684,55 @@ def ack() -> None:
 
 
 @app.command()
-def merge() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def run(
+    agent: str = typer.Option(
+        None, "--agent", help="override [routing]: use this agent for every scheduled node"
+    ),
+    parallel: int = typer.Option(
+        1, "--parallel", help="max nodes scheduled concurrently (still capped by each "
+        "agent's own max_concurrency)"
+    ),
+    project_id: int = typer.Option(None, "--project-id", help="scope to one project"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Unattended runner (plan section 6): spawns one configured driver
+    subprocess per ready node, records real usage to `node_usage`, and
+    applies `[routing]`/`[budget]`/`on_rate_limit` policy from
+    `config.toml`. Pauses (returns control, never crashes) on a node that
+    needs human attention (`awaiting_approval`/`blocked`/`failed`/`review`)
+    or budget exhaustion."""
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    db_path = repo_root / ".muvue" / "muvue.db"
+    result = core.runner.run(
+        db_path, config, repo_root, agent_override=agent, parallel=parallel, project_id=project_id,
+    )
+    _echo_json(result)
+
+
+@app.command()
+def merge(
+    node_id: int = typer.Argument(
+        None, help="merge this done node's branch onto main; omit to merge every "
+        "pending done node in dependency order"
+    ),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb (plan section 6 "Merging"): attempt to merge strict-mode
+    node branch(es) onto the airlock's main. On conflict: the node ->
+    blocked(conflict), attempts + 1, and a "rebase onto main" subtask is
+    created. Light-mode / never-started-strict nodes are a documented
+    no-op (see core/merge.py)."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        if node_id is not None:
+            result = core.merge.attempt_merge(conn, node_id, repo_root)
+        else:
+            result = core.merge.merge_pending(conn, repo_root)
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
@@ -704,8 +751,26 @@ def resume() -> None:
 
 
 @app.command()
-def handoff() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def handoff(
+    node_id: int = typer.Argument(...),
+    to: str = typer.Option(
+        ..., "--to", help="new owner identity, e.g. a human session id or 'runner:<agent>'"
+    ),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb (plan section 6 "Handoff"): reassign a node's lease so a
+    different driver (an interactive session <-> the unattended runner)
+    can resume purely from DB state."""
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    conn = _db_connect(repo_root)
+    try:
+        result = core.nodes.handoff(
+            conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
+        )
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command(name="import")

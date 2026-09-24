@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P5 (runner, drivers)
+
+### Added
+- `muvue run [--agent X] [--parallel N] [--project-id ID]`
+  (`core.runner.run`): unattended runner. Spawns one configured driver
+  subprocess per ready `task`/`subtask` node with `brief` piped on stdin
+  (fresh subprocess per node, no shared process state), records real
+  usage to `node_usage`, and applies `[routing]`/`[budget]`/
+  `on_rate_limit` policy from `config.toml`. Reconciles expired leases and
+  `blocked(rate_limit)` nodes whose `retry_at` has passed at the top of
+  every run (extends `core.daemon`'s reconcile-on-start pattern). Pauses
+  (returns control, never crashes) when it finds a node already in
+  `awaiting_approval`/`blocked`/`failed`, when a node it just processed
+  lands in `failed`/`review`/`blocked(rate_limit)`/`blocked(external)`,
+  or when the budget is exhausted; warns once (a `runner.budget_warning`
+  event) at 80% spend.
+- `core.drivers`: the real invocation layer. `invoke_driver(agent_name,
+  agent_cfg, brief_text, cwd)` runs `auth_check` (if configured, treating
+  a failure as `status="unavailable"`, never a crash), then spawns
+  `command` (`shell=True`, `brief` on stdin), and parses usage via
+  `usage_parser`: `claude_stream_json`, `codex_json`, `gemini_json`
+  (**synthetic/unverified** -- see `docs/providers.md`), and `fake`
+  (real, tested against a real subprocess). Never reads, stores, or
+  forwards any credential (plan principle 7) -- only shells out and
+  inherits the caller's own environment.
+- `src/muvue/fake_agent.py` / `muvue-fake-agent` console script (new
+  `pyproject.toml` entry point): a real, invocable subprocess stand-in
+  for a subscription-authenticated vendor CLI, scriptable via
+  `--behavior`/`MUVUE_FAKE_BEHAVIOR` (`cooperative`, `lazy`,
+  `adversarial`, `rate_limited`, `crash`, `failed`) and `--check`/
+  `MUVUE_FAKE_AUTH_FAIL` for `auth_check` simulation. Distinct from P3's
+  `tests/fake_agent.py`, which stays an in-process `core`-driving test
+  fixture.
+- `core.merge` (plan section 6 "Merging"): `attempt_merge`/
+  `merge_pending`. Merges a `done`, strict-mode node's branch onto the
+  airlock's `main` in dependency order. On conflict: node ->
+  `blocked(conflict)`, `attempts + 1`, a "rebase onto main" subtask
+  auto-created under it. Light-mode / never-strict-started nodes are a
+  documented no-op. `muvue merge [NODE_ID]` / `POST /nodes/{id}/merge`.
+- `core.nodes.handoff(new_owner=)` (plan section 6 "Handoff"): reassigns
+  a node's lease (un-blocking it first if `blocked`) so a different
+  driver -- interactive session <-> the unattended runner -- can resume
+  purely from DB state. Human verb, never exposed over MCP. `muvue
+  handoff NODE_ID --to OWNER` / `POST /nodes/{id}/handoff`.
+- `state_machine.TRANSITIONS`: new `(done, blocked)` edge, no owner
+  required -- the one exception to "done is terminal," needed for
+  `core.merge`'s post-done conflict detection.
+- `core.nodes.block(..., bump_attempts=, event_actor_role=)`: additive
+  optional parameters (default preserves every pre-P5 call site's exact
+  behavior) so `core.merge`'s conflict handling can bump `attempts` and
+  attribute the event to `daemon` instead of `agent`.
+- `GET /kpis`: `tokens_per_node`/`spend_vs_budget` are now real (read
+  `node_usage`, populated by the runner), no longer stubbed at zero.
+- `tests/fixtures/vendor_samples/`: synthetic/unverified recorded-output
+  samples for `claude_stream_json`/`codex_json`/`gemini_json`, labeled as
+  such (no network access / logged-in vendor CLI in this environment).
+
+### Fixed
+- `core.nodes.done`'s `review.awaiting` branch (P2) set `nodes.summary`
+  without ever recording a `node.`-prefixed event carrying it, so
+  `rebuild` silently dropped the summary on any flagged node -- found by
+  P5's rebuild-first test for the runner's `done` flow. Now also records
+  `node.summary_recorded` (full row snapshot) alongside `review.awaiting`.
+
 ## [Unreleased] - P4 (strict mode)
 
 ### Added

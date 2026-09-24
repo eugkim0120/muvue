@@ -385,6 +385,16 @@ def done(
 
     conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
     row = get_node(conn, node_id)
+    # `node.`-prefixed so `rebuild.py` picks up the row snapshot with
+    # `summary` now set -- `review.awaiting` right below deliberately does
+    # *not* start with `node.` (same reason `review.auto_approved` doesn't,
+    # see docs/decisions.md), so it alone would leave the replayed
+    # `summary` stale (found by P5's rebuild-first test, this was a
+    # pre-existing gap since P2 introduced this branch).
+    events.record_event(
+        conn, project_id=row["project_id"], node_id=node_id, actor="agent",
+        type_="node.summary_recorded", payload=dict(row),
+    )
     events.record_event(
         conn,
         project_id=row["project_id"],
@@ -529,22 +539,93 @@ def block(
     reason: str,
     actor: str,
     request_id: str | None = None,
+    bump_attempts: bool = False,
+    event_actor_role: str = "agent",
 ) -> sqlite3.Row:
+    """`bump_attempts` (P5, `core.merge`'s conflict handling -- plan
+    section 6 "Merging": "node -> blocked(conflict) ... attempts + 1") and
+    `event_actor_role` (a daemon-initiated block, e.g. a merge attempt, is
+    not an `agent` action) are additive, defaulted to preserve every
+    pre-P5 call site's exact behavior."""
     if reason not in state_machine.BLOCK_REASONS:
         raise NodeError(f"unknown block reason: {reason!r}")
     node = get_node(conn, node_id)
+    extra_columns = {"attempts": node["attempts"] + 1} if bump_attempts else None
     row = _apply_transition(
         conn,
         node,
         to_status="blocked",
         lease_actor=actor,
-        event_actor_role="agent",
+        event_actor_role=event_actor_role,
         event_type="node.blocked",
         request_id=request_id,
         block_reason=reason,
+        extra_columns=extra_columns,
     )
     conn.commit()
     return row
+
+
+def handoff(
+    conn: sqlite3.Connection,
+    node_id: int,
+    *,
+    new_owner: str,
+    actor: str = "human",
+    lease_minutes: int = DEFAULT_LEASE_MINUTES,
+) -> dict:
+    """Human verb (plan section 6 "Handoff", section 4): reassign a node's
+    lease to `new_owner` so a different driver -- an interactive session
+    taking over from the unattended runner, or vice versa -- can resume
+    purely from DB state (plan principle 1: no in-memory handoff needed).
+
+    The node must currently be `in_progress` or `blocked`. A `blocked`
+    node is un-blocked back to `in_progress` as part of the same call (the
+    `(blocked, in_progress)` edge already requires an owner match, which
+    is trivially satisfied here the same way `approve_review` satisfies
+    the lease check on a human-driven transition: by passing the node's
+    *current* owner, not the new one, as the state machine's `lease_actor`
+    -- the state machine only cares that some legitimate transition is
+    happening, not who the new owner will be). An already-`in_progress`
+    node has no status change to validate, so its owner/lease are updated
+    directly. Refuses (`HumanOnly`) if `actor != "human"`."""
+    _require_human(actor)
+    node = get_node(conn, node_id)
+    if node["status"] not in ("in_progress", "blocked"):
+        raise NodeError(
+            f"cannot hand off node {node_id}: status is {node['status']!r}, "
+            "must be in_progress or blocked"
+        )
+    lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    if node["status"] == "blocked":
+        row = _apply_transition(
+            conn,
+            node,
+            to_status="in_progress",
+            lease_actor=node["owner"] or "",
+            event_actor_role=actor,
+            event_type="node.handoff",
+            request_id=None,
+            extra_columns={"owner": new_owner, "lease_until": lease_until},
+        )
+    else:
+        conn.execute(
+            "UPDATE nodes SET owner = ?, lease_until = ? WHERE id = ?",
+            (new_owner, lease_until, node_id),
+        )
+        row = get_node(conn, node_id)
+        events.record_event(
+            conn,
+            project_id=row["project_id"],
+            node_id=node_id,
+            actor=actor,
+            type_="node.handoff",
+            payload=dict(row),
+        )
+    conn.commit()
+    return {"node": dict(row)}
 
 
 def soft_delete(

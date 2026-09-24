@@ -71,6 +71,7 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
                 core.asks.AskError,
                 core.state_machine.InvalidTransition,
                 core.state_machine.NotLeaseOwner,
+                core.merge.MergeError,
             ),
         ):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -150,11 +151,12 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.get("/kpis")
     def kpis() -> dict:
-        """Drift % and tokens/spend require the structure layer and
-        node_usage population (P3+/P5) -- stubbed at zero per the P2
-        prompt. Rubber-stamp rate is real: it's a ratio over events this
+        """Drift % requires the structure layer (P6+) -- still stubbed at
+        zero. Rubber-stamp rate is real: it's a ratio over events this
         phase already logs (`metric.rubber_stamp` vs total `node.done`
-        approvals via `nodes.approve_review`)."""
+        approvals via `nodes.approve_review`). `tokens_per_node` /
+        `spend_vs_budget` are real as of P5: `node_usage` is now populated
+        by `core.runner`, so these read it directly instead of stubbing."""
         with _conn() as conn:
             total_reviewed = conn.execute(
                 "SELECT COUNT(*) c FROM events WHERE type = 'node.done'"
@@ -162,12 +164,20 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
             rubber_stamps = conn.execute(
                 "SELECT COUNT(*) c FROM events WHERE type = 'metric.rubber_stamp'"
             ).fetchone()["c"]
+            total_tokens = conn.execute(
+                "SELECT COALESCE(SUM(in_tokens + out_tokens), 0) c FROM node_usage"
+            ).fetchone()["c"]
+            nodes_with_usage = conn.execute(
+                "SELECT COUNT(DISTINCT node_id) c FROM node_usage"
+            ).fetchone()["c"]
+            budget = core.runner.budget_state(conn, config)
         rubber_stamp_rate = (rubber_stamps / total_reviewed) if total_reviewed else 0.0
+        tokens_per_node = (total_tokens / nodes_with_usage) if nodes_with_usage else 0.0
         return {
-            "drift_pct": 0.0,  # P3+: structure layer not built yet
+            "drift_pct": 0.0,  # P6+: structure layer not built yet
             "rubber_stamp_rate": rubber_stamp_rate,
-            "tokens_per_node": 0.0,  # P5: node_usage not populated yet
-            "spend_vs_budget": 0.0,  # P5: node_usage not populated yet
+            "tokens_per_node": tokens_per_node,
+            "spend_vs_budget": budget["pct"],
         }
 
     # ------------------------------------------------------------------
@@ -525,13 +535,32 @@ def create_app(repo_root: Path, config: MuvueConfig | None = None) -> FastAPI:
 
     @app.post("/nodes/{node_id}/merge")
     def merge_node(node_id: int, authorization: str | None = Header(default=None)) -> dict:
+        """Plan section 6 "Merging" (P5): attempt to merge this node's
+        strict-mode branch onto the airlock's main. Light-mode / never
+        strict-started nodes are a documented no-op (`core.merge`)."""
         _require_session(authorization)
-        return {"status": "not implemented in P2 (merge machinery ships P6)"}
+        with _conn() as conn:
+            try:
+                result = core.merge.attempt_merge(conn, node_id, repo_root)
+            except Exception as e:
+                _handle_core_error(e)
+        return result
 
     @app.post("/nodes/{node_id}/handoff")
-    def handoff_node(node_id: int, authorization: str | None = Header(default=None)) -> dict:
+    def handoff_node(
+        node_id: int, to: str = Body(..., embed=True), authorization: str | None = Header(default=None),
+    ) -> dict:
+        """Plan section 6 "Handoff" (P5): reassign the node's lease to `to`
+        so a different driver can resume purely from DB state."""
         _require_session(authorization)
-        return {"status": "not implemented in P2 (drivers ship P5)"}
+        with _conn() as conn:
+            try:
+                result = core.nodes.handoff(
+                    conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
 
     @app.post("/import")
     def import_(authorization: str | None = Header(default=None)) -> dict:

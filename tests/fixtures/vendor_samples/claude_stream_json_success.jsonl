@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "sess_abc123", "model": "claude-synthetic-1"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading the brief..."}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Edit", "input": {"file_path": "a.py"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Implemented the change and ran the tests.", "usage": {"input_tokens": 4210, "output_tokens": 812}, "total_cost_usd": 0.083, "model": "claude-synthetic-1"}

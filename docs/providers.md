@@ -47,6 +47,42 @@ Cursor's `.mdc` project-rules format (`alwaysApply: true` frontmatter).
 Not verified against a live Cursor install; Cursor's rules format has
 changed before and may have again.
 
+## Driver usage parsers (P5, 2026-09-24)
+
+`core.drivers` implements `usage_parser` dispatch for the example
+commands plan section 2 shows (`claude -p --output-format stream-json`,
+`codex exec --json`) plus a best-effort `gemini_json`. **All three are
+synthetic and unverified against a real vendor CLI** — same constraint as
+above: no network access, no logged-in `claude`/`codex`/`gemini` CLI in
+this environment. Each parser was reconstructed from that vendor's
+*documented* output convention at the time of writing, not a captured
+real invocation:
+
+- `claude_stream_json` — one JSON object per line, a terminal `{"type":
+  "result", "is_error": ..., "result": ..., "usage": {"input_tokens":
+  ..., "output_tokens": ...}, "total_cost_usd": ...}`.
+- `codex_json` — one JSON object per line, a terminal `{"type":
+  "task_complete", "usage": {"input_tokens": ..., "output_tokens":
+  ...}}` on success or `{"type": "error", "message": ...}` on failure.
+- `gemini_json` — a best-effort guess at a single terminal JSON object
+  using the Gemini *API's* own documented `usageMetadata` field names
+  (`promptTokenCount`, `candidatesTokenCount`) as the closest available
+  reference, since no CLI-specific JSON output format could be consulted.
+
+Synthetic sample files live in `tests/fixtures/vendor_samples/` (labeled
+the same way there) and are what `tests/test_drivers.py` tests these
+parsers against. **A human must verify all three against a real,
+logged-in vendor CLI invocation before relying on them in production** —
+the rate-limit-detection heuristic in particular (a loose, case-
+insensitive "rate limit"/"429"/"too many requests" text match, since no
+vendor's real error text or exit-code convention could be confirmed here)
+is the part most likely to need adjustment once real output is available.
+
+`config.agents.fake` (`muvue-fake-agent`, `src/muvue/fake_agent.py`) is
+the one driver exercised against a real subprocess in this environment,
+and is what P5's acceptance criteria substitute for a real
+subscription-authenticated CLI throughout.
+
 ## Residual risk (plan section 6, item 3)
 
 "Vendor terms for headless subscription use change" -- unchanged from

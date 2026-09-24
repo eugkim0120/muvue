@@ -539,3 +539,118 @@ reading here. Real `decisions` table entries start once dogfooding begins
     internal dispatch, consistent with how P2/P3 already extended
     `nodes.done`'s internals (risk tiers, review dispatch) without a
     protocol bump either.
+
+45. **Driver-unavailable reuses `on_rate_limit`'s `fallback:<agent>`
+    config, not a separate `on_unavailable` key.** The plan defines
+    `on_rate_limit` (`wait`/`pause`/`fallback:<agent>`) but says nothing
+    about a distinct policy for a failed `auth_check` (not logged in, CLI
+    missing, etc). "Try a different agent" is the same underlying policy
+    either way, and inventing a second, near-identical config key for a
+    condition the plan never separately names would be speculative
+    abstraction (plan working rule: no unrequested config surface).
+    `core.runner._handle_unavailable` reads the *same* agent's
+    `on_rate_limit` value; `wait`/`pause` both fall through to a plain
+    `block(external)` (there's no meaningful "wait" for a CLI that isn't
+    logged in). `docs/protocol.md` documents this explicitly so it isn't
+    mistaken for a bug.
+
+46. **The runner pauses globally (schedules nothing new at all) when any
+    node in its scope is `awaiting_approval`/`blocked`/`failed`, rather
+    than scheduling around them.** P5's acceptance criterion 2 says the
+    runner "pauses ... when it hits a node in [that] state" but doesn't
+    specify whether that means "skip that one node" or "stop entirely."
+    Skipping-and-continuing would need an unstated priority/ordering
+    policy (which ready node to try next, whether to keep retrying the
+    stuck one) that nothing in plan section 6 defines. The simplest
+    reading that stays deterministic and testable: check once per cycle,
+    before scheduling, and if anything needs a human, stop -- consistent
+    with the plan's framing of these as "inbox" states a human is meant
+    to clear (plan section 8 dashboard: "Inbox: questions, blocked,
+    review"). See `core/runner.py::_gating_nodes` and
+    `tests/test_runner.py::test_run_pauses_without_scheduling_when_a_node_needs_attention`.
+
+47. **`core.runner._ready_nodes` only schedules `task`/`subtask` kind
+    nodes, never `spec`.** A `ready` spec node means "Gate 1 approved,
+    ready for decomposition" (`core.gates.submit_spec`/`approve_spec`) --
+    a different agent workflow (the `spec`/`decompose` CLI verbs, a
+    dogfood-gate follow-up) than "spawn a driver to do coding work and
+    call `done`." `[routing]` having a `spec` entry doesn't imply the
+    unattended runner drives it: nothing in plan section 6 "Runner
+    (unattended)" describes automating decomposition, and doing so
+    naively (spawning a driver, piping `brief`, calling `done` on
+    whatever it prints) would silently mark a spec "done" without ever
+    creating the tasks under it -- worse than not automating it at all.
+    Scoping `[routing].spec` to a future decomposition-driving feature,
+    not this one, is the smallest change that doesn't misbehave; found
+    via `tests/test_run_cli.py`'s CLI-level acceptance test, which
+    surfaced this by accident (the spec node, also `ready`, was getting
+    scheduled ahead of/instead of its own decomposed task).
+
+48. **`core.merge` uses its own `_run_git_as_muvue` wrapper (explicit
+    `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+    `GIT_COMMITTER_EMAIL=muvue@localhost`) for the one git operation that
+    creates a commit (`git merge --no-ff`), instead of extending
+    `core.strict._run_git`.** `git merge` (unlike every other git command
+    `core.strict` already runs -- `worktree add`, `fetch`, `diff`) needs a
+    committer identity, and a muvue-initiated merge must not depend on
+    the ambient environment having `user.name`/`user.email` configured (a
+    daemon process may have none, and did not in this sandbox --
+    `_run_git_as_muvue` was added after `attempt_merge` failed with "fatal:
+    unable to auto-detect email address" in this environment). Kept
+    local to `core/merge.py`, not added as an env override to
+    `core.strict._run_git`, since none of that module's own callers ever
+    commit -- narrower is the smaller, correct change.
+
+49. **The merge scratch worktree (`_merge_main`) is checked out
+    *detached*, not on `refs/heads/main` itself; `attempt_merge` advances
+    `refs/heads/main` explicitly with `git update-ref` after a successful
+    merge commit.** Discovered via P5's rebuild-first test for the merge
+    flow: `core.strict.ensure_airlock`'s own `main`-sync fetch (called by
+    every `bind_worktree`, i.e. every node `start`) refuses to fetch into
+    a branch that's checked out in another worktree ("refusing to fetch
+    into branch 'refs/heads/main' checked out at ..."), which a literal
+    `git worktree add <path> main` for the merge scratch worktree would
+    trigger the very next time any node starts. A second, independent
+    problem the detached design also fixes: `ensure_airlock`'s fetch
+    unconditionally resets the airlock's `main` to `repo_root`'s current
+    HEAD (correct for "start a new node off real content," P4's use
+    case) -- if `attempt_merge` called `ensure_airlock` again on a later
+    invocation, it would silently stomp the previous merge commit(s) back
+    off `main`. Fixed by (a) never calling `ensure_airlock` from
+    `core.merge` (only `strict.airlock_path`, raising `MergeError` if it
+    doesn't exist yet -- an airlock must already exist by the time
+    anything is `done` and mergeable) and (b) keeping the merge worktree
+    permanently detached, advancing `main` by `update-ref` instead of by
+    the worktree's own HEAD moving.
+
+50. **`muvue-fake-agent` is a new `pyproject.toml` console-script entry
+    point (`src/muvue/fake_agent.py`), not a `muvue fake-agent`
+    subcommand.** The P5 prompt left this as an explicit judgment call.
+    A subcommand would still be invoked as `muvue fake-agent`, which is
+    not how a real vendor CLI (`claude`, `codex`, `gemini`) is shaped --
+    it's its own binary on `$PATH`, with its own argv/exit-code/stdout
+    contract, no relation to muvue's own CLI. `config.agents.fake.command
+    = "muvue-fake-agent"` (the plan's own example config) reads as a
+    plain command name, and `core.drivers.invoke_driver` spawns whatever
+    `command` says with no special-casing -- a second entry point that
+    behaves like an independent process is what makes the driver-
+    invocation code path identical for `fake` and for a real vendor CLI,
+    which is the point of using `fake` as the stand-in for acceptance
+    criterion 1.
+
+51. **`core.nodes.done`'s `review.awaiting` branch also records
+    `node.summary_recorded` (full row snapshot).** Found by P5's
+    rebuild-first test for the runner's `done` flow (working rule 1:
+    write the rebuild test before the mutating code) -- a pre-existing
+    P2-era bug, not introduced by P5: setting `nodes.summary` and then
+    only recording a `review.awaiting` event (deliberately *not*
+    `node.`-prefixed, so `rebuild` doesn't try to treat its
+    `{"tier": ..., "flagged": ...}` payload as a row snapshot -- see the
+    P2 entry on `review.auto_approved`/`review.awaiting`) meant `rebuild`
+    had no event carrying the updated `summary` at all, so replay left it
+    `NULL` forever while the live row had it set. Fixed with the
+    smallest correct change: one extra `node.summary_recorded` event
+    (full row snapshot, so `rebuild` picks it up for free) right after
+    the `UPDATE`, before `review.awaiting`. No behavior change from a
+    caller's perspective -- same return value, same live-DB state --
+    only `rebuild`'s replayed state now matches it.

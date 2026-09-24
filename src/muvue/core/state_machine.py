@@ -53,6 +53,11 @@ TRANSITIONS: dict[tuple[str, str], bool] = {
     ("in_progress", "failed"): True,
     ("blocked", "failed"): True,
     ("in_progress", "ready"): True,  # retry after a fail() below max_attempts
+    # P5 "Merging" (plan section 6): a merge conflict discovered after a
+    # node is `done` blocks it for a human/rebase subtask to resolve. No
+    # owner check -- `done` already cleared `lease_until`, and the daemon
+    # (not any single agent) is what attempts the merge.
+    ("done", "blocked"): False,
 }
 
 
