@@ -87,4 +87,41 @@ def run_doctor(repo_root: Path, *, repair: bool = False) -> DoctorReport:
                 "re-run `muvue adapter install claude-code`"
             )
 
+    # Strict mode (plan section 5, P4): "Agent never holds a `main`
+    # checkout" -- a node actively being worked (`in_progress`/`review`)
+    # must have a bound worktree that still exists on disk, distinct from
+    # `repo_root` itself. A missing binding or a worktree directory
+    # that's disappeared (removed by hand, or `worktree_setup` never
+    # completed for a pre-P4 in-progress node) is exactly the state
+    # `doctor --repair` orphan-worktree handling (plan section 5,
+    # "Leases") is meant to catch; P4 only adds detection, `--repair`
+    # for worktrees is left for the daemon reconcile work that owns
+    # leases (out of P4 scope).
+    if config is not None and config.mode == "strict" and db_path.exists():
+        conn = core_db.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, status, worktree FROM nodes "
+                "WHERE status IN ('in_progress', 'review') AND deleted_at IS NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            worktree = row["worktree"]
+            if worktree is None:
+                report.fail(
+                    f"node {row['id']} is {row['status']} in strict mode with no bound "
+                    "worktree (agent would be holding the main checkout)"
+                )
+            elif not Path(worktree).exists():
+                report.fail(
+                    f"node {row['id']} is bound to worktree {worktree}, which no longer "
+                    "exists on disk"
+                )
+            elif Path(worktree).resolve() == repo_root.resolve():
+                report.fail(
+                    f"node {row['id']}'s bound worktree is the main checkout {repo_root} "
+                    "(strict mode must never point a node at main)"
+                )
+
     return report

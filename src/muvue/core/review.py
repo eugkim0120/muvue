@@ -1,17 +1,33 @@
-"""Light-mode `review` dispatch (plan section 5): once `core.risk` has
-computed a tier/flag (P2), light mode additionally dispatches on a
+"""Light- and strict-mode `review` dispatch (plan section 5): once
+`core.risk` has computed a tier/flag (P2), dispatch additionally checks a
 node's `criteria_mode`:
 
-- `auto` -- criteria are checked by literally running `config.checks.test`
-  in the current checkout (light mode has no clean worktree to run it in
-  -- that's strict mode / P4's airlock). A failing check always flags
-  the node to `review`, regardless of risk tier.
+- `auto` -- criteria are checked by running `config.checks.test`. Light
+  mode runs it in the current checkout (no clean worktree exists there).
+  Strict mode (P4) runs it in the node's own bound worktree -- already a
+  fresh git checkout by construction -- instead of the caller's `cwd`,
+  the "clean-env checks" plan section 5 describes. A failing check always
+  flags the node to `review`, regardless of risk tier.
 - `external` -- criteria are checked in the agent's own environment (a
   live service, a manual QA step, something muvue can't run itself).
   Always flags to `review`, since core has no way to verify an external
   criterion was actually satisfied.
 - `manual` -- always waits for a human; never auto-approves regardless
   of tier.
+
+Strict mode additionally flags any node whose real worktree diff
+(`core.strict.worktree_diff_files`) touches a test-shaped path (plan
+section 5, "done -> review": "Diffs touching test files or criteria are
+always flagged") -- light mode's equivalent check
+(`core.risk.is_flagged`) is a `predicted_touches`-based proxy computed
+before any code is written; strict mode has a real git diff to check
+instead, since every strict-mode node has a real worktree.
+
+Strict-mode dispatch only runs when the node has a bound worktree
+(`node["worktree"]` is set by `core.nodes.start`, P4). A strict-mode node
+with no bound worktree (never started, or started before P4 existed) is
+still a no-op here, same as before P4 -- see
+tests/test_light_review.py::test_dispatch_is_a_noop_outside_light_mode.
 
 `run_checks` is injectable (default: a real subprocess call) so tests
 don't need a real shell command / repo checkout -- the same pattern
@@ -25,9 +41,11 @@ import subprocess
 import sqlite3
 from typing import Callable
 
+from . import risk as risk_mod
 from .config import MuvueConfig
 
 RunChecks = Callable[[str, str], bool]
+DiffFiles = Callable[[str], list[str]]
 
 
 def default_run_checks(command: str, cwd: str) -> bool:
@@ -43,21 +61,7 @@ def default_run_checks(command: str, cwd: str) -> bool:
     return result.returncode == 0
 
 
-def dispatch(
-    conn: sqlite3.Connection,
-    node: sqlite3.Row,
-    config: MuvueConfig,
-    *,
-    run_checks: RunChecks | None = None,
-    cwd: str = ".",
-) -> dict:
-    """Returns {"flag": bool, "event_type": str | None, "payload": dict}.
-    `flag=True` means: this node must stop at `review` even if
-    `core.risk` alone would have auto-approved it. Only applies in light
-    mode -- strict mode's airlock-run auto checks are P4 scope."""
-    if config.mode != "light":
-        return {"flag": False, "event_type": None, "payload": {}}
-
+def _criteria_mode_result(node: sqlite3.Row, config: MuvueConfig, *, run_checks, cwd) -> dict:
     mode = node["criteria_mode"]
     if mode == "manual":
         return {
@@ -85,4 +89,45 @@ def dispatch(
                 "event_type": "review.auto_check_failed",
                 "payload": {"node_id": node["id"], "command": config.checks.test},
             }
+    return {"flag": False, "event_type": None, "payload": {}}
+
+
+def dispatch(
+    conn: sqlite3.Connection,
+    node: sqlite3.Row,
+    config: MuvueConfig,
+    *,
+    run_checks: RunChecks | None = None,
+    cwd: str = ".",
+    diff_files: DiffFiles | None = None,
+) -> dict:
+    """Returns {"flag": bool, "event_type": str | None, "payload": dict}.
+    `flag=True` means: this node must stop at `review` even if
+    `core.risk` alone would have auto-approved it."""
+    if config.mode == "light":
+        return _criteria_mode_result(node, config, run_checks=run_checks, cwd=cwd)
+
+    if config.mode == "strict":
+        worktree = node["worktree"]
+        if worktree is None:
+            # No bound worktree (never started under strict mode, or a
+            # pre-P4 node) -- nothing to run cleanly, nothing to diff.
+            return {"flag": False, "event_type": None, "payload": {}}
+
+        result = _criteria_mode_result(node, config, run_checks=run_checks, cwd=worktree)
+        if result["flag"]:
+            return result
+
+        from . import strict as strict_mod
+
+        diff_fn = diff_files or strict_mod.worktree_diff_files
+        touched = diff_fn(worktree)
+        if any(risk_mod.is_test_touch(f) for f in touched):
+            return {
+                "flag": True,
+                "event_type": "review.test_edit_flagged",
+                "payload": {"node_id": node["id"], "files": touched},
+            }
+        return result
+
     return {"flag": False, "event_type": None, "payload": {}}

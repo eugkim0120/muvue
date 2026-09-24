@@ -180,6 +180,8 @@ def start(
     actor: str = "agent",
     request_id: str | None = None,
     lease_minutes: int = DEFAULT_LEASE_MINUTES,
+    config=None,
+    repo_root=None,
 ) -> dict:
     dup = events.find_recent_by_request_id(conn, request_id, "node.start") if request_id else None
     if dup is not None:
@@ -218,6 +220,25 @@ def start(
     lease_until = (datetime.now(timezone.utc) + timedelta(minutes=lease_minutes)).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
+
+    # Strict mode (plan section 5, P4): bind a per-node git worktree
+    # before touching the DB at all, so a `worktree_setup` failure fails
+    # `start` cleanly -- the node is never left half-transitioned with a
+    # worktree binding that didn't actually finish setting up (see
+    # core.strict.bind_worktree's docstring).
+    extra_columns = {"owner": owner, "lease_until": lease_until}
+    if config is not None and getattr(config, "mode", "light") == "strict":
+        if repo_root is None:
+            raise NodeError(
+                f"cannot start node {node_id} in strict mode: repo_root is required "
+                "to bind a worktree"
+            )
+        from . import strict as strict_mod
+
+        worktree_path = strict_mod.bind_worktree(node, config, repo_root)
+        if node["worktree"] is None:
+            extra_columns["worktree"] = str(worktree_path)
+
     row = _apply_transition(
         conn,
         node,
@@ -226,7 +247,7 @@ def start(
         event_actor_role="agent",
         event_type="node.start",
         request_id=request_id,
-        extra_columns={"owner": owner, "lease_until": lease_until},
+        extra_columns=extra_columns,
     )
     conn.commit()
     return {"noop": False, "node": dict(row)}

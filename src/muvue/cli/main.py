@@ -50,11 +50,18 @@ def _echo_json(obj) -> None:
 
 
 @app.command()
-def init(path: Path = typer.Argument(Path("."), help="Repo root to initialize")) -> None:
+def init(
+    path: Path = typer.Argument(Path("."), help="Repo root to initialize"),
+    sandbox: bool = typer.Option(
+        False, "--sandbox",
+        help="Also emit .muvue/sandbox-compose.yml, a documented container-isolation "
+        "scaffold (plan section 5: '(later)') -- muvue does not run it.",
+    ),
+) -> None:
     """Scaffold .muvue/ in the given repo (default: cwd)."""
     repo_root = path.resolve()
     try:
-        muvue_dir = core.repo_init.init_repo(repo_root)
+        muvue_dir = core.repo_init.init_repo(repo_root, sandbox=sandbox)
     except core.repo_init.AlreadyInitialized as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
@@ -240,6 +247,15 @@ def hook(
             conn.close()
         return
 
+    if name == "pre-receive":
+        # Runs server-side, inside the airlock bare repo (plan section 5,
+        # P4) -- `path` is meaningless here (no .muvue/ in a bare repo);
+        # core.strict.handle_pre_receive_cli locates the real repo via the
+        # airlock's REPO_ROOT_MARKER file instead. Exits non-zero (git's
+        # documented pre-receive convention) to reject the whole push.
+        exit_code = core.strict.handle_pre_receive_cli(Path.cwd())
+        raise typer.Exit(exit_code)
+
     if name not in _CLAUDE_HOOK_NAMES:
         return
 
@@ -372,6 +388,7 @@ def start(
         result = core.nodes.start(
             conn, node_id, owner=owner, request_id=request_id,
             lease_minutes=config.planning.lease_minutes,
+            config=config, repo_root=repo_root,
         )
     finally:
         conn.close()

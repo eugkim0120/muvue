@@ -480,3 +480,62 @@ reading here. Real `decisions` table entries start once dogfooding begins
     surface -- a good fit for proving the newly-added `project create` /
     `spec` / `decompose` CLI verbs end to end on a real (if small) piece
     of work.
+
+41. **Airlock path hashes the repo's resolved absolute path, not a git
+    remote/init identity.** Plan section 2's file layout table gives the
+    format `~/.muvue/airlocks/<repo-hash>.git` but doesn't say what
+    `<repo-hash>` is a hash *of*. A repo has no guaranteed remote (muvue
+    itself is designed to be "fully removable," plan section 1 principle
+    4, and the fixture repos in `tests/fixtures/` have none), so hashing
+    `origin`'s URL isn't always available. `core.strict._repo_hash` hashes
+    `str(Path(repo_root).resolve())` with sha256, truncated to 16 hex
+    characters -- stable across `muvue` invocations (same absolute path
+    in, same airlock out) and requires nothing from git itself. Trade-off
+    accepted: moving the repo's checkout to a new path orphans its old
+    airlock (a fresh one is created transparently at the new path; the
+    old bare repo is simply never touched again). No migration tooling
+    was written for this -- out of P4 scope, and plan section 12 working
+    rule 7 says not to pad phases with unrequested features.
+
+42. **`ensure_airlock` syncs `main` via `git fetch`, not `git push`.**
+    The airlock's own `pre-receive` hook rejects any push to
+    `refs/heads/main` (that's the enforcement mechanism behind P4
+    acceptance criterion 1) -- so if `ensure_airlock` synced by pushing
+    from `repo_root` into the airlock, muvue's own housekeeping push would
+    reject itself. A fetch (`git --git-dir=<airlock> fetch <repo_root>
+    +HEAD:refs/heads/main`) is airlock-initiated, not push-initiated, so
+    `pre-receive` never runs against it -- matching the plan's own
+    framing that only *agent-initiated* pushes are subject to the
+    binding check; muvue keeping its own mirror in sync is not an agent
+    push.
+
+43. **Worktree storage path: `~/.muvue/worktrees/<repo-hash>/node-<id>`,
+    not inside the repo.** The plan's file-layout table (section 2) only
+    specifies the airlock's path, not where per-node worktrees live.
+    Putting them under the repo itself (e.g. `<repo>/.muvue/worktrees/`)
+    would need `.gitignore`/manifest bookkeeping and risks an agent
+    accidentally treating a nested worktree as part of the tracked tree.
+    Mirroring the airlock's own `~/.muvue/...` convention keeps every
+    strict-mode artifact outside any tracked repo, consistent with "git
+    is the only project interface" (plan section 1 principle 4) --
+    worktrees are muvue-owned scratch space, not part of what a
+    `git status` on the main checkout should ever show.
+
+44. **`protocol_version` is not bumped for P4.** Plan working rule 5:
+    "Bump `protocol_version` on any verb change." `core.nodes.start`
+    gained two new optional keyword arguments (`config`, `repo_root`) and
+    `core.review.dispatch` gained a new optional `diff_files` parameter,
+    but every existing call site (CLI, API, MCP, all P0-P3 tests) is
+    unaffected: passing nothing for the new arguments reproduces the
+    exact P0-P3 behavior (see `tests/test_strict_mode.py::
+    test_light_mode_start_never_touches_worktree` and
+    `test_strict_dispatch_is_noop_when_no_worktree_bound`). No agent- or
+    human-facing verb signature, return shape, or CLI/API surface changed
+    from a caller's perspective -- `start`/`done` behave differently
+    *internally* by mode, which the plan itself anticipates ("`start`/
+    `done` behavior differs by mode internally... the verb contract...
+    is likely unchanged", per this phase's own brief). Read the "any verb
+    change" in working rule 5 as caller-visible verb contract, not
+    internal dispatch, consistent with how P2/P3 already extended
+    `nodes.done`'s internals (risk tiers, review dispatch) without a
+    protocol bump either.

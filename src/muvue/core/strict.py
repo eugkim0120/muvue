@@ -1,0 +1,266 @@
+"""Strict mode (plan section 5 "Strict mode" paragraph, P4): airlock bare
+repo, one git worktree per node bound at `start`, `worktree_setup`, and the
+`pre-receive` hook that enforces the worktree->node binding on push.
+
+"Trailers ... are labels; the worktree binding is trusted." (plan section
+5) -- in light mode a commit trailer is the only link between a commit and
+a node, and it's just parsed text (core/trailers.py). Strict mode instead
+binds a real git branch (`node-<id>`) to a node at `start` and enforces,
+server-side, in the airlock's `pre-receive` hook, that only a push to a
+branch backing an active binding is accepted. Per plan section 13
+(residual risks) and section 5's own framing: this is accidental- and
+lazy-bypass protection, not adversarial isolation -- pre-receive can see
+which ref is being updated and check DB state, but it cannot verify which
+process or filesystem path a push actually came from (same-machine, same-
+user git has no such identity boundary). Documented, not oversold.
+
+Airlock path format (plan section 2 file layout table:
+`~/.muvue/airlocks/<repo-hash>.git`): `<repo-hash>` is the first 16 hex
+chars of sha256(str(repo_root.resolve())) -- the repo's absolute path, not
+its git remote/init identity, since a repo may have no remote at all (see
+docs/decisions.md).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT_MARKER = "muvue-repo-root"
+
+
+class StrictModeError(Exception):
+    """Raised when strict-mode git mechanics fail: worktree creation,
+    `worktree_setup`, or a rejected pre-receive push. Callers of
+    `bind_worktree` must treat this as "nothing happened" -- see its
+    docstring for the cleanup guarantee."""
+
+
+def _repo_hash(repo_root: Path) -> str:
+    return hashlib.sha256(str(Path(repo_root).resolve()).encode()).hexdigest()[:16]
+
+
+def airlocks_dir() -> Path:
+    return Path.home() / ".muvue" / "airlocks"
+
+
+def airlock_path(repo_root: Path) -> Path:
+    return airlocks_dir() / f"{_repo_hash(repo_root)}.git"
+
+
+def worktrees_root(repo_root: Path) -> Path:
+    return Path.home() / ".muvue" / "worktrees" / _repo_hash(repo_root)
+
+
+def _run_git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True,
+    )
+
+
+def _install_pre_receive_shim(airlock: Path) -> None:
+    hooks_dir = airlock / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-receive"
+    py = shlex.quote(sys.executable)
+    hook_path.write_text(f"#!/bin/sh\n{py} -m muvue hook pre-receive\n")
+    hook_path.chmod(hook_path.stat().st_mode | 0o111)
+
+
+def ensure_airlock(repo_root: Path) -> Path:
+    """Create (if missing) the bare repo backing strict mode for
+    `repo_root`, install its `pre-receive` shim, and sync `main` from
+    `repo_root`'s current HEAD so worktrees branched off it start from
+    real content. Safe to call repeatedly (idempotent creation; the sync
+    push always runs, so `main` never goes stale between binds)."""
+    repo_root = Path(repo_root).resolve()
+    airlock = airlock_path(repo_root)
+    if not airlock.exists():
+        airlock.parent.mkdir(parents=True, exist_ok=True)
+        result = _run_git("init", "--bare", "-q", "-b", "main", str(airlock))
+        if result.returncode != 0:
+            raise StrictModeError(f"failed to create airlock {airlock}: {result.stderr}")
+        (airlock / REPO_ROOT_MARKER).write_text(str(repo_root))
+    _install_pre_receive_shim(airlock)
+
+    # A *fetch* (airlock pulling from repo_root), not a push -- pre-receive
+    # only fires on the receiving end of a push, and refs/heads/main is
+    # intentionally rejected there (see evaluate_ref_update). muvue itself
+    # is allowed to keep the airlock's main in sync; only agent-initiated
+    # pushes are subject to the hook.
+    fetch = _run_git(
+        "--git-dir", str(airlock), "fetch", str(repo_root), "+HEAD:refs/heads/main",
+    )
+    if fetch.returncode != 0:
+        raise StrictModeError(
+            f"failed to sync main into airlock {airlock}: {fetch.stderr}"
+        )
+    return airlock
+
+
+def bind_worktree(node, config, repo_root: Path) -> Path:
+    """Create (or return the existing) per-node worktree for `node`,
+    branched off the airlock's `main`, and run `config.worktree_setup`
+    once in it. Returns the worktree path.
+
+    On any failure -- worktree creation or `worktree_setup` -- the
+    worktree and its branch are torn back down before raising
+    `StrictModeError` with the failing command's output attached, so
+    `nodes.start` can fail the whole call without leaving a half-bound
+    node or an orphan worktree on disk (see nodes.start's ordering:
+    binding happens before the DB transition is applied)."""
+    repo_root = Path(repo_root)
+    existing = node["worktree"]
+    if existing is not None:
+        existing_path = Path(existing)
+        if not existing_path.exists():
+            raise StrictModeError(
+                f"node {node['id']} is bound to worktree {existing}, which no longer "
+                "exists on disk; run `muvue doctor --repair`"
+            )
+        return existing_path
+
+    airlock = ensure_airlock(repo_root)
+    branch = f"node-{node['id']}"
+    wt_root = worktrees_root(repo_root)
+    wt_root.mkdir(parents=True, exist_ok=True)
+    wt_path = wt_root / branch
+    if wt_path.exists():
+        raise StrictModeError(f"worktree path {wt_path} already exists for node {node['id']}")
+
+    add = _run_git(
+        "--git-dir", str(airlock), "worktree", "add", str(wt_path), "-b", branch, "main",
+    )
+    if add.returncode != 0:
+        raise StrictModeError(
+            f"failed to create worktree for node {node['id']}: {add.stderr}"
+        )
+
+    setup_cmd = (config.worktree_setup or "").strip()
+    if setup_cmd:
+        setup = subprocess.run(
+            setup_cmd, shell=True, cwd=wt_path, capture_output=True, text=True,
+        )
+        if setup.returncode != 0:
+            _teardown_worktree(airlock, wt_path, branch)
+            raise StrictModeError(
+                f"worktree_setup ({setup_cmd!r}) failed for node {node['id']} "
+                f"(exit {setup.returncode}):\n"
+                f"--- stdout ---\n{setup.stdout}\n--- stderr ---\n{setup.stderr}"
+            )
+
+    return wt_path
+
+
+def _teardown_worktree(airlock: Path, wt_path: Path, branch: str) -> None:
+    _run_git("--git-dir", str(airlock), "worktree", "remove", "--force", str(wt_path))
+    _run_git("--git-dir", str(airlock), "branch", "-D", branch)
+
+
+def worktree_diff_files(worktree: str | Path, *, base: str = "main") -> list[str]:
+    """Real `git diff --name-only` from the node's worktree against its
+    branch point on `base` (plan section 5: "now that real diffs are
+    available from real worktrees, vs light mode's `predicted_touches`-
+    based proxy"). Three-dot diff (against the merge-base) so it reflects
+    only the node branch's own commits, not any unrelated drift `base`
+    picked up meanwhile."""
+    result = _run_git("diff", "--name-only", f"{base}...HEAD", cwd=Path(worktree))
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line]
+
+
+# -- pre-receive (plan section 5: the load-bearing enforcement for P4
+# acceptance criterion 1) --------------------------------------------------
+
+_NODE_BRANCH_RE = re.compile(r"^refs/heads/node-(\d+)$")
+_ACTIVE_STATUSES = ("in_progress", "review")
+
+
+def evaluate_ref_update(conn, ref_name: str) -> tuple[bool, str]:
+    """Return (accepted, reason). `main` is never a valid direct push
+    target in strict mode -- work always lands through a node branch, kept
+    or merged onward by muvue/a human outside this hook's scope (P4 is the
+    enforcement primitive, not the merge flow, which is P5+/`close`). A
+    `node-<id>` branch is only accepted while that node's binding is
+    live: the node exists, has a bound worktree, and is `in_progress` or
+    `review`."""
+    from . import nodes as nodes_mod  # local import: avoid a strict<->nodes cycle
+
+    if ref_name == "refs/heads/main":
+        return False, (
+            "refs/heads/main is protected in strict mode; push must target a "
+            "node worktree branch (node-<id>), never main directly"
+        )
+    m = _NODE_BRANCH_RE.match(ref_name)
+    if not m:
+        return False, f"{ref_name}: not a recognized muvue node-worktree branch"
+    node_id = int(m.group(1))
+    try:
+        node = nodes_mod.get_node(conn, node_id)
+    except LookupError:
+        return False, f"{ref_name}: no such node {node_id}"
+    if node["worktree"] is None:
+        return False, f"{ref_name}: node {node_id} has no bound worktree"
+    if node["status"] not in _ACTIVE_STATUSES:
+        return False, (
+            f"{ref_name}: node {node_id} is status={node['status']!r}, "
+            f"not in {_ACTIVE_STATUSES}"
+        )
+    return True, ""
+
+
+def handle_pre_receive(conn, lines: list[str]) -> tuple[bool, list[str]]:
+    """Pure-data entry point: `lines` are raw `<old> <new> <ref>` pre-
+    receive protocol lines (one per updated ref). Returns
+    (accept_all, messages) -- git pre-receive is all-or-nothing per push
+    (there is no partial-accept), so any rejected ref rejects the whole
+    push; messages explain every rejection so they reach the pusher's
+    terminal."""
+    messages: list[str] = []
+    accept = True
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        _old, _new, ref = parts
+        ok, reason = evaluate_ref_update(conn, ref)
+        if not ok:
+            accept = False
+            messages.append(reason)
+    return accept, messages
+
+
+def handle_pre_receive_cli(cwd: Path) -> int:
+    """Real entry point for the installed airlock shim. Git runs
+    `pre-receive` with the receiving repo as the current directory (a
+    bare repo, here the airlock itself) and the ref updates on stdin. The
+    airlock has no `.muvue/` of its own -- `REPO_ROOT_MARKER`, written by
+    `ensure_airlock`, points back at the real repo whose `.muvue/muvue.db`
+    holds the node states being checked."""
+    from . import db as core_db
+
+    marker = cwd / REPO_ROOT_MARKER
+    if not marker.exists():
+        sys.stderr.write(f"muvue: {cwd} is not a muvue airlock (missing {REPO_ROOT_MARKER})\n")
+        return 1
+    repo_root = Path(marker.read_text().strip())
+    db_path = repo_root / ".muvue" / "muvue.db"
+    if not db_path.exists():
+        sys.stderr.write(f"muvue: {db_path} not found; is {repo_root} still muvue-initialized?\n")
+        return 1
+
+    lines = sys.stdin.read().splitlines()
+    conn = core_db.connect(db_path)
+    try:
+        accept, messages = handle_pre_receive(conn, lines)
+    finally:
+        conn.close()
+
+    for msg in messages:
+        sys.stderr.write(f"muvue: rejected: {msg}\n")
+    return 0 if accept else 1

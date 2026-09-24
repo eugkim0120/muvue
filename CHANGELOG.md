@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P4 (strict mode)
+
+### Added
+- `muvue.core.strict`: the airlock bare repo (`~/.muvue/airlocks/<repo-
+  hash>.git`, hash = first 16 hex chars of sha256 of the repo's resolved
+  absolute path -- see `docs/decisions.md` #41), one git worktree per
+  node under `~/.muvue/worktrees/<repo-hash>/node-<id>`, and a real
+  `pre-receive` hook installed on the airlock.
+- `core.nodes.start(..., config=, repo_root=)`: when `config.mode ==
+  "strict"`, binds a per-node worktree (via `core.strict.bind_worktree`)
+  *before* the node's status transition is applied, and runs
+  `config.worktree_setup` once in it. A `worktree_setup` failure raises
+  `StrictModeError` with the command's stdout/stderr attached and leaves
+  the node untouched (still `ready`, `worktree` still `NULL`) and no
+  orphan worktree on disk. Light mode (`config=None`, or
+  `config.mode == "light"`) is unaffected -- no worktree logic runs.
+- `muvue hook pre-receive`: a real pre-receive hook (reads git's
+  `<old> <new> <ref>` protocol lines from stdin), installed automatically
+  on the airlock by `core.strict.ensure_airlock`. Rejects any push to
+  `refs/heads/main` (main is never a direct push target in strict mode)
+  and any push to a `refs/heads/node-<id>` branch whose node doesn't
+  exist, has no bound worktree, or isn't `in_progress`/`review`. This is
+  the mechanism behind P4 acceptance criterion 1.
+- `core.review.dispatch`: extended for `config.mode == "strict"`. When a
+  node has a bound worktree, `auto` criteria now run in that worktree
+  (clean-env checks, plan section 5) instead of the caller's `cwd`, and
+  the dispatch additionally flags the node to `review` when a real
+  `git diff --name-only` (`core.strict.worktree_diff_files`, three-dot
+  against `main`) touches a test-shaped path (`core.risk.is_test_touch`,
+  reused from light mode). This is P4 acceptance criterion 2. A
+  strict-mode node with no bound worktree still no-ops exactly as before
+  P4 (unchanged: `tests/test_light_review.py::
+  test_dispatch_is_a_noop_outside_light_mode`).
+- `core.doctor.run_doctor`: strict-mode check -- any `in_progress`/
+  `review` node must have a bound worktree that still exists on disk and
+  is never `repo_root` itself ("agent never holds a `main` checkout",
+  plan section 5).
+- `muvue init --sandbox`: additionally writes `.muvue/sandbox-compose.yml`,
+  a documented, unimplemented-runtime compose scaffold (plan section 5:
+  "`init --sandbox` emits a compose file for container isolation
+  (later)"). Scaffold only -- muvue does not build, start, or manage it;
+  today's strict-mode isolation is the git-worktree/airlock mechanism
+  above. `init` without `--sandbox` is unchanged.
+
+### Notes
+- `protocol_version` is **not** bumped: `start`/`done`'s verb contract
+  from a caller's perspective is unchanged (new `config`/`repo_root`
+  kwargs on `core.nodes.start` are internal wiring the CLI/API already
+  had `config` for; no new required argument, no changed return shape).
+  See `docs/decisions.md` #44.
+- Per plan section 13 (residual risks) and section 5's own framing:
+  strict mode's pre-receive check is state-based only (does the pushed
+  ref correspond to a live node binding?) -- it cannot verify which
+  process or worktree a push actually originated from on a single
+  machine. **Documented guarantee: prevents accidental and lazy bypass,
+  not adversarial isolation.**
+- Out of scope for P4 (plan section 12 working rule 7): no runner/
+  drivers, no `close`/history-export, no structure-graph/drift/`audit`
+  logic, no VS Code extension, and `--sandbox` stays scaffold-only (no
+  container orchestration logic was written).
+
 ## [Unreleased] - dogfood gate (plan section 11, post-v0.1)
 
 ### Added

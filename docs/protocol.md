@@ -354,6 +354,75 @@ the CLI (`done --run-checks`) and API (`POST /nodes/{id}/done
 preserves risk-tier-only gating byte-for-byte -- see `docs/decisions.md`
 #38 and its dogfood-gate follow-up).
 
+## Strict mode (P4)
+
+`config.mode == "strict"` changes `start` and `done`/review internally;
+the verb contract from a caller's perspective (arguments, return shape)
+is unchanged from P0-P3, so `protocol_version` is **not** bumped (see
+`docs/decisions.md` #44).
+
+- **Airlock.** `~/.muvue/airlocks/<repo-hash>.git` -- a bare repo, one per
+  muvue-init'd repo. `<repo-hash>` is the first 16 hex characters of
+  sha256 of the repo's resolved absolute path (`docs/decisions.md` #41).
+  `core.strict.ensure_airlock` creates it on first use, installs its
+  `pre-receive` hook shim, and fetches the calling repo's current `HEAD`
+  into the airlock's `refs/heads/main` (a fetch, not a push, so the
+  airlock's own protected-`main` rule doesn't apply to muvue's own sync).
+- **Worktree per node, bound at `start`.** `core.nodes.start(...,
+  config=, repo_root=)`, when `config.mode == "strict"`, calls
+  `core.strict.bind_worktree` *before* applying the node's status
+  transition: `git worktree add` off the airlock's `main`, on a new
+  branch `node-<id>`, under `~/.muvue/worktrees/<repo-hash>/node-<id>`.
+  The node's `worktree` column (already in the P0 schema) is set as part
+  of the same `_apply_transition` call that records `node.start`, so
+  `rebuild` replays it for free (it's already in `rebuild._NODE_COLUMNS`).
+  Re-`start`ing an already-bound node (e.g. after a lease-expiry retry)
+  reuses the existing worktree rather than recreating it.
+- **`worktree_setup`.** Runs once, as a subprocess, in the new worktree
+  right after `git worktree add` succeeds, before the node's status
+  changes at all. A non-zero exit tears the worktree and its branch back
+  down and raises `core.strict.StrictModeError` with the command's
+  stdout/stderr attached -- `start` fails, the node stays `ready`, and
+  `worktree` stays `NULL` (no half-initialized binding, no orphan
+  worktree on disk).
+- **`pre-receive` enforcement (P4 acceptance criterion 1).** `muvue hook
+  pre-receive`, installed on the airlock, reads git's `<old> <new> <ref>`
+  pre-receive protocol lines from stdin (`core.strict.handle_pre_receive`)
+  and rejects the whole push (git pre-receive is all-or-nothing) if any
+  updated ref is invalid:
+  - `refs/heads/main` is always rejected -- main is never a direct push
+    target in strict mode.
+  - `refs/heads/node-<id>` is rejected unless node `<id>` exists, has a
+    non-`NULL` `worktree`, and is `in_progress` or `review`.
+  Trailers (`Muvue-Node:`) remain labels, same as light mode
+  (`core/trailers.py`) -- this hook never reads them; it trusts only the
+  `worktree` binding recorded by `start`, per plan section 5. **This
+  check is state-based, not origin-based: it cannot verify which process
+  or filesystem path a push actually came from on a single machine.
+  Documented guarantee: prevents accidental and lazy bypass, not
+  adversarial isolation (plan section 13).**
+- **Clean-env `auto` criteria + real-diff flagged test edits (P4
+  acceptance criterion 2).** `core.review.dispatch`, for
+  `config.mode == "strict"` and a node with a bound worktree: runs
+  `auto` criteria's `run_checks` in the worktree (not the caller's
+  `cwd`) -- already a fresh git checkout by construction, matching plan
+  section 5's "clean worktree" contrast with light mode's "runs in the
+  checkout". It also computes a real `git diff --name-only main...HEAD`
+  in the worktree (`core.strict.worktree_diff_files`) and flags the node
+  to `review` if any touched path looks test-shaped
+  (`core.risk.is_test_touch`, the same heuristic light mode's
+  `predicted_touches`-based proxy already used). A strict-mode node with
+  no bound worktree is unchanged from pre-P4: a no-op.
+- **Agent never holds a `main` checkout.** Architecturally guaranteed by
+  `bind_worktree` always allocating a path under
+  `~/.muvue/worktrees/...`, never `repo_root`; `doctor` additionally
+  checks (in strict mode) that every `in_progress`/`review` node has a
+  bound worktree that still exists on disk and isn't `repo_root` itself.
+- **`init --sandbox`.** Additionally writes
+  `.muvue/sandbox-compose.yml`, a documented, unimplemented-runtime
+  compose scaffold (plan section 5: "(later)"). muvue does not build,
+  start, or manage it -- scaffold only, no container orchestration.
+
 ## Planning verbs on the CLI (dogfood-gate follow-up)
 
 The P0-P3 planning surface (project creation, Gate 1 spec submission, Gate

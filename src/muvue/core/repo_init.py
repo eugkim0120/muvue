@@ -21,6 +21,29 @@ from .config import DEFAULT_CONFIG_TOML
 HOOK_NAMES = ["post-commit", "pre-push"]
 MANIFEST_NAME = ".init_manifest.json"
 
+# `init --sandbox` (plan section 5: "`init --sandbox` emits a compose file
+# for container isolation (later)"). Scaffold only -- muvue does not build,
+# start, or manage this stack; strict mode's real isolation today is the
+# git-worktree/airlock mechanism in core/strict.py, not this file. See
+# docs/decisions.md.
+SANDBOX_COMPOSE = """\
+# muvue `init --sandbox` scaffold (plan section 5, P4: "(later)").
+#
+# NOT IMPLEMENTED: muvue does not build, start, stop, or otherwise manage
+# this compose stack. Running node work inside a container is future work.
+# Today's strict-mode isolation is the per-node git worktree bound at
+# `start` (see core/strict.py) -- this file is a documented placeholder
+# for the container-isolation layer described in the handoff plan.
+version: "3.8"
+services:
+  muvue-sandbox:
+    build: .
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+"""
+
 
 class AlreadyInitialized(Exception):
     pass
@@ -90,8 +113,14 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
     path.write_text(content + sep + "\n".join(lines))
 
 
-def init_repo(repo_root: Path) -> Path:
-    """Scaffold .muvue/ in repo_root. Returns the .muvue directory path."""
+def init_repo(repo_root: Path, *, sandbox: bool = False) -> Path:
+    """Scaffold .muvue/ in repo_root. Returns the .muvue directory path.
+
+    `sandbox=True` additionally writes a documented, unimplemented-runtime
+    compose scaffold (`.muvue/sandbox-compose.yml`, plan section 5's
+    "`init --sandbox` ... (later)"). It needs no manifest/uninit handling
+    of its own: it lives inside `.muvue/`, which `uninit_repo` already
+    removes wholesale."""
     repo_root = Path(repo_root)
     muvue_dir = repo_root / ".muvue"
     if muvue_dir.exists():
@@ -103,6 +132,8 @@ def init_repo(repo_root: Path) -> Path:
     (muvue_dir / "components.json").write_text("[]\n")
     (muvue_dir / "decisions.json").write_text("[]\n")
     core_db.init_db(muvue_dir / "muvue.db").close()
+    if sandbox:
+        (muvue_dir / "sandbox-compose.yml").write_text(SANDBOX_COMPOSE)
 
     backups: dict[str, str | None] = {}
     husky_dir = repo_root / ".husky"

@@ -24,6 +24,7 @@ from . import (
     revisions,
     risk,
     state_machine,
+    strict,
     trailers,
 )
 from .config import ConfigError, MuvueConfig, load_config
@@ -48,6 +49,7 @@ __all__ = [
     "revisions",
     "risk",
     "state_machine",
+    "strict",
     "trailers",
     "ConfigError",
     "MuvueConfig",
