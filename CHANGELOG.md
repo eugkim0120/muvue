@@ -2,6 +2,75 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - P2
+
+### Added
+- `muvue.core.risk`: single source of truth for risk-tier computation
+  (plan section 5) -- `compute_tier` (diff size via `predicted_touches`
+  count against `planning.max_files_per_task`/`risk.max_diff_lines`, path
+  globs via `risk.globs`, deletions via an explicit `has_deletions` flag
+  with no producer yet, and `criteria_edited` forcing `high`
+  unconditionally), `max_tier` (never-downgrade merge), `is_flagged`
+  (test-file touches are always flagged). `core.gates.edit_criteria` and
+  `core.gates.approve_node`'s initial-freeze tiering now both route
+  through this module instead of special-casing `"high"`.
+- `muvue.core.nodes.done(..., config=None)`: when `config` is passed
+  (CLI and API always do), `done` is gated by risk tier instead of always
+  completing unconditionally -- low tier and unflagged auto-approves
+  straight through to `done`; anything else stops at `review`. With
+  `config=None` (every P0/P1 call site), behavior is unchanged.
+- `muvue.core.nodes.approve_review` / `reject_review`: human
+  `review -> done` / `review -> in_progress` transitions. Logs
+  `metric.rubber_stamp` when time-to-approve is under 10s.
+- `muvue.core.daemon`: `reconcile_leases` / `process_queue` /
+  `reconcile_on_start` (expired `in_progress` leases revert to `ready`
+  with `attempts + 1`, or `failed` if that exhausts `max_attempts`; the
+  event queue drains via `events.acked_at`, consumers are documented
+  no-ops for P2), and repo-scoped session tokens (`create_session` /
+  `verify_session`, `<repo>/.muvue/session`) gating human-verb API calls.
+- `muvue.api`: FastAPI app (`create_app`) mirroring the CLI verbs 1:1,
+  OpenAPI-documented, SSE at `GET /events/stream` (one long-lived
+  connection per stream polling `PRAGMA data_version`), `GET
+  /nodes/{id}/diff`, `GET /nodes/{id}/logs` (NDJSON event stream), `POST
+  /nodes/{id}/start?agent=X` (agent recorded via a `node.agent_requested`
+  event, no spawning -- drivers ship P5), `GET /inbox`, `GET /kpis`
+  (`drift_pct`/`tokens_per_node`/`spend_vs_budget` stubbed at 0.0 pending
+  the structure layer and `node_usage` population; `rubber_stamp_rate` is
+  real), `GET /events` (timeline), `GET /projects/{id}/revisions`
+  (plan-revision history), `POST /nodes/{id}/comment` (spec inline
+  comments, reuses `feedback` notes). Human verbs (`approve`, `reject`,
+  `ack` via `POST /events/{id}/ack`, `pause`, `resume`, `close`; `merge`,
+  `handoff`, `import` stay stubs) require `Authorization: Bearer <session
+  token>`.
+- `muvue serve [PATH] [--host] [--port]`: one daemon per repo. Runs
+  `core.daemon.reconcile_on_start` before opening the socket, mints and
+  prints a fresh session token, then serves the FastAPI app via uvicorn.
+- One embedded vanilla-JS dashboard (`src/muvue/api/static/index.html`,
+  no CDN loads, no inline event handlers): tree/DAG-as-list view, node
+  panel (criteria/notes/summary/commits, approve/reject/start-with-agent
+  actions), spec view with inline comments, inbox, event timeline,
+  plan-revision history, KPI tiles, pause/resume buttons.
+- `nodes.start` now also refuses while `project.phase == "paused"` (plan
+  section 5 "Emergency stop": pause refuses start).
+
+### Fixed
+- SSE polling `PRAGMA data_version` from a *new* connection opened on
+  every poll does not reliably observe writes committed by other
+  connections (verified independently of FastAPI/Starlette -- see
+  `docs/decisions.md`); the stream now holds one connection for its whole
+  lifetime, which is the documented, correct way to observe
+  `data_version` changes.
+
+### Scope notes (see `docs/decisions.md`)
+- Drivers/runner, MCP server, Codex/Gemini/Cursor adapters, git hook
+  business logic, trailers, structure-graph/drift logic, and strict mode
+  remain out of scope for P2; they ship P3+.
+- `merge`, `handoff`, `import` API endpoints are stubs (need P5 runner /
+  P6 close-and-export / P6 GitHub import respectively).
+- KPI fields `drift_pct`, `tokens_per_node`, `spend_vs_budget` are
+  stubbed at `0.0`: they need the structure layer (P3+) and `node_usage`
+  population (P5), neither of which exists yet.
+
 ## [Unreleased] - P1
 
 ### Added

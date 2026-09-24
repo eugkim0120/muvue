@@ -146,3 +146,134 @@ reading here. Real `decisions` table entries start once dogfooding begins
     Read literally: if the task isn't approved yet, there's no "stated
     scope" to add within, so `replan` raises `GateError` and the caller
     must go through Gate 2 / a plan revision first.
+
+18. **Diff size is approximated by `predicted_touches` count, against
+    both size thresholds.** Plan section 5 lists "diff size" as a risk
+    input, but neither P0 nor P1 track added/removed line counts anywhere
+    (`predicted_touches` is a set of path globs; `node_commits.files` is a
+    JSON list of paths, once committed -- neither carries a line count).
+    Per the P2 prompt's explicit steer ("diff size (from predicted_touches
+    count or actual node_commits diff if available -- predicted_touches is
+    what P0/P1 already track, use that)"), `core.risk.compute_tier` reads
+    touch *count* against `planning.max_files_per_task` (-> `medium`) and
+    `risk.max_diff_lines` (-> `high`), even though the latter's name
+    implies a line count. This is a proxy, not a real diff-size
+    measurement; a real one needs git integration that doesn't exist
+    before P3's hooks/structure layer.
+
+19. **`has_deletions` is a wired parameter with no producer yet.** Plan
+    section 5 lists "deletions" as a risk-tier input. No P0/P1/P2 table
+    records which files a node's diff deleted (`node_commits.files` is
+    just a path list, no per-path status). Rather than fabricate a
+    deletion-detection mechanism (real git-diff capture is P3+ hook/
+    structure-layer scope, explicitly out of P2's bounds), `compute_tier`
+    accepts `has_deletions` as an explicit keyword defaulting to `False`
+    that nothing currently sets `True`. Documented here rather than
+    silently dropped, matching how the P2 prompt allows KPI fields like
+    `drift_pct`/`tokens_per_node` to be "stubbed/zero" pending their real
+    producers.
+
+20. **Gate 2's initial freeze computes risk tier via `core.risk`; a
+    re-approval after a criteria edit does not recompute it.**
+    `core.gates.approve_node` only calls `risk.compute_tier` when
+    `node["criteria_hash"] is None` (i.e. this is the node's first-ever
+    freeze). On a re-approval (the node was frozen once before --
+    `edit_criteria` pulled it back to `pending` and bumped `risk_tier` to
+    `high`), `approve_node` leaves `risk_tier` untouched. This preserves
+    P1's existing, already-tested guarantee
+    (`tests/test_gates.py::test_criteria_edit_after_freeze_retiers_and_blocks_start`)
+    that `risk_tier` stays `high` through re-approval, and is required by
+    P2 acceptance #4: recomputing from diff signals on every approval
+    would let an unrelated, small diff silently downgrade a
+    criteria-edit-forced `high` back to `low`.
+
+21. **`core.nodes.done`'s tier-gated review path only activates when
+    `config` is passed; `config=None` preserves P0/P1's unconditional
+    `in_progress -> review -> done`.** P1's `nodes.done` was documented as
+    "P0 simplification... criteria evaluation and human review ship P1"
+    but P1 didn't actually add real gating either -- every existing test
+    (`tests/test_idempotency.py`, `tests/test_rebuild_property.py`) calls
+    `done()` without a config and asserts it lands on `done` immediately.
+    Changing `done`'s default behavior would have silently broken those.
+    Instead `done` grew an optional `config` parameter: omitted, it's
+    byte-for-byte the old behavior; supplied (CLI and API always supply
+    it, since both already load config on every invocation), it routes
+    through `core.risk` and can stop at `review`. This is the "smallest
+    correct change" reading of formalizing done -> review for P2 without
+    touching an already-tested, already-relied-upon P0/P1 code path.
+
+22. **`review.auto_approved` / `review.awaiting` events are not
+    `node.`-prefixed.** `core.rebuild.rebuild_state` folds any event whose
+    `type` starts with `"node."` into the replayed `nodes` table by
+    reading `payload["id"]` and treating the payload as a full row
+    snapshot (see `rebuild.py`'s docstring: "every mutation... appends an
+    event whose payload is a full snapshot of the row"). The new P2
+    metadata events (`{"tier": ..., "flagged": ...}`) are not full-row
+    snapshots, so naming them `node.auto_approved` / `node.awaiting_review`
+    would make `rebuild` crash with `KeyError: 'id'` the first time a
+    gated `done()` call ran under a property/replay test -- exactly the
+    "P1 had to fix this twice" replay pitfall the P2 prompt called out by
+    name. Renamed to `review.auto_approved` / `review.awaiting` (a new,
+    unclaimed event-type prefix) instead; `tests/test_review.py::test_rebuild_matches_live_through_gated_review_flow`
+    covers this.
+
+23. **Human approval of `review -> done` / `review -> in_progress`
+    passes the node's own `owner` as the state machine's lease-check
+    identity, not the human's identity.** `state_machine.TRANSITIONS`
+    marks both edges `requires_owner=True`, meaning "the acting identity
+    must equal `nodes.owner`" -- a rule designed for *agent* leases, not
+    human approval. `core.gates.approve_spec`/`approve_node` already
+    established the pattern of separating `lease_actor` (used only for
+    the state-machine check) from `event_actor_role` (what's actually
+    recorded in `events.actor`) via `nodes.ready`, where it's moot because
+    those edges don't require an owner. `nodes.approve_review` /
+    `reject_review` extend the same separation to edges that *do* require
+    one: they pass `lease_actor=node["owner"]` (trivially satisfying the
+    check, since a human approver isn't the lease holder) while recording
+    the real actor (`"human"` by default) in the event. Authorization for
+    "is this human allowed to approve" is the session token
+    (`core.daemon.verify_session`) checked at the API layer, not the
+    node's lease -- these are deliberately different security properties.
+
+24. **Session token lives at `<repo>/.muvue/session`, not
+    `~/.muvue/session`.** Plan section 2's file layout lists
+    `~/.muvue/session` (home directory, alongside the strict-mode
+    airlocks). P0's `repo_init.py`, written before P2 existed, already
+    added `.muvue/session` to the *repo's* `.gitignore` -- i.e. the
+    established precedent in this codebase is repo-scoped, not
+    machine-global. Per "read before writing... match the surrounding
+    code's... pattern," `core.daemon` follows P0's existing artifact over
+    the plan doc's abstract layout: one token file per repo, which is
+    also simpler (no repo-hash keying needed) and matches "one daemon per
+    repo" more directly than a single machine-wide file would.
+
+25. **SSE holds one `sqlite3.Connection` open for the life of the
+    stream, not a fresh connection per poll.** Verified independently of
+    FastAPI/Starlette (a standalone script opening/closing a new
+    connection between two `PRAGMA data_version` reads): a **new**
+    connection does not reliably observe `data_version` bumps from writes
+    committed by other connections, while the **same** connection,
+    polled repeatedly, does -- this matches SQLite's actual documented
+    semantics for `data_version` ("detect changes... made by another
+    database connection" is evaluated relative to a specific connection's
+    read state, not the file on disk). The original per-poll-connection
+    design would have made the dashboard's live-update mechanism
+    silently unreliable. Fixed before it shipped; see
+    `tests/test_sse.py` and the CHANGELOG "Fixed" entry. This does not
+    reintroduce in-memory daemon state (plan section 1): the held
+    connection carries no application state, and losing it on a daemon
+    restart costs nothing (a reconnecting dashboard just opens a new SSE
+    stream).
+
+26. **`pause`/`resume` are implemented for real in P2 (not left as CLI
+    stubs), scoped to what P2 owns.** Plan section 5's "Emergency stop"
+    also says `pause` "kills runner processes" -- there is no runner
+    yet (P5), so that part is necessarily out of scope. What P2 *can* do
+    without the runner is real: `POST /projects/{id}/pause` flips
+    `project.phase` to `paused` via the existing `projects.set_phase`,
+    and `nodes.start` now refuses while `phase` is `paused` (extending
+    its existing `planning`-phase refusal). `resume` reverses it. This
+    isn't scope creep -- pause/resume are explicitly named in plan
+    section 4's human-verb list and section 8's dashboard views ("pause
+    button"), and the mechanism P2 does own (refusing `start`) is a
+    faithful, minimal slice of the full "emergency stop" behavior.

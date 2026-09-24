@@ -160,6 +160,91 @@ Real in P1: `approve` (spec/node/gate2/revision targets above). Stubs:
 `reject`, `ack`, `merge`, `close`, `pause`, `resume`, `handoff`, `import`.
 Never exposed over MCP.
 
+### Risk tiers (P2)
+
+`core.risk.compute_tier` (plan section 5) is the single source of truth,
+used by `core.gates.approve_node` (initial freeze only -- a re-approval
+after a criteria edit never recomputes down, see below) and by
+`core.nodes.done` when called with `config`:
+
+- `criteria_edited=True` or `has_deletions=True` -> `high` unconditionally.
+- Any `predicted_touches` path matches `risk.globs` -> `high`.
+- Touch count over `risk.max_diff_lines` -> `high`; over
+  `planning.max_files_per_task` -> `medium`; else `low`.
+- `core.risk.max_tier(a, b)` merges two tiers, keeping the more severe --
+  used so a `done`-time diff-signal recompute can never downgrade a tier a
+  criteria edit already forced to `high` (P2 acceptance #4).
+- `core.risk.is_flagged` -- true if any predicted touch looks test-shaped.
+  "Diffs touching test files or criteria are always flagged" (plan
+  section 5): always overrides auto-approval regardless of tier.
+
+### `done -> review` gating (P2)
+
+`core.nodes.done(..., config=None)`: with `config=None` (every P0/P1 call
+site), behavior is unchanged -- unconditional `in_progress -> review ->
+done`. With `config` given (CLI and API always pass it), the node is
+routed through `core.risk`: `low` tier and unflagged auto-approves
+straight through to `done` (records a `review.auto_approved` event, actor
+`daemon`); otherwise the node stops at `review` (records a
+`review.awaiting` event) and needs `core.nodes.approve_review` (human
+`review -> done`, logs `metric.rubber_stamp` if under 10s elapsed since
+entering `review`) or `core.nodes.reject_review` (`review -> in_progress`
++ a `feedback` note).
+
+Note: `review.auto_approved` / `review.awaiting` deliberately do **not**
+start with `node.` -- `rebuild.py` treats any `node.*` event's payload as
+a full node-row snapshot; these two are metadata-only payloads
+(`{"tier": ..., "flagged": ...}`), so a `node.`-prefixed name would break
+replay (`payload["id"]` KeyError). This is exactly the two-times-fixed
+replay pitfall the P2 prompt warned about.
+
+### Daemon and API (P2)
+
+`muvue serve [PATH] [--host] [--port]` (`core.daemon` + `muvue.api`):
+one daemon per repo, holds no in-memory state (plan section 1). On
+startup, before opening the socket: `core.daemon.reconcile_on_start`
+reverts every `in_progress` node whose `lease_until` is already past back
+to `ready` (`attempts + 1`; `failed` if that exhausts `max_attempts`),
+then drains the event queue (`events.acked_at`; P2's consumer is a
+documented no-op -- anchor-hashing/staleness are P3+ structure-layer
+work). A fresh session token is minted (`core.daemon.create_session`,
+written to `<repo>/.muvue/session`) and printed once.
+
+`muvue.api.create_app(repo_root, config)` mirrors the CLI verbs 1:1
+(FastAPI, OpenAPI at `/openapi.json` for free):
+
+- Ops/read (unauthenticated): `GET /healthz`, `GET /` (dashboard),
+  `GET /events/stream` (SSE, one connection held for the stream's
+  lifetime polling `PRAGMA data_version` -- see `docs/decisions.md` for
+  why a fresh connection per poll does not work), `GET /inbox`,
+  `GET /kpis`, `GET /projects`, `GET /projects/{id}`,
+  `GET /projects/{id}/revisions`, `GET /events`, `GET /nodes`,
+  `GET /nodes/{id}`, `GET /nodes/{id}/diff` (stub: committed files only,
+  no real diff capture until git integration ships), `GET
+  /nodes/{id}/logs` (stub: NDJSON of the node's own event history, no
+  live agent process until P5's runner).
+- Agent verbs (unauthenticated -- "agent verbs stay CLI/local", the API
+  exposes them for the dashboard/automation but doesn't gate them):
+  `POST /nodes/{id}/start[?agent=X]` (the `agent` query param is recorded
+  via a `node.agent_requested` event; nothing is spawned -- P5 scope),
+  `POST /nodes/{id}/done`, `POST /nodes/{id}/fail`, `POST
+  /nodes/{id}/ask`, `POST /questions/{id}/wait`, `POST
+  /nodes/{id}/replan`, `POST /projects/{id}/propose-revision`, `POST
+  /nodes/{id}/comment` (spec inline comments, reuses `feedback` notes).
+- Human verbs (plan section 4's "never exposed over MCP" -- the API does
+  expose them, gated instead by the session token per the P2 prompt):
+  `POST /nodes/{id}/approve` (`target ∈ {spec, node, gate2, revision,
+  review}`), `POST /nodes/{id}/reject`, `POST /events/{id}/ack`, `POST
+  /projects/{id}/pause`, `POST /projects/{id}/resume`, `POST
+  /projects/{id}/close`. Stubs: `POST /nodes/{id}/merge`, `POST
+  /nodes/{id}/handoff`, `POST /import`. All require `Authorization:
+  Bearer <token>` verified against `<repo>/.muvue/session`; missing or
+  invalid -> `401`.
+
+`pause`/`resume` are real: `projects.set_phase` to `paused`/`executing`.
+`nodes.start` now refuses while `project.phase` is `planning` **or**
+`paused` (plan section 5 "Emergency stop... refuses start").
+
 ## Idempotency
 
 `--request-id` dedupe window: 24 hours, scoped per (verb, request_id).
