@@ -1,0 +1,7 @@
+{
+  "name": "js-husky-fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "husky install"
+  }
+}

@@ -1,0 +1,73 @@
+"""P0 acceptance #2: replaying all `events` reproduces the live DB state.
+
+Uses randomized sequences of core operations (create/start/done/fail) as a
+lightweight property test (no extra dependency beyond the approved stack:
+stdlib `random` drives the sequence generation).
+"""
+
+import random
+from pathlib import Path
+
+import pytest
+
+from muvue.core import db as core_db
+from muvue.core import nodes, projects, rebuild
+
+
+@pytest.fixture
+def conn(tmp_path: Path):
+    c = core_db.init_db(tmp_path / "muvue.db")
+    yield c
+    c.close()
+
+
+def test_rebuild_matches_live_after_scripted_sequence(conn):
+    project = projects.create_project(conn, goal="rebuild test project")
+    n1 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t1", status="ready")
+    n2 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t2", status="ready")
+    n3 = nodes.create_node(conn, project_id=project["id"], kind="task", title="t3", status="ready")
+
+    nodes.start(conn, n1["id"], owner="alice")
+    nodes.done(conn, n1["id"], owner="alice")
+
+    nodes.start(conn, n2["id"], owner="bob")
+    nodes.fail(conn, n2["id"], owner="bob", lesson="flaky test", trigger="ci", do_instead="retry", scope="t2")
+
+    nodes.start(conn, n3["id"], owner="carol", request_id="dup-1")
+    nodes.start(conn, n3["id"], owner="carol", request_id="dup-1")  # duplicate, no-op
+
+    assert rebuild.diff_state(conn) == {}
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_rebuild_matches_live_after_random_sequence(conn, seed):
+    rng = random.Random(seed)
+    project = projects.create_project(conn, goal=f"seed-{seed}")
+    node_ids = [
+        nodes.create_node(
+            conn, project_id=project["id"], kind="task", title=f"n{i}", status="ready",
+            max_attempts=2,
+        )["id"]
+        for i in range(5)
+    ]
+    owner = "agent-x"
+    for node_id in node_ids:
+        action = rng.choice(["start_done", "start_fail_fail", "start_only"])
+        if action == "start_done":
+            nodes.start(conn, node_id, owner=owner)
+            nodes.done(conn, node_id, owner=owner)
+            if rng.random() < 0.5:
+                nodes.done(conn, node_id, owner=owner)  # redundant done, no-op
+        elif action == "start_fail_fail":
+            nodes.start(conn, node_id, owner=owner)
+            nodes.fail(conn, node_id, owner=owner, lesson="l1")
+            row = nodes.get_node(conn, node_id)
+            if row["status"] == "ready":
+                nodes.start(conn, node_id, owner=owner)
+                nodes.fail(conn, node_id, owner=owner, lesson="l2")
+        else:
+            nodes.start(conn, node_id, owner=owner)
+
+        assert rebuild.diff_state(conn) == {}, f"mismatch after acting on node {node_id}"
+
+    assert rebuild.diff_state(conn) == {}
