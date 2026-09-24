@@ -47,6 +47,7 @@ import sqlite3
 
 _PROJECT_COLUMNS = [
     "id", "goal", "phase", "budget_unit", "budget_limit", "spent", "created_at", "closed_at",
+    "branch",
 ]
 _NODE_COLUMNS = [
     "id", "project_id", "parent_id", "kind", "title", "body_md", "status",

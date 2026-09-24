@@ -45,6 +45,9 @@ def run_migrate(repo_root: Path) -> int:
                 conn, "nodes", "lease_expiries", "INTEGER NOT NULL DEFAULT 0"
             )
             _add_column_if_missing(conn, "events", "actor_evidence", "TEXT")
+            # SCHEMA_VERSION 4 -> 5 (v4 section 5): projects.branch,
+            # branch-coherence check.
+            _add_column_if_missing(conn, "projects", "branch", "TEXT")
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

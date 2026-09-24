@@ -18,9 +18,15 @@ Process graph tables per plan section 3, plus empty structure-graph tables
   new `actual_touches` table (written from commits by
   core.hooks.handle_post_commit, drift-vs-`predicted_touches` KPI is
   future work).
+- SCHEMA_VERSION 4 -> 5 (v4 section 5, branch-coherence check):
+  `projects.branch` -- the branch `core.gitutil.current_branch` reports
+  at `core.projects.create_project` time, `NULL` when the project wasn't
+  created with a `repo_root` (e.g. most unit tests, or a repo with no
+  git branch at all). `core.nodes.start` and `core.doctor.run_doctor`
+  both compare the repo's *current* branch against this recorded one.
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -32,7 +38,8 @@ CREATE TABLE IF NOT EXISTS projects (
     budget_limit REAL NOT NULL DEFAULT 0,
     spent REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    closed_at TEXT
+    closed_at TEXT,
+    branch TEXT
 );
 
 -- v4 section 2/3: one row per (project, driver) -- "Budget is per driver,

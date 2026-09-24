@@ -447,6 +447,7 @@ def project_create(
     try:
         result = core.projects.create_project(
             conn, goal=goal, budget_unit=budget_unit, budget_limit=budget_limit,
+            repo_root=repo_root,
         )
     finally:
         conn.close()

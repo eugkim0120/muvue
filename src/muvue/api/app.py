@@ -564,6 +564,7 @@ def create_app(
                 result = core.nodes.start(
                     conn, node_id, owner=owner, request_id=request_id,
                     lease_minutes=config.planning.lease_minutes, actor_evidence="dashboard_token",
+                    config=config, repo_root=repo_root,
                 )
             except Exception as e:
                 _handle_core_error(e)

@@ -25,13 +25,14 @@ def conn(tmp_path: Path):
     c.close()
 
 
-def test_schema_version_is_4():
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_5():
+    assert SCHEMA_VERSION == 5
 
 
 def test_new_columns_and_tables_exist(conn):
     project_cols = {r["name"] for r in conn.execute("PRAGMA table_info(projects)")}
     assert "closed_at" in project_cols
+    assert "branch" in project_cols
 
     node_cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)")}
     assert "lease_expiries" in node_cols
@@ -54,6 +55,7 @@ def test_migrate_from_schema_version_3_adds_v4_columns(tmp_path: Path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = core_db.init_db(db_path)
     conn.execute("ALTER TABLE projects DROP COLUMN closed_at")
+    conn.execute("ALTER TABLE projects DROP COLUMN branch")
     conn.execute("ALTER TABLE nodes DROP COLUMN lease_expiries")
     conn.execute("ALTER TABLE events DROP COLUMN actor_evidence")
     conn.execute("UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'")
@@ -61,11 +63,12 @@ def test_migrate_from_schema_version_3_adds_v4_columns(tmp_path: Path):
     conn.close()
 
     version = migrate.run_migrate(tmp_path)
-    assert version == 4
+    assert version == 5
 
     conn2 = core_db.connect(db_path)
     try:
         assert "closed_at" in {r["name"] for r in conn2.execute("PRAGMA table_info(projects)")}
+        assert "branch" in {r["name"] for r in conn2.execute("PRAGMA table_info(projects)")}
         assert "lease_expiries" in {r["name"] for r in conn2.execute("PRAGMA table_info(nodes)")}
         assert "actor_evidence" in {r["name"] for r in conn2.execute("PRAGMA table_info(events)")}
     finally:

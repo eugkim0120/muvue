@@ -36,10 +36,11 @@ def _show(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.queries.show_node(conn, args["node_id"])
 
 
-def _start(conn: sqlite3.Connection, config, args: dict) -> dict:
+def _start(conn: sqlite3.Connection, config, args: dict, repo_root: Path | None = None) -> dict:
     return core.nodes.start(
         conn, args["node_id"], owner=args["owner"], request_id=args.get("request_id"),
         lease_minutes=config.planning.lease_minutes, actor_evidence="mcp",
+        config=config, repo_root=repo_root,
     )
 
 
@@ -131,7 +132,14 @@ def _call_tool(repo_root: Path, config, name: str, arguments: dict) -> dict:
     conn = core.db.connect(repo_root / ".muvue" / "muvue.db")
     try:
         try:
-            result = handler(conn, config, arguments)
+            # `start` alone also needs repo_root (v4 section 5, branch
+            # coherence -- "every start" -- and, pre-existing, strict-mode
+            # worktree binding; every other verb's core.* call takes
+            # (conn, ...) with no repo_root parameter at all).
+            if name == "start":
+                result = handler(conn, config, arguments, repo_root)
+            else:
+                result = handler(conn, config, arguments)
         except KeyError as e:
             raise McpError(-32602, f"missing required argument: {e}") from e
         except (

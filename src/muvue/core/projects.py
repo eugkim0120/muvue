@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from . import db as db_mod
 from . import events
+from . import gitutil
 
 
 def create_project(
@@ -16,12 +18,21 @@ def create_project(
     budget_limit: float = 0,
     actor: str = "human",
     actor_evidence: str = "tty",
+    repo_root: Path | None = None,
 ) -> sqlite3.Row:
+    """v4 section 5 (branch coherence): when `repo_root` is given, records
+    the branch currently checked out there into `projects.branch`, the
+    baseline `core.nodes.start`/`core.doctor.run_doctor` later compare
+    against. `None` (no `repo_root`, or `git` couldn't resolve a branch)
+    means "no baseline recorded" -- the coherence check is then a no-op
+    everywhere it's consulted, matching every pre-v4 call site's
+    behavior (most tests, and any caller that doesn't pass `repo_root`)."""
+    branch = gitutil.current_branch(repo_root) if repo_root is not None else None
     with db_mod.write_txn(conn):
         cur = conn.execute(
-            "INSERT INTO projects (goal, phase, budget_unit, budget_limit, spent) "
-            "VALUES (?, 'planning', ?, ?, 0)",
-            (goal, budget_unit, budget_limit),
+            "INSERT INTO projects (goal, phase, budget_unit, budget_limit, spent, branch) "
+            "VALUES (?, 'planning', ?, ?, 0, ?)",
+            (goal, budget_unit, budget_limit, branch),
         )
         project_id = cur.lastrowid
         row = get_project(conn, project_id)

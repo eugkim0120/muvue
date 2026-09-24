@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import adapters as adapters_mod
 from . import db as core_db
+from . import gitutil
 from .config import ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
 
@@ -370,6 +371,39 @@ def run_doctor(
                     f"node {row['id']}'s bound worktree is the main checkout {repo_root} "
                     "(strict mode must never point a node at main)"
                 )
+
+    # v4 section 5: branch coherence. "doctor and every start compare
+    # current HEAD against the branch recorded at project start. On
+    # divergence: warn in light mode, refuse in strict mode." `doctor`
+    # doesn't itself refuse anything (it's a diagnostic, not a gate) --
+    # the analogous outcome is `report.fail` (flips `ok` False, same as
+    # every other strict-mode-only hard check above) in strict mode vs.
+    # `report.warn` in light mode. Checked per active/executing/paused
+    # project with a recorded branch (a project created without a
+    # repo_root recorded none, and has nothing to compare).
+    if config is not None and db_path.exists():
+        conn = core_db.connect(db_path)
+        try:
+            coherence_rows = conn.execute(
+                "SELECT id, branch FROM projects WHERE phase IN "
+                "('planning', 'executing', 'paused') AND branch IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+        if coherence_rows:
+            current_branch = gitutil.current_branch(repo_root)
+            if current_branch is not None:
+                for row in coherence_rows:
+                    if current_branch != row["branch"]:
+                        msg = (
+                            f"project {row['id']} started on branch "
+                            f"{row['branch']!r}, repo is currently on "
+                            f"{current_branch!r} (branch coherence, v4 section 5)"
+                        )
+                        if config.mode == "strict":
+                            report.fail(msg)
+                        else:
+                            report.warn(msg)
 
     # v4 section 8a control 7: live daemon-security probes. Only makes
     # sense once config/DB are known-good (skipped above already fails
