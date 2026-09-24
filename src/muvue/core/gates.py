@@ -145,6 +145,32 @@ def approve_node(
             tier = risk_mod.compute_tier(conn, node, config)
             conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
             node = nodes_mod.get_node(conn, node_id)
+        # v4 section 5: "Hard-block (not warn) a medium- or high-tier task
+        # with no auto criterion -- otherwise an agent closes the loophole
+        # by declaring every criterion external and self-attesting."
+        # "No auto criterion" is read the same way lint_task's warning
+        # reads it (docs/decisions.md #12): criteria_mode != "auto" at the
+        # node-mode granularity, the schema stores one criteria_mode per
+        # node, not per individual criterion string. Checked here, on
+        # every approve_node call (initial Gate 2 freeze *and*
+        # re-approval after a criteria edit) using the node's current,
+        # already-computed risk_tier -- not just the initial-freeze branch
+        # above -- so a criteria edit that keeps the node non-auto and
+        # forces it to high (core.gates.edit_criteria) can't be waved
+        # through by re-approval either. Only applies to task/subtask
+        # nodes with a config (the same gate lint_task itself is scoped
+        # to); low tier is unaffected (still only warned by lint_task).
+        if (
+            node["kind"] in ("task", "subtask")
+            and node["risk_tier"] in ("medium", "high")
+            and node["criteria_mode"] != "auto"
+        ):
+            raise GateError(
+                f"node {node_id} is risk_tier={node['risk_tier']!r} with "
+                f"criteria_mode={node['criteria_mode']!r} (no auto criterion) -- "
+                "refused, not approved (v4 section 5 hard block; medium/high tier "
+                "tasks require at least one auto criterion)"
+            )
         frozen_hash = _hash_criteria(node["criteria_json"])
         conn.execute("UPDATE nodes SET criteria_hash = ? WHERE id = ?", (frozen_hash, node_id))
         row = nodes_mod.ready(conn, node_id, actor=actor, actor_evidence=actor_evidence)

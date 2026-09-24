@@ -155,6 +155,77 @@ def test_lint_silent_when_within_limits(conn, project, config):
     assert task["id"] not in result["warnings"]
 
 
+# -- v4 section 5: granularity lint hard block ------------------------------
+#
+# "Hard-block (not warn) a medium- or high-tier task with no `auto`
+# criterion -- otherwise an agent closes the loophole by declaring every
+# criterion `external` and self-attesting." Plan §11 P1 acceptance table:
+# "all-`external` medium-tier task is refused."
+
+
+def test_all_external_medium_tier_task_is_refused_at_gate2(conn, project, config):
+    """Acceptance bar from plan §11: touch count pushes the task to
+    medium tier (exceeds max_files_per_task), and every criterion is
+    non-auto (criteria_mode="external") -- Gate 2 approval must refuse,
+    not just warn."""
+    touches = [f"f{i}.py" for i in range(config.planning.max_files_per_task + 1)]
+    task = _decompose_one_task(conn, project, criteria_mode="external", touches=touches)
+    with pytest.raises(gates.GateError, match="risk_tier"):
+        gates.approve_gate2(conn, project["id"], config=config)
+    # refused, not partially approved: the node never left pending.
+    assert nodes.get_node(conn, task["id"])["status"] == "pending"
+
+
+def test_all_manual_high_tier_task_is_refused_at_gate2(conn, project, config):
+    """"any non-`auto`" -- manual is refused exactly like external."""
+    config.risk.globs = ["migrations/**"]
+    task = _decompose_one_task(
+        conn, project, criteria_mode="manual", touches=["migrations/0001_init.sql"]
+    )
+    with pytest.raises(gates.GateError):
+        gates.approve_gate2(conn, project["id"], config=config)
+
+
+def test_all_external_low_tier_task_is_only_warned_not_refused(conn, project, config):
+    """Not blocked below low tier (config's own
+    `require_auto_criterion_above_tier = "low"` framing, and v4's own
+    wording only names medium/high) -- matches the pre-existing lint
+    warning behavior exactly."""
+    task = _decompose_one_task(conn, project, criteria_mode="external", touches=["a.py"])
+    result = gates.approve_gate2(conn, project["id"], config=config)
+    assert task["id"] in result["warnings"]
+    assert nodes.get_node(conn, task["id"])["status"] == "ready"
+
+
+def test_medium_tier_task_with_one_auto_criterion_is_approved_cleanly(conn, project, config):
+    """A single `auto`-mode node (the schema's per-node criteria_mode,
+    not per-criterion-string -- docs/decisions.md #12) is enough to clear
+    the hard block, even at medium/high tier."""
+    touches = [f"f{i}.py" for i in range(config.planning.max_files_per_task + 1)]
+    task = _decompose_one_task(conn, project, criteria_mode="auto", touches=touches)
+    result = gates.approve_gate2(conn, project["id"], config=config)
+    assert task["id"] not in result["warnings"] or not any(
+        "auto" in w for w in result["warnings"].get(task["id"], [])
+    )
+    assert nodes.get_node(conn, task["id"])["status"] == "ready"
+    assert nodes.get_node(conn, task["id"])["risk_tier"] == "medium"
+
+
+def test_hard_block_also_applies_on_reapproval_after_criteria_edit(conn, project, config):
+    """A criteria edit forces risk_tier to 'high' (core.gates.
+    edit_criteria) and pulls the node back to pending for re-approval.
+    If the node is still non-auto, re-approval must hit the same hard
+    block -- otherwise the loophole reopens via the edit path instead of
+    the initial-freeze path."""
+    task = _decompose_one_task(conn, project, criteria_mode="external", touches=["a.py"])
+    gates.approve_gate2(conn, project["id"], config=config)  # low tier, only warned
+    gates.edit_criteria(conn, task["id"], criteria_json='["passes tests", "extra"]')
+    assert nodes.get_node(conn, task["id"])["risk_tier"] == "high"
+    assert nodes.get_node(conn, task["id"])["status"] == "pending"
+    with pytest.raises(gates.GateError):
+        gates.approve_node(conn, task["id"], config=config)
+
+
 # -- Gate 1 -------------------------------------------------------------
 
 
