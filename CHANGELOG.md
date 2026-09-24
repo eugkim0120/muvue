@@ -52,6 +52,62 @@ string matching to `post-commit` detection plus strict-mode
   security, budgets, or `--parallel` -- out of scope, owned by other
   (some concurrent) sessions.
 
+## [Unreleased] - v4 §9: structure commits via a `muvue/structure` ref (changelog item 7)
+
+Branch `feat/v4-structure-ref-commits`, built on §1.2/§3, §4a, §8a, the
+§5 enforcement deltas, and the runner/budget deltas. v4 §9 / changelog
+item 7: "structure commits via `muvue/structure` ref and a temporary
+index instead of committing to a checked-out `main`."
+
+### Changed
+- **`core.close.close_project` no longer commits `.muvue/components.json`
+  / `.muvue/decisions.json` directly onto whatever branch `repo_root` has
+  checked out.** The P6/v3-era implementation ran a plain `git add` +
+  `git commit` on the repo's real working tree and index, which races the
+  user's own uncommitted work and index lock (v4 §9's own framing of the
+  defect). Instead, `close_project` now builds the structure commit with
+  `core.close._write_structure_commit`: a temporary index
+  (`GIT_INDEX_FILE`, a fresh `tempfile.mkstemp()` path per call) seeded
+  from `refs/heads/muvue/structure`'s current tree (or `HEAD`'s tree, on
+  the first-ever structure commit), with the two JSON files' new content
+  written straight into git's object database via `git hash-object -w
+  --stdin` -- `repo_root`'s real `.git/index` and working tree are never
+  read or written by this step. The resulting commit lands on
+  `refs/heads/muvue/structure` via a compare-and-swap `git update-ref`
+  (decision #104).
+- **`main` is fast-forwarded only when it's genuinely safe.**
+  `core.close._maybe_fast_forward_main` fast-forwards `main` (`git merge
+  --ff-only refs/heads/muvue/structure`, decision #102) only when
+  `repo_root`'s checked-out branch is literally `main` *and* `git status
+  --porcelain` is empty. In every other case (a different branch checked
+  out, or `main` but dirty), `main` and the working tree are left
+  completely untouched, and `close_project` records an unacked
+  `inbox.structure_update_ready` event (payload: `ref`, `sha`, `reason`,
+  a human-readable `message`) describing where the structure commit
+  landed and that it needs a manual `git merge refs/heads/muvue/structure`
+  or a PR.
+- **`close_project`'s return dict gained `structure_ref`, `structure_sha`,
+  `fast_forwarded`, and `inbox_event_id`** (the last `None` when a
+  fast-forward happened). `components_path`/`decisions_path` are still
+  returned (the intended `repo_root/.muvue/{components,decisions}.json`
+  paths) but the files at those paths now only actually exist on disk
+  when `fast_forwarded` is `True` -- callers that need the diff content
+  regardless of fast-forward outcome should read `diff_committed` from
+  the same result, or `git show refs/heads/muvue/structure:.muvue/components.json`.
+
+### Tests
+- `tests/test_close.py`: new `test_structure_commit_never_touches_real_index_or_working_tree`
+  (direct unit test of `_write_structure_commit` against a repo with real
+  staged *and* unstaged uncommitted changes, asserting byte-identical
+  `git status --porcelain` and file content before/after),
+  `test_close_project_clean_main_fast_forwards`,
+  `test_close_project_non_main_branch_leaves_inbox_item`,
+  `test_close_project_dirty_main_leaves_inbox_item_and_working_tree_untouched`.
+  The pre-existing P6 `test_close_project_confirmed_writes_and_commits`
+  is kept and still passes unchanged in outcome (its fixture repo is on
+  `main` with a clean tree, so it hits the fast-forward path), with
+  updated assertions/docstring making the mechanism change explicit
+  (decisions #106, #107 cover the fixture changes this required).
 ## [Unreleased] - v4 §2/§6/P5: per-driver budgets, --parallel restriction, rate-limit wait timeout
 
 Branch `feat/v4-runner-budget-deltas`, built on §1.2/§3 (txn discipline,
