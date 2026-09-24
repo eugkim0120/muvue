@@ -1,5 +1,8 @@
 """P2 acceptance #2: expired leases revert to ready (+attempts) on
-reconcile-on-start. Also covers queue draining and session tokens."""
+reconcile-on-start. Also covers queue draining and the in-memory
+session token (`SessionManager`, v4 section 8a control 5/6 -- see
+tests/test_daemon_security.py for the live-daemon HTTP-layer coverage
+of the daemon security controls themselves)."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -126,30 +129,66 @@ def test_process_queue_marks_events_acked(conn, project):
     assert unacked_after == 0
 
 
-# -- session tokens ---------------------------------------------------------
+# -- session tokens (v4 section 8a controls 5/6: in-memory only) -----------
 
 
-def test_session_token_round_trips(tmp_path):
-    token = daemon.create_session(tmp_path)
-    assert daemon.verify_session(tmp_path, token) is True
+def test_session_token_round_trips():
+    session = daemon.SessionManager()
+    assert session.verify_and_touch(session.token) is True
 
 
-def test_session_token_rejects_wrong_token(tmp_path):
-    daemon.create_session(tmp_path)
-    assert daemon.verify_session(tmp_path, "wrong-token") is False
+def test_session_token_rejects_wrong_token():
+    daemon.SessionManager()
+    session = daemon.SessionManager()
+    assert session.verify_and_touch("wrong-token") is False
 
 
-def test_session_token_rejects_missing_file(tmp_path):
-    assert daemon.verify_session(tmp_path, "anything") is False
+def test_session_token_rejects_none():
+    session = daemon.SessionManager()
+    assert session.verify_and_touch(None) is False
 
 
-def test_session_token_expires(tmp_path):
+def test_session_token_is_256_bits_of_entropy():
+    """`secrets.token_urlsafe(32)` -- 32 random bytes, base64url-encoded
+    (v4 section 8a control 5: "mints a random 256-bit token")."""
+    session = daemon.SessionManager()
+    assert len(session.token) >= 40  # base64url(32 bytes) is 43 chars
+
+
+def test_session_idle_timeout_expires_after_8h_of_no_activity():
+    """Control 6: "idle sessions expire after 8h" -- idle since the
+    *last request*, not since issuance: a token used just under the
+    idle window keeps working; one left untouched past it stops."""
     now = datetime.now(timezone.utc)
-    token = daemon.create_session(tmp_path, ttl_minutes=5, now=now)
-    still_valid = daemon.verify_session(tmp_path, token, now=now + timedelta(minutes=4))
-    expired = daemon.verify_session(tmp_path, token, now=now + timedelta(minutes=6))
+    session = daemon.SessionManager(now=now)
+    still_valid = session.verify_and_touch(session.token, now=now + timedelta(hours=7, minutes=59))
     assert still_valid is True
+    # `verify_and_touch` above already reset the idle clock to
+    # now+7:59; a further 8h+ of *no* activity from that point expires it.
+    expired = session.verify_and_touch(
+        session.token, now=now + timedelta(hours=7, minutes=59) + timedelta(hours=8, minutes=1)
+    )
     assert expired is False
+
+
+def test_session_idle_timeout_resets_on_each_successful_use():
+    """A session touched every few hours never idles out, because the
+    clock resets on each successful verify -- this is an *idle* timeout,
+    not an absolute one (docs/decisions.md documents this choice)."""
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    for hours in range(1, 20):
+        ok = session.verify_and_touch(session.token, now=now + timedelta(hours=hours))
+        assert ok is True, f"expected still-valid at +{hours}h (touched every 1h)"
+
+
+def test_new_session_manager_invalidates_old_token():
+    """Control 6: "token rotates on `serve` restart" -- a fresh
+    `SessionManager` (what a restarted `serve` constructs) has no
+    knowledge of a previous instance's token at all."""
+    old = daemon.SessionManager()
+    new = daemon.SessionManager()
+    assert new.verify_and_touch(old.token) is False
 
 
 def test_rebuild_matches_live_after_reconcile(conn, project):
@@ -159,9 +198,3 @@ def test_rebuild_matches_live_after_reconcile(conn, project):
     nodes.start(conn, task["id"], owner="agent-1", lease_minutes=-1)
     daemon.reconcile_leases(conn)
     assert rebuild.diff_state(conn) == {}
-
-
-def test_new_session_invalidates_old_token(tmp_path):
-    old = daemon.create_session(tmp_path)
-    daemon.create_session(tmp_path)
-    assert daemon.verify_session(tmp_path, old) is False

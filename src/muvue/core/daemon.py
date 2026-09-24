@@ -1,38 +1,41 @@
 """Daemon mechanics (plan section 8): reconcile-on-start (lease expiry),
-event-queue processing, and session tokens gating the human-verb API
-endpoints.
+event-queue processing, and the in-memory session token that gates
+mutating API endpoints (plan v4 section 8a, control 5).
 
-Holds no in-memory state (plan section 1, principle 1): every function
-here takes a fresh `sqlite3.Connection` and reads/writes only through it
-or, for the session token, a small file under `<repo>/.muvue/session`.
-`core.daemon` is itself part of the single write path -- it never issues
-raw SQL that `muvue.core.nodes`/`events` don't already own; reconcile
-reuses `nodes._apply_transition` exactly like `nodes.fail` does.
+Holds no *reconstructible* state outside the DB (plan section 1,
+principle 1) -- except the session token itself, which v4 section 8a
+explicitly requires to live in memory only: "Nothing token-shaped is
+written to disk. v3's `~/.muvue/session` file is removed: an agent can
+read it and acquire every human verb." `SessionManager` is therefore a
+deliberate, documented exception to "no in-memory daemon state": it is
+*not* reconstructible from the DB by design (a restart must mint a
+*new* token -- control 6, "token rotates on `serve` restart"), and it
+must never be persisted anywhere a same-user process could read it
+un-authenticated (a file, the DB, a log line). See docs/threat-model.md
+and docs/decisions.md #84.
+
+`core.daemon` is itself part of the single write path for everything
+else -- it never issues raw SQL that `muvue.core.nodes`/`events` don't
+already own; reconcile reuses `nodes._apply_transition` exactly like
+`nodes.fail` does.
 """
 
 from __future__ import annotations
 
-import json
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from . import db as db_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
-SESSION_RELPATH = ".muvue/session"
-DEFAULT_TOKEN_TTL_MINUTES = 480  # 8h: "short-lived" per plan section 2
+DEFAULT_IDLE_TIMEOUT_MINUTES = 480  # 8h idle expiry, v4 section 8a control 6
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _parse(ts: str) -> datetime:
-    return datetime.strptime(ts, TS_FORMAT).replace(tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------
@@ -117,48 +120,41 @@ def reconcile_on_start(conn: sqlite3.Connection, *, now: datetime | None = None)
 
 
 # --------------------------------------------------------------------------
-# Session tokens (plan section 2 lists `~/.muvue/session`; P0's
-# repo_init.py already gitignores `<repo>/.muvue/session` -- see
-# docs/decisions.md for why this module follows that established,
-# repo-scoped precedent instead).
+# Session token (plan v4 section 8a, controls 5/6): minted fresh in
+# memory on every `serve` start, never written to disk. Idle sessions
+# (no successful `verify_and_touch` call) expire after
+# `DEFAULT_IDLE_TIMEOUT_MINUTES` (control 6: "idle sessions expire after
+# 8h"; "idle" is read literally as *since the last request*, not since
+# issuance -- see docs/decisions.md #85). A brand-new token that has
+# never been used is treated as freshly "active" as of the moment
+# `SessionManager` is constructed, so a `serve` process that starts and
+# is never touched still expires 8h after startup rather than living
+# forever.
 # --------------------------------------------------------------------------
 
 
-def session_path(repo_root: Path) -> Path:
-    return Path(repo_root) / SESSION_RELPATH
+class SessionManager:
+    """One instance per `muvue serve` process. Holds exactly one live
+    token (plan section 2: "one human session is meaningful per repo at
+    a time"); constructing a new instance (i.e. restarting `serve`)
+    mints a fresh 256-bit token and invalidates the previous one purely
+    by no longer existing -- there is nothing on disk to invalidate."""
 
+    def __init__(self, *, idle_timeout_minutes: int = DEFAULT_IDLE_TIMEOUT_MINUTES,
+                 now: datetime | None = None) -> None:
+        self.token: str = secrets.token_urlsafe(32)  # 256 bits
+        self.idle_timeout_minutes = idle_timeout_minutes
+        self.last_activity: datetime = now or _now()
 
-def create_session(
-    repo_root: Path, *, ttl_minutes: int = DEFAULT_TOKEN_TTL_MINUTES, now: datetime | None = None
-) -> str:
-    """Mint a new session token, overwriting any previous one (only one
-    human session is meaningful per repo at a time)."""
-    token = secrets.token_urlsafe(32)
-    expires_at = ((now or _now()) + timedelta(minutes=ttl_minutes)).strftime(TS_FORMAT)
-    path = session_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"token": token, "expires_at": expires_at}))
-    try:
-        path.chmod(0o600)
-    except OSError:  # pragma: no cover - platform-dependent, not fatal
-        pass
-    return token
-
-
-def verify_session(repo_root: Path, token: str | None, *, now: datetime | None = None) -> bool:
-    if not token:
-        return False
-    path = session_path(repo_root)
-    if not path.exists():
-        return False
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return False
-    if not secrets.compare_digest(token, data.get("token", "")):
-        return False
-    try:
-        expires_at = _parse(data["expires_at"])
-    except (KeyError, ValueError):
-        return False
-    return (now or _now()) < expires_at
+    def verify_and_touch(self, token: str | None, *, now: datetime | None = None) -> bool:
+        """Constant-time compare against the live token; on success,
+        resets the idle clock. Never logged, never written anywhere."""
+        if not token:
+            return False
+        if not secrets.compare_digest(token, self.token):
+            return False
+        current = now or _now()
+        if current - self.last_activity > timedelta(minutes=self.idle_timeout_minutes):
+            return False
+        self.last_activity = current
+        return True
