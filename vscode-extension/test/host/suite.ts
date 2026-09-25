@@ -67,6 +67,13 @@ export async function run(): Promise<void> {
   assert.strictEqual(tokens.length, 0, "the 403 did not trigger a second token prompt");
   assert.strictEqual((await daemonGet(`${url}/nodes/${nodeId}`, token)).node.status, "done");
 
+  // An id the daemon doesn't know is reported, not approved or thrown.
+  ids.push("999999");
+  await vscode.commands.executeCommand("muvue.approveNode");
+  assert.strictEqual(errors.length, 1, `expected one error, got ${JSON.stringify(errors)}`);
+  assert.match(errors[0], /GET \/nodes\/999999 -> 404/);
+  errors.length = 0;
+
   await vscode.commands.executeCommand("muvue.openDashboard");
   await waitForRequests(`${url}/__log`, ["POST /auth/nonce", "GET /", "POST /auth/exchange", "GET /events/stream"], 30000);
 

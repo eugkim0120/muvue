@@ -65,7 +65,10 @@ muvue doctor        # checks the install, and live-probes the daemon's security 
 At `done`, muvue runs `[checks] test` and `lint` from
 `.muvue/config.toml` (default `pytest -q` and `ruff check .`). Set them to
 commands that work in your repository first. A failing check sends the
-node to review instead of approving it.
+node to review instead of approving it. Likewise `worktree_setup`
+(default `uv sync`) runs in every new node worktree in strict mode or
+with `worktree_mode = "per_node"`; set it to your project's setup
+command, or to `""`.
 
 Then plan, approve, run and review:
 
