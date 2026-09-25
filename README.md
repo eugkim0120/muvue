@@ -21,15 +21,29 @@ node's frozen acceptance criteria are met.
 
 ## Install
 
+No clone needed — pick one:
+
 ```bash
-git clone <this repo> && cd muvue
+pip install muvue          # from PyPI
+pipx install muvue         # isolated, puts `muvue` on PATH
+uvx muvue --help           # try it without installing anything
+uv tool install muvue      # isolated, uv-managed
+```
+
+Installing gives you two console scripts: `muvue` (the CLI) and
+`muvue-fake-agent` (a scripted driver for testing, no vendor subscription
+required).
+
+### From source
+
+```bash
+git clone https://github.com/eugkim0120/muvue && cd muvue
 uv sync
 ```
 
-This installs two console scripts into the project's venv: `muvue` (the CLI)
-and `muvue-fake-agent` (a scripted driver for testing, with no vendor
-subscription required). Run either via `uv run`, or `uv pip install -e .`
-into an active venv to get `muvue` directly on `PATH`.
+Run via `uv run muvue ...`, or `uv pip install -e .` into an active venv to
+get `muvue` directly on `PATH`. Also installable straight from GitHub without
+cloning: `pipx install git+https://github.com/eugkim0120/muvue`.
 
 ## Quickstart
 

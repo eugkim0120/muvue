@@ -1,7 +1,7 @@
 [project]
 name = "muvue"
 version = "0.1.0"
-description = "Add your description here"
+description = "Run an AI coding agent's work as an auditable, gated state machine instead of a chat transcript"
 readme = "README.md"
 authors = [
     { name = "Eugene Kim", email = "eugkim0120@gmail.com" }
@@ -14,6 +14,18 @@ dependencies = [
     "uvicorn[standard]>=0.53.0",
 ]
 license = "MIT"
+keywords = ["ai-agents", "cli", "orchestration", "coding-agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/eugkim0120/muvue"
+Repository = "https://github.com/eugkim0120/muvue"
 
 [project.scripts]
 muvue = "muvue.cli.main:main"
