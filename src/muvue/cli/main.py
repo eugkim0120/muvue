@@ -179,6 +179,10 @@ def doctor(
 def migrate(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
     """Bring .muvue/muvue.db up to the current schema version."""
     repo_root = path.resolve()
+    db_path = repo_root / ".muvue" / "muvue.db"
+    if 0 < core.migrate.recorded_version(db_path) < core.schema.SCHEMA_VERSION:
+        # Upgrades drop columns; keep a copy to go back to.
+        typer.echo(f"backup: {_backup_db(repo_root)}")
     version = core.migrate.run_migrate(repo_root)
     typer.echo(f"schema_version={version}")
 
@@ -1309,6 +1313,7 @@ def _user_errors() -> tuple[type[Exception], ...]:
         core.actor.HumanOnly,
         core.strict.StrictModeError,
         core.config.ConfigError,
+        core.migrate.MigrateError,
     )
 
 

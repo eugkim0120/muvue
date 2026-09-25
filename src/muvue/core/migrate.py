@@ -32,9 +32,43 @@ def _drop_column_if_present(conn: sqlite3.Connection, table: str, column: str) -
         conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
+class MigrateError(Exception):
+    """The database can't be upgraded by this muvue."""
+
+
+def recorded_version(db_path: Path) -> int:
+    """The schema version a database records, read without changing it.
+    0 when none is recorded. Raises `MigrateError` for a value that
+    isn't a version number."""
+    conn = core_db.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:  # no schema_meta table yet
+        return 0
+    finally:
+        conn.close()
+    if row is None:
+        return 0
+    try:
+        return int(row["value"])
+    except ValueError:
+        raise MigrateError(
+            f"{db_path} records schema_version {row['value']!r}, which is not a version number"
+        ) from None
+
+
 def run_migrate(repo_root: Path) -> int:
-    """Returns the schema_version after migration."""
+    """Returns the schema_version after migration. Refuses, before
+    changing anything, a database a newer muvue wrote."""
     db_path = Path(repo_root) / ".muvue" / "muvue.db"
+    recorded = recorded_version(db_path)
+    if recorded > SCHEMA_VERSION:
+        raise MigrateError(
+            f"{db_path} is at schema version {recorded}, written by a newer muvue "
+            f"than this one (expects {SCHEMA_VERSION}); upgrade muvue"
+        )
     conn = core_db.init_db(db_path)  # re-applies CREATE TABLE IF NOT EXISTS
     try:
         current = core_db.get_schema_version(conn)

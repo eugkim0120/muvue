@@ -20,6 +20,7 @@ from . import adapters as adapters_mod
 from . import db as core_db
 from . import gitutil
 from . import hooks as hooks_mod
+from . import migrate as migrate_mod
 from . import runner as runner_mod
 from .config import PROTOCOL_VERSION, ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, gitignore_missing_entries, init_repo, repair_install
@@ -436,9 +437,12 @@ def run_doctor(
     if not db_path.exists():
         report.fail(f"{db_path} missing")
     else:
-        conn = core_db.connect(db_path)
         try:
-            version = core_db.get_schema_version(conn)
+            version = migrate_mod.recorded_version(db_path)
+        except migrate_mod.MigrateError as e:
+            report.fail(str(e))
+            version = None
+        if version is not None:
             if version == 0:
                 report.fail(f"{db_path} has no schema_version recorded")
             elif version < SCHEMA_VERSION:
@@ -451,8 +455,6 @@ def run_doctor(
                     f"{db_path} is at schema version {version}, written by a newer muvue "
                     f"than this one (expects {SCHEMA_VERSION}); upgrade muvue"
                 )
-        finally:
-            conn.close()
 
     # v4 section 4a: hook fast-path queue depth (`.muvue/queue.jsonl`,
     # `muvue._hook`'s spool -- see src/muvue/_hook.py). A deep queue
