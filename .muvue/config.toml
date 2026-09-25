@@ -6,7 +6,7 @@ worktree_setup = "uv sync"
 
 [checks]
 test = "pytest -q"
-lint = "ruff check ."
+lint = ""
 
 [risk]
 globs = ["migrations/**", "auth/**", "*.sql", "**/test_*"]

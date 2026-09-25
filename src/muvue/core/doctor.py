@@ -23,6 +23,7 @@ from . import hooks as hooks_mod
 from . import runner as runner_mod
 from .config import PROTOCOL_VERSION, ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
+from .schema import SCHEMA_VERSION
 
 
 QUEUE_DEPTH_WARN_THRESHOLD = 1000
@@ -440,6 +441,16 @@ def run_doctor(
             version = core_db.get_schema_version(conn)
             if version == 0:
                 report.fail(f"{db_path} has no schema_version recorded")
+            elif version < SCHEMA_VERSION:
+                report.fail(
+                    f"{db_path} is at schema version {version}, this muvue expects "
+                    f"{SCHEMA_VERSION}; run `muvue migrate`"
+                )
+            elif version > SCHEMA_VERSION:
+                report.fail(
+                    f"{db_path} is at schema version {version}, written by a newer muvue "
+                    f"than this one (expects {SCHEMA_VERSION}); upgrade muvue"
+                )
         finally:
             conn.close()
 
