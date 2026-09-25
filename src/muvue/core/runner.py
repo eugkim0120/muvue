@@ -32,6 +32,7 @@ from . import daemon as daemon_mod
 from . import db as core_db
 from . import drivers
 from . import events as events_mod
+from . import hooks as hooks_mod
 from . import nodes as nodes_mod
 from . import projects as projects_mod
 from . import runners as runners_mod
@@ -400,14 +401,24 @@ def _apply_rate_limit(
     return {"retry_at": retry_at, "wait_started_at": wait_started_at}
 
 
-def agent_prompt(node_id: int, brief_text: str) -> str:
+def agent_prompt(node_id: int, brief_text: str, *, checks=None) -> str:
     """What a headless agent receives on stdin: a short instruction, then
     the brief (plan section 6: "`run` spawns one agent CLI per ready node
-    with `brief` on stdin, fresh context")."""
+    with `brief` on stdin, fresh context"). `checks` names the commands
+    muvue runs at `done`, so the agent runs the same ones rather than
+    guessing (the live P5 run's agent tried `python -m pytest`)."""
+    check_line = ""
+    commands = [c for c in (getattr(checks, "test", ""), getattr(checks, "lint", "")) if c]
+    if commands:
+        check_line = (
+            "At done, muvue runs " + " and ".join(f"`{c}`" for c in commands)
+            + " in this checkout; run them yourself before committing. "
+        )
     return (
         f"You are an agent working on muvue node T{node_id} in this repository.\n"
         "Do the work the brief below describes, meeting its criteria. Commit your "
         f"changes with the trailer `Muvue-Node: {node_id}` in the commit message. "
+        f"{check_line}"
         "Do not run muvue human verbs (approve, merge, close). When finished, reply "
         "with a one-paragraph summary of what you changed.\n\n"
         f"{brief_text}"
@@ -459,11 +470,17 @@ def run_node(
     if started["noop"]:
         return {"node_id": node["id"], "agent": agent_name, "outcome": "noop"}
     node_row = started["node"]
-    brief_text = agent_prompt(node["id"], brief_mod.render_brief(conn, node["id"])["text"])
+    brief_text = agent_prompt(
+        node["id"], brief_mod.render_brief(conn, node["id"])["text"], checks=config.checks,
+    )
     cwd = node_row.get("worktree") or str(repo_root)
     log_path = Path(repo_root) / LOGS_RELDIR / f"{node['id']}.log"
 
     result = invoke(agent_name, agent_cfg, brief_text, Path(cwd), log_path=log_path)
+    # The agent's commits reach the DB through the hook spool. Without a
+    # daemon nothing drains it, so link them now: `done` judges the node
+    # by its actual touches and diff.
+    hooks_mod.drain_queue(conn, Path(repo_root))
     if _stop_requested.is_set():
         return _stopped(conn, node_row, owner, agent_name)
 

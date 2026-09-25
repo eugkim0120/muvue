@@ -140,7 +140,9 @@ def test_cli_project_create_has_no_budget_flags(tmp_path: Path):
     init_repo(tmp_path)
     out = _cli(tmp_path, "project", "create", "--goal", "g", "--budget-unit", "usd")
     assert out.returncode != 0
-    assert "--budget-unit" in (out.stderr + out.stdout)
+    from conftest import plain
+
+    assert "--budget-unit" in plain(out.stderr + out.stdout)
 
 
 # -- structured lessons ----------------------------------------------------------

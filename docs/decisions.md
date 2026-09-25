@@ -2109,3 +2109,32 @@ reading here. Real `decisions` table entries start once dogfooding begins
     through `reconcile_rate_limits` once `retry_at` passes, and is
     started from there; nothing legitimate called `start` on a blocked
     node.
+
+149. **`muvue run` drains the hook spool after each driver session.**
+    The live P5 run's agent committed with the node trailer, but the
+    commit sat in `.muvue/queue.jsonl`: the post-commit hook only
+    spools, and without a daemon the next CLI call is what drains it.
+    `done` then judged the node with no actual touches, no diff lines
+    and no linked commit. The runner now drains right after the driver
+    returns, before `done`. In `per_node` and strict worktrees the hook
+    finds no `.muvue/` and fails open, so those commits are still linked
+    only when their branch merges. That is a remaining gap, noted in
+    the W12 report.
+
+150. **The agent prompt names the `[checks]` commands.** muvue runs
+    `[checks] test` and `lint` at `done` (#127), but never told the
+    agent what they were. The live agent guessed `python -m pytest`,
+    which the configured allow-list denied, so it committed without
+    running the tests. The prompt now says which commands muvue runs, so
+    the agent runs the same ones.
+
+151. **`claude_stream_json` reads the recorded format, and counts cached
+    prompt tokens.** On the recorded session the old parser gave
+    `model = None` and `in_tokens = 18` for a session that processed
+    about 406k prompt tokens. The model now comes from `modelUsage` or
+    `system/init`. `in_tokens` is `input_tokens` plus cache reads and
+    cache writes, because a `tokens` budget should reflect what a
+    session actually consumed; `cost` still carries the priced view. An
+    error result is a rate limit when the last `rate_limit_event`
+    status isn't `allowed`, and `retry_after_seconds` comes from its
+    `resetsAt`.

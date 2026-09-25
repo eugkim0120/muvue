@@ -1,12 +1,22 @@
-# Vendor CLI sample output (SYNTHETIC / UNVERIFIED)
+# Vendor CLI sample output
 
-Every `.jsonl` file in this directory is **hand-constructed, not captured
-from a real vendor CLI invocation**. This environment has no network
-access and no logged-in `claude`/`codex`/`gemini` CLI, so none of P5's
-`core.drivers` usage parsers (`claude_stream_json`, `codex_json`,
-`gemini_json`) could be tested against real recorded output, per plan
-section 10's "Driver parser tests against recorded CLI output samples for
-each vendor."
+`claude_stream_json_live_2_1_281.jsonl` is **recorded** from a real
+`claude -p --output-format stream-json --verbose` session (claude
+2.1.281, model `claude-sonnet-5`, 2026-09-25) during the live P5 run. It
+was sanitized before being committed:
+- `system/hook_*` events were removed, because they carry the local
+  user's own hook output;
+- the `system/init` event was cut down to its model and version fields;
+- `session_id`, `uuid` and `request_id` were removed;
+- thinking text and signatures were blanked;
+- local paths were replaced with `/repo`.
+
+Every other `.jsonl` file here is **hand-constructed, not captured from a
+real vendor CLI invocation**. When they were written, this environment
+had no logged-in vendor CLI. Codex is still logged out and Gemini isn't
+installed, so the `codex_json` and `gemini_json` parsers have not been
+tested against real recorded output, as plan section 10 asks ("Driver
+parser tests against recorded CLI output samples for each vendor").
 
 These samples instead reconstruct each vendor's *documented* output
 convention as best effort, from memory, at the time of writing

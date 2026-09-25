@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -70,3 +71,13 @@ def git_init_with_commit(repo: Path) -> None:
     }
     for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "initial"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(text: str) -> str:
+    """CLI output without terminal styling. Rich colours Typer's help and
+    errors when it detects CI (e.g. `GITHUB_ACTIONS`), which splits a flag
+    such as `--request-id` across escape codes."""
+    return _ANSI.sub("", text)

@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W11: live run against claude
+
+### Verified
+- **P5 against claude 2.1.281**, subscription-authenticated, in a
+  throwaway repository. Details are in `docs/providers.md`.
+  - Six tasks ran through `muvue run`. The four high-risk ones stopped
+    at review for approval and the low-risk one auto-approved.
+  - `muvue pause` during a session stopped the runner and the claude
+    process, and returned the node to `ready` with `attempts`
+    unchanged.
+  - Lowering the driver's budget below its spend stopped the runner
+    scheduling it.
+  - No rate limit was hit, and approvals came from an agent session
+    (recorded as `agent_parent:claude`), not from a human at a
+    terminal.
+
+### Fixed
+- **The runner links the agent's commits before `done`** (#149). They
+  used to wait in the hook spool, so `done` saw no actual touches or
+  diff.
+- **The agent is told which `[checks]` commands muvue will run** (#150).
+- **`claude_stream_json` matches real output** (#151). It now reports
+  the model, counts cached prompt tokens, and takes `retry_after` from
+  `rate_limit_event`. It is tested against a sanitized recording.
+
 ## [Unreleased] - v4 delta closure, W10: tests, coverage, CI
 
 ### Added

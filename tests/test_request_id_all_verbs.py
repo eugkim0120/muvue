@@ -94,6 +94,9 @@ def test_duplicate_ack_and_pause_are_noops(repo):
                         "AND payload LIKE '%paused%'") == 1
 
 
+from conftest import plain  # noqa: E402
+
+
 @pytest.mark.parametrize("verb", [
     "project create", "spec", "decompose", "replan", "note", "approve", "reject", "answer",
     "ack", "merge", "close", "handoff", "import", "pause", "resume", "propose-revision",
@@ -101,7 +104,7 @@ def test_duplicate_ack_and_pause_are_noops(repo):
 def test_every_mutating_cli_verb_documents_request_id(verb):
     out = subprocess.run([sys.executable, "-m", "muvue", *verb.split(), "--help"],
                          capture_output=True, text=True)
-    assert "--request-id" in out.stdout, verb
+    assert "--request-id" in plain(out.stdout), verb
 
 
 def _ready_task(repo: Path) -> tuple[int, int]:

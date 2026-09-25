@@ -109,29 +109,51 @@ def parse_fake(stdout: str) -> DriverResult:
 
 
 def parse_claude_stream_json(stdout: str) -> DriverResult:
-    """SYNTHETIC/UNVERIFIED (see module docstring): reconstructed from
-    Claude Code's documented `-p --output-format stream-json` shape --
-    one JSON object per line, the terminal one `{"type": "result", ...}`
-    carrying `usage: {input_tokens, output_tokens}`, `total_cost_usd`,
-    `is_error`, and `result` (the final text). See
-    tests/fixtures/vendor_samples/claude_stream_json_*.jsonl."""
-    objs = [o for o in _json_lines(stdout) if o.get("type") == "result"]
-    if not objs:
+    """`claude -p --output-format stream-json --verbose`, checked against
+    claude 2.1.281 (tests/fixtures/vendor_samples/
+    claude_stream_json_live_2_1_281.jsonl). One JSON object per line:
+    `system/init` carries `model`, `rate_limit_event` carries
+    `rate_limit_info` (`status`, `resetsAt` epoch seconds), and the
+    terminal `result` carries `usage`, `modelUsage`, `total_cost_usd`,
+    `is_error` and the final text in `result`.
+
+    `in_tokens` counts the whole prompt, cached reads and cache writes
+    included: `usage.input_tokens` alone is only the uncached remainder
+    (18 of about 406k in the recorded run). An error result is a rate
+    limit when the last `rate_limit_event` isn't `allowed`, or its text
+    says so; `retry_after_seconds` comes from `resetsAt`."""
+    objs = _json_lines(stdout)
+    results = [o for o in objs if o.get("type") == "result"]
+    if not results:
         return DriverResult(status="failed", error="no stream-json result event found")
-    last = objs[-1]
+    last = results[-1]
     usage = last.get("usage") or {}
+    init = next((o for o in objs if o.get("type") == "system" and o.get("subtype") == "init"), {})
+    rate_info = next(
+        (o.get("rate_limit_info") or {} for o in reversed(objs) if o.get("type") == "rate_limit_event"), {},
+    )
+    model = last.get("model") or next(iter(last.get("modelUsage") or {}), None) or init.get("model")
     is_error = bool(last.get("is_error"))
     result_text = last.get("result", "") or ""
-    status = "done"
+    status, retry_after = "done", None
     if is_error:
-        status = "rate_limited" if _is_rate_limit_text(result_text) else "failed"
+        limited = not str(rate_info.get("status", "allowed")).startswith("allowed")
+        status = "rate_limited" if limited or _is_rate_limit_text(result_text) else "failed"
+        resets_at = rate_info.get("resetsAt")
+        if status == "rate_limited" and isinstance(resets_at, (int, float)):
+            retry_after = max(0, int(resets_at - time.time()))
+    in_tokens = sum(
+        int(usage.get(k) or 0)
+        for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    )
     return DriverResult(
         status=status,
         summary=result_text if not is_error else "",
-        in_tokens=int(usage.get("input_tokens", 0)),
+        in_tokens=in_tokens,
         out_tokens=int(usage.get("output_tokens", 0)),
         cost=float(last.get("total_cost_usd", 0.0)),
-        model=last.get("model"),
+        model=model,
+        retry_after_seconds=retry_after,
         error=result_text if is_error else "",
     )
 

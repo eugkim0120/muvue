@@ -42,6 +42,61 @@ def test_parse_claude_stream_json_rate_limited():
     assert result.status == "rate_limited"
 
 
+# -- recorded from claude 2.1.281 (the live P5 run, sanitized) ---------------
+
+LIVE_CLAUDE = "claude_stream_json_live_2_1_281.jsonl"
+
+
+def test_parse_claude_live_success():
+    result = drivers.parse_claude_stream_json(_read(LIVE_CLAUDE))
+    assert result.status == "done"
+    # The model is on `system/init` and in `modelUsage`, not on `result`.
+    assert result.model == "claude-sonnet-5"
+    # Prompt tokens include the cached ones: 18 uncached is 0.004% of the
+    # prompt the session actually processed.
+    assert result.in_tokens == 18 + 34654 + 371321
+    assert result.out_tokens == 1402
+    assert result.cost == pytest.approx(0.2269362)
+    assert result.summary.startswith("Added `add(a, b)`")
+
+
+def _live_with(result_patch: dict, rate_status: str) -> str:
+    """The live sample with its final events changed. Derived, not
+    recorded: no real rate limit was hit during the run."""
+    import json
+
+    lines = []
+    for line in _read(LIVE_CLAUDE).splitlines():
+        obj = json.loads(line)
+        if obj["type"] == "rate_limit_event":
+            obj["rate_limit_info"]["status"] = rate_status
+        if obj["type"] == "result":
+            obj.update(result_patch)
+        lines.append(json.dumps(obj))
+    return "\n".join(lines) + "\n"
+
+
+def test_parse_claude_live_shape_rate_limited_uses_reset_time(monkeypatch):
+    import json
+
+    info = next(
+        json.loads(l)["rate_limit_info"] for l in _read(LIVE_CLAUDE).splitlines()
+        if json.loads(l)["type"] == "rate_limit_event"
+    )
+    monkeypatch.setattr(drivers.time, "time", lambda: info["resetsAt"] - 600)
+    stdout = _live_with({"is_error": True, "subtype": "error", "result": "usage limit reached"}, "rejected")
+    result = drivers.parse_claude_stream_json(stdout)
+    assert result.status == "rate_limited"
+    assert result.retry_after_seconds == 600
+
+
+def test_parse_claude_live_shape_error_while_allowed_is_a_failure():
+    stdout = _live_with({"is_error": True, "subtype": "error_during_execution", "result": "tool crashed"}, "allowed")
+    result = drivers.parse_claude_stream_json(stdout)
+    assert result.status == "failed"
+    assert result.error == "tool crashed"
+
+
 def test_parse_codex_json_success():
     result = drivers.parse_codex_json(_read("codex_json_success.jsonl"))
     assert result.status == "done"

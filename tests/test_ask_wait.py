@@ -191,7 +191,9 @@ def test_cli_ask_default_is_required_and_default_ok_is_stored(tmp_path: Path):
 
     missing = cli("ask", str(task["id"]), "--question", "q?")
     assert missing.returncode != 0
-    assert "--default" in missing.stderr
+    from conftest import plain
+
+    assert "--default" in plain(missing.stderr)
     ok = cli("ask", str(task["id"]), "--question", "q?", "--default", "yes", "--default-ok")
     assert ok.returncode == 0, ok.stderr
     assert json.loads(ok.stdout)["question"]["default_ok"] == 1

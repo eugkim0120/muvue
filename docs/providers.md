@@ -31,12 +31,64 @@ binary, not only against docs:
 - Stop hooks receive `stop_hook_active`. muvue allows the stop when it
   is set, so a blocked Stop can't loop.
 
-Headless (`muvue run`): `claude -p --output-format stream-json
---verbose` reads the prompt from stdin. Without an interactive
-approver, tool use needs either `--allowedTools` or a permission mode
-set in the command. The live P5 run records the exact command that
-worked. Terms for unattended use under a subscription change. Check
-them before relying on unattended runs.
+### Headless (`muvue run`), run live on 2026-09-25
+
+Six nodes ran through `muvue run` against a subscription-authenticated
+claude 2.1.281 (model `claude-sonnet-5`), in a throwaway repository.
+This config worked:
+
+```toml
+[agents.claude]
+command = "claude -p --output-format stream-json --verbose --model sonnet --permission-mode acceptEdits --allowedTools 'Read Edit Write Glob Grep Bash(git add *) Bash(git commit *) Bash(git status*) Bash(git diff*) Bash(git log*) Bash(/abs/venv/bin/python -m pytest*)'"
+auth_check = "claude --version && claude auth status"
+usage_parser = "claude_stream_json"
+cost_model = "usd"
+pinned_version = ">=2.1"
+
+[agents.claude.budget]
+unit = "usd"
+limit = 8.0
+```
+
+What the run showed:
+
+- The prompt is read from stdin. `acceptEdits` plus `--allowedTools`
+  is enough for edits and commits without an approver. A `Bash` call
+  that doesn't match an allowed pattern is denied, not queued, and is
+  listed in the result's `permission_denials`. Compound commands
+  (`a; b`, `a && b`, pipes) count as one command and are usually
+  denied. The agent then retries the parts one at a time.
+- `muvue run` tells the agent the `[checks]` commands it will run at
+  `done`. Before that, the agent guessed `python -m pytest`, which the
+  allow-list didn't cover.
+- `--bare` would skip the user's hooks, but it limits auth to
+  `ANTHROPIC_API_KEY`, so a subscription login can't use it. Headless
+  sessions therefore run the user's own Claude Code hooks, and their
+  output appears in stream-json as `system/hook_*` events. That output
+  lands in `.muvue/logs/<node>.log` (gitignored). Don't share those
+  logs without reading them.
+- `claude auth status` prints JSON with no version, and it exited 0
+  while logged in. Chaining `claude --version` first lets `doctor`
+  check `pinned_version`. The logged-out exit code was not checked,
+  because logging out would have ended the run.
+- Every result reports `total_cost_usd` even under a subscription
+  (`modelUsage.*.costBasis` is `"list"`). A `usd` budget is therefore a
+  list-price budget. Six nodes cost $0.98 at list price.
+- Cost per node was mostly prompt caching. Each session processed about
+  220k to 400k prompt tokens, and nearly all of them were cache reads
+  or writes (`usage.input_tokens` was 2 to 18).
+- `muvue pause` during a session ended the claude process and the
+  runner. The node went back to `ready` with `attempts` unchanged. The
+  session's uncommitted edits stayed in the checkout (branch mode), and
+  the next session found and committed them.
+- No rate limit was hit. Each session emits `rate_limit_event` with
+  `rate_limit_info.status` (`"allowed"` throughout) and `resetsAt`; the
+  parser treats an error result under a non-`allowed` status as a rate
+  limit and waits until `resetsAt`. That path is tested on the recorded
+  sample with the status changed, not on a real limit.
+
+Terms for unattended use under a subscription change. Check them before
+relying on unattended runs.
 
 ## Codex (verified 2026-09-25 against codex-cli 0.142.5)
 
@@ -81,16 +133,21 @@ before.
 
 `core.drivers` implements `usage_parser` dispatch for the example
 commands plan section 2 shows (`claude -p --output-format stream-json`,
-`codex exec --json`) plus a best-effort `gemini_json`. **All three are
-synthetic and unverified against a real vendor CLI** — same constraint as
-above: no network access, no logged-in `claude`/`codex`/`gemini` CLI in
-this environment. Each parser was reconstructed from that vendor's
-*documented* output convention at the time of writing, not a captured
-real invocation:
+`codex exec --json`) plus a best-effort `gemini_json`.
 
-- `claude_stream_json` — one JSON object per line, a terminal `{"type":
-  "result", "is_error": ..., "result": ..., "usage": {"input_tokens":
-  ..., "output_tokens": ...}, "total_cost_usd": ...}`.
+- `claude_stream_json` is **verified against claude 2.1.281**
+  (2026-09-25). A sanitized recording of a real session is
+  `tests/fixtures/vendor_samples/claude_stream_json_live_2_1_281.jsonl`.
+  The recording showed the first version was wrong in two ways: the
+  model is not on the `result` event (it is on `system/init` and in
+  `modelUsage`), and `usage.input_tokens` excludes the cached prompt
+  tokens that make up nearly all of it. Both are fixed (decision #151).
+
+The other two are **synthetic and unverified**. Codex here is logged
+out and Gemini isn't installed. Each was reconstructed from that
+vendor's *documented* output convention at the time of writing, not a
+captured invocation:
+
 - `codex_json` — one JSON object per line, a terminal `{"type":
   "task_complete", "usage": {"input_tokens": ..., "output_tokens":
   ...}}` on success or `{"type": "error", "message": ...}` on failure.
@@ -101,17 +158,17 @@ real invocation:
 
 Synthetic sample files live in `tests/fixtures/vendor_samples/` (labeled
 the same way there) and are what `tests/test_drivers.py` tests these
-parsers against. **A human must verify all three against a real,
-logged-in vendor CLI invocation before relying on them in production** —
+parsers against. **A human must verify the Codex and Gemini parsers
+against a real, logged-in vendor CLI invocation before relying on them
+in production** —
 the rate-limit-detection heuristic in particular (a loose, case-
 insensitive "rate limit"/"429"/"too many requests" text match, since no
 vendor's real error text or exit-code convention could be confirmed here)
 is the part most likely to need adjustment once real output is available.
 
-`config.agents.fake` (`muvue-fake-agent`, `src/muvue/fake_agent.py`) is
-the one driver exercised against a real subprocess in this environment,
-and is what P5's acceptance criteria substitute for a real
-subscription-authenticated CLI throughout.
+`config.agents.fake` (`muvue-fake-agent`, `src/muvue/fake_agent.py`)
+stands in for a vendor CLI in the test suite. The P5 criteria that
+need a real CLI were run against claude, as described above.
 
 ## Per-driver budget unit (v4 section 2, this vendor-agnostic)
 
