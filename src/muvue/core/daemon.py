@@ -22,6 +22,8 @@ already own; reconcile reuses `nodes._apply_transition` exactly like
 
 from __future__ import annotations
 
+import json
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -42,6 +44,39 @@ def _now() -> datetime:
 # --------------------------------------------------------------------------
 # Reconcile-on-start: expired leases revert to ready (P2 acceptance #2).
 # --------------------------------------------------------------------------
+
+
+def port_file_path(repo_root: Path) -> Path:
+    """v4 section 2: `~/.muvue/daemon/<repo-hash>.json`, one per repo."""
+    from .strict import _repo_hash
+
+    return Path.home() / ".muvue" / "daemon" / f"{_repo_hash(repo_root)}.json"
+
+
+def write_port_file(repo_root: Path, *, port: int, pid: int) -> Path:
+    """Port and PID only -- the session token never touches disk (v4
+    section 8a control 5). Created 0600 from the start, not chmod-ed
+    after, so there is no window where it is world-readable."""
+    path = port_file_path(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"port": port, "pid": pid}, f)
+    os.replace(tmp, path)
+    return path
+
+
+def remove_port_file(repo_root: Path, *, pid: int) -> None:
+    """Remove the port file only if it still names this daemon, so a
+    second daemon that took over the repo keeps its own file."""
+    path = port_file_path(repo_root)
+    try:
+        owner = json.loads(path.read_text()).get("pid")
+    except FileNotFoundError:
+        return
+    if owner == pid:
+        path.unlink()
 
 
 def reconcile_leases(conn: sqlite3.Connection, *, now: datetime | None = None) -> list[dict]:

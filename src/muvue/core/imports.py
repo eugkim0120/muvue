@@ -20,6 +20,7 @@ import sqlite3
 from pathlib import Path
 from typing import Callable
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
@@ -37,13 +38,11 @@ class HumanOnly(ImportError_):
     as `core.nodes.HumanOnly` / `core.gates.HumanOnly` / `core.close.HumanOnly`."""
 
 
-def _require_human(actor: str) -> None:
-    if actor != "human":
-        raise HumanOnly(
-            f"only a human may perform this action (actor was {actor!r}); "
-            "human verbs are never exposed over MCP (plan section 4)"
-        )
-
+def _require_human(actor: str, actor_evidence: str | None = None) -> None:
+    try:
+        actor_mod.require_human(actor, actor_evidence)
+    except actor_mod.HumanOnly as e:
+        raise HumanOnly(str(e)) from None
 
 def import_github_issue(
     conn: sqlite3.Connection,
@@ -61,7 +60,7 @@ def import_github_issue(
     local JSON file), or `fetch_fn` (called as `fetch_fn(issue_number)`;
     a real GitHub-API-backed implementation is future work, not built
     here). Raises `ImportError_` if none is given."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     node = nodes_mod.get_node(conn, node_id)
 
     if data is None and data_path is not None:

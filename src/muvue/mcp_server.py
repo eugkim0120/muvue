@@ -62,15 +62,20 @@ def _fail(conn: sqlite3.Connection, config, args: dict) -> dict:
 
 
 def _note(conn: sqlite3.Connection, config, args: dict) -> dict:
-    return core.nodes.add_note(
-        conn, args["node_id"], kind=args.get("kind", "discovery"), text=args["text"],
-        actor="agent", actor_evidence="mcp", pinned=args.get("pinned", False),
+    return core.idempotency.once(
+        conn, args.get("request_id"), "note",
+        lambda: core.nodes.add_note(
+            conn, args["node_id"], kind=args.get("kind", "discovery"), text=args["text"],
+            actor="agent", actor_evidence="mcp", pinned=args.get("pinned", False),
+        ),
+        actor="agent",
     )
 
 
 def _ask(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.asks.ask(
-        conn, args["node_id"], question=args["question"], default=args.get("default"),
+        conn, args["node_id"], question=args["question"], default=args["default"],
+        default_ok=args.get("default_ok", False),
         request_id=args.get("request_id"), actor_evidence="mcp",
     )
 
@@ -83,9 +88,13 @@ def _wait(conn: sqlite3.Connection, config, args: dict) -> dict:
 
 
 def _replan(conn: sqlite3.Connection, config, args: dict) -> dict:
-    return core.revisions.replan_add_subtask(
-        conn, parent_task_id=args["parent_task_id"], title=args["title"],
-        body_md=args.get("body_md", ""), actor_evidence="mcp",
+    return core.idempotency.once(
+        conn, args.get("request_id"), "replan",
+        lambda: core.revisions.replan_add_subtask(
+            conn, parent_task_id=args["parent_task_id"], title=args["title"],
+            body_md=args.get("body_md", ""), actor_evidence="mcp",
+        ),
+        actor="agent",
     )
 
 
@@ -100,10 +109,10 @@ TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "start": (_start, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Take the lease on a ready node."),
     "done": (_done, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "summary": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Mark a node done (may stop at review)."),
     "fail": (_fail, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "lesson": {"type": "string"}, "trigger": {"type": "string"}, "do_instead": {"type": "string"}, "scope": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner", "lesson", "trigger", "do_instead", "scope"]}, "Fail a node, recording a lesson (trigger, failure, do_instead, scope)."),
-    "note": (_note, {"type": "object", "properties": {"node_id": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}, "pinned": {"type": "boolean"}}, "required": ["node_id", "text"]}, "Record a discovery/decision/lesson note."),
-    "ask": (_ask, {"type": "object", "properties": {"node_id": {"type": "integer"}, "question": {"type": "string"}, "default": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["node_id", "question"]}, "Ask a human a question with a proposed default."),
+    "note": (_note, {"type": "object", "properties": {"node_id": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}, "pinned": {"type": "boolean"}, "request_id": {"type": "string"}}, "required": ["node_id", "text"]}, "Record a discovery/decision/lesson note."),
+    "ask": (_ask, {"type": "object", "properties": {"node_id": {"type": "integer"}, "question": {"type": "string"}, "default": {"type": "string"}, "default_ok": {"type": "boolean"}, "request_id": {"type": "string"}}, "required": ["node_id", "question", "default"]}, "Ask a human a question with a proposed default."),
     "wait": (_wait, {"type": "object", "properties": {"question_id": {"type": "integer"}, "default_ok": {"type": "boolean"}}, "required": ["question_id"]}, "Poll a question once."),
-    "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
+    "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
     "status": (_status, {"type": "object", "properties": {"project_id": {"type": "integer"}}}, "Node counts by status."),
 }
 

@@ -63,19 +63,35 @@ def get_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
     return db_mod.query_one(conn, "SELECT * FROM events WHERE id = ?", (event_id,))
 
 
-def ack_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
+def ack_event(
+    conn: sqlite3.Connection,
+    event_id: int,
+    *,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+) -> sqlite3.Row | None:
     """`POST /events/{id}/ack` (plan section 8 inbox convention): mark
     one event acknowledged. Pre-v4 this was raw SQL inline in
     `api/app.py` -- a genuine working-rule-3 violation ("If you find
     yourself writing SQL elsewhere, stop") this session's audit caught
     and fixed, see docs/decisions.md. Returns None if `event_id` doesn't
-    exist (caller maps that to a 404)."""
+    exist (caller maps that to a 404). A human verb: the ack itself is
+    recorded as an `event.acked` event."""
+    from . import actor as actor_mod
+
+    actor_mod.require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         row = get_event(conn, event_id)
         if row is None:
             return None
+        if row["acked_at"] is not None:
+            return row
         conn.execute(
             "UPDATE events SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
             (event_id,),
+        )
+        record_event(
+            conn, project_id=row["project_id"], node_id=row["node_id"], actor=actor,
+            actor_evidence=actor_evidence, type_="event.acked", payload={"event_id": event_id},
         )
         return get_event(conn, event_id)

@@ -41,6 +41,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events as events_mod
 from . import gitutil as gitutil_mod
@@ -85,13 +86,11 @@ class HumanOnly(CloseError):
     as `core.nodes.HumanOnly` / `core.gates.HumanOnly` / `core.asks.HumanOnly`."""
 
 
-def _require_human(actor: str) -> None:
-    if actor != "human":
-        raise HumanOnly(
-            f"only a human may perform this action (actor was {actor!r}); "
-            "human verbs are never exposed over MCP (plan section 4)"
-        )
-
+def _require_human(actor: str, actor_evidence: str | None = None) -> None:
+    try:
+        actor_mod.require_human(actor, actor_evidence)
+    except actor_mod.HumanOnly as e:
+        raise HumanOnly(str(e)) from None
 
 def _run_git_as_muvue(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     env = {**os.environ, **_CLOSE_COMMIT_ENV}
@@ -367,7 +366,7 @@ def close_project(
     the diff (raises `CloseError` if not closeable), writes and commits
     `components.json`/`decisions.json` on `main`, flips the project to
     `closed`, and exports its event history."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     preview = preview_close(conn, project_id)
     if not confirm:
         return {"confirmed": False, **preview}

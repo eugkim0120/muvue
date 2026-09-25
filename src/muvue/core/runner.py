@@ -20,6 +20,8 @@ from __future__ import annotations
 import concurrent.futures
 import fnmatch
 import json
+import signal
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +33,7 @@ from . import drivers
 from . import events as events_mod
 from . import nodes as nodes_mod
 from . import projects as projects_mod
+from . import runners as runners_mod
 from . import queries
 from . import spend as spend_mod
 from .config import MuvueConfig
@@ -47,7 +50,19 @@ _GATING_STATUSES = ("awaiting_approval", "blocked", "failed")
 
 # Outcomes from a just-processed node that also mean "stop scheduling new
 # work and return control" this cycle.
-_BLOCKING_OUTCOMES = {"blocked_rate_limit", "blocked_unavailable", "failed", "review", "project_paused"}
+_BLOCKING_OUTCOMES = {
+    "blocked_rate_limit", "blocked_unavailable", "failed", "review", "project_paused", "stopped",
+}
+
+# Set by the SIGTERM handler `run` installs (a `pause` stops runners
+# with SIGTERM, core.runners.stop): no new node starts, running drivers
+# are killed, and their nodes are released back to `ready`.
+_stop_requested = threading.Event()
+
+
+def _stopped(conn, node_row, owner: str, agent_name: str) -> dict:
+    nodes_mod.release_lease(conn, node_row["id"], owner=owner)
+    return {"node_id": node_row["id"], "agent": agent_name, "outcome": "stopped"}
 
 
 def _now() -> datetime:
@@ -65,6 +80,9 @@ def _now() -> datetime:
 # `doctor` validates `[agents.<x>.budget].unit` against (v4 section 2:
 # "`doctor` errors if `budget.unit` is not producible by that driver's
 # `cost_model`"). Not reinvented; see docs/decisions.md.
+# Per-node driver output, tailed by `GET /nodes/{id}/logs` (gitignored).
+LOGS_RELDIR = Path(".muvue") / "logs"
+
 EXPECTED_BUDGET_UNIT = {"usd": "usd", "tokens": "tokens", "requests": "requests", "quota": "requests"}
 
 
@@ -376,6 +394,8 @@ def run_node(
     small outcome dict, never raises for a driver-side failure (only a
     genuine `core` programming error propagates)."""
     owner = f"runner:{agent_name}"
+    if _stop_requested.is_set():
+        return {"node_id": node["id"], "agent": agent_name, "outcome": "stopped"}
     if projects_mod.get_project(conn, node["project_id"])["phase"] == "paused":
         return {"node_id": node["id"], "agent": agent_name, "outcome": "project_paused"}
     try:
@@ -394,8 +414,11 @@ def run_node(
     brief = queries.brief_node(conn, node["id"])
     brief_text = json.dumps(brief, default=str)
     cwd = node_row.get("worktree") or str(repo_root)
+    log_path = Path(repo_root) / LOGS_RELDIR / f"{node['id']}.log"
 
-    result = invoke(agent_name, agent_cfg, brief_text, Path(cwd))
+    result = invoke(agent_name, agent_cfg, brief_text, Path(cwd), log_path=log_path)
+    if _stop_requested.is_set():
+        return _stopped(conn, node_row, owner, agent_name)
 
     if result.status == "unavailable":
         return _handle_unavailable(
@@ -610,6 +633,30 @@ def run(
     validate_parallel(config, parallel)
     repo_root = Path(repo_root)
     parallel = max(1, parallel)
+    _stop_requested.clear()
+    previous_handler = None
+    if threading.current_thread() is threading.main_thread():
+        previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+    runners_mod.register(repo_root, project_id)
+    try:
+        return _run_loop(
+            db_path, config, repo_root, agent_override=agent_override, parallel=parallel,
+            project_id=project_id, invoke=invoke, max_cycles=max_cycles, now_fn=now_fn,
+        )
+    finally:
+        runners_mod.unregister(repo_root)
+        if previous_handler is not None:
+            signal.signal(signal.SIGTERM, previous_handler)
+
+
+def _on_sigterm(signum, frame) -> None:
+    _stop_requested.set()
+    drivers.stop_all()
+
+
+def _run_loop(
+    db_path, config, repo_root, *, agent_override, parallel, project_id, invoke, max_cycles, now_fn,
+) -> dict:
 
     conn = core_db.connect(db_path)
     try:
@@ -626,6 +673,9 @@ def run(
 
     while cycles < max_cycles:
         cycles += 1
+        if _stop_requested.is_set():
+            paused = {"reason": "stopped"}
+            break
 
         # v4 section 2 top-level `[budget]`: unit-free stop conditions,
         # independent of any driver's own budget state.
@@ -699,6 +749,9 @@ def run(
                 results = list(ex.map(_exec, batch))
 
         processed.extend(results)
+        if _stop_requested.is_set():
+            paused = {"reason": "stopped"}
+            break
         blocking = [r for r in results if r.get("outcome") in _BLOCKING_OUTCOMES]
         if blocking:
             paused = {

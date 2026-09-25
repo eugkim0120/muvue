@@ -120,10 +120,12 @@ Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
 
 ### `ask` / `wait` (P1)
 
-- `ask NODE_ID --question TEXT --default TEXT [--request-id ID]`
+- `ask NODE_ID --question TEXT --default TEXT [--default-ok] [--request-id ID]`
   (`core.asks.ask`) creates an open row in `questions` with a proposed
-  default answer; recorded as a `question.asked` event. Dedupes on
-  `--request-id` like the other agent verbs.
+  default answer; recorded as a `question.asked` event. `--default` is
+  required. `--default-ok` is stored on the question
+  (`questions.default_ok`), and `wait` then applies the default on
+  timeout. Dedupes on `--request-id` like the other agent verbs.
 - A human answers with `muvue answer QUESTION_ID --text TEXT` (CLI) or
   `POST /questions/{id}/answer` (API, session-token gated like the other
   human verbs) — both call `core.asks.answer` (human verb, never MCP;
@@ -140,7 +142,8 @@ Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
   - Already answered: returns the answer, node is untouched.
   - Before `planning.ask_timeout_minutes` have elapsed since the question
     was asked: returns `{"status": "pending"}`, node is untouched.
-  - Past `ask_timeout_minutes`, `--default-ok`: the proposed default is
+  - Past `ask_timeout_minutes`, with `--default-ok` given to either
+    `ask` or `wait`: the proposed default is
     applied as a `feedback` note (`question.default_applied` event) and
     the node proceeds (no status change).
   - Past `ask_timeout_minutes`, no `--default-ok`: the question is marked
@@ -175,9 +178,39 @@ diff-only against the previous revision:
 
 ### Human verbs
 
-Real in P1: `approve` (spec/node/gate2/revision targets above). Stubs:
-`reject`, `ack`, `merge`, `close`, `pause`, `resume`, `handoff`, `import`.
-Never exposed over MCP.
+All real, and never exposed over MCP:
+
+- `approve TARGET:ID` (spec, node, gate2, revision, review). `approve
+  task:ID` also re-approves a node in `awaiting_approval`, which puts it
+  back in `in_progress` under the same owner.
+- `reject review:ID --feedback TEXT`: `review -> in_progress`, with the
+  feedback stored as a `feedback` note.
+- `ack EVENT_ID`: marks an inbox event acknowledged (`event.acked`). A
+  second ack is a no-op.
+- `pause PROJECT_ID`: sets `phase=paused` and sends SIGTERM to the
+  project's `muvue run` processes (`.muvue/runners/`). Each runner kills
+  its driver's process group and releases leased nodes to `ready`
+  (`node.released`, no attempt used). Returns `{"project",
+  "stopped_runners"}`.
+- `resume PROJECT_ID`: `paused -> executing`. Refused if the project
+  isn't paused.
+- `merge`, `close`, `handoff` and `import`: see their sections below.
+
+Every human verb records how it was invoked in `actor_evidence`:
+
+| Evidence | Meaning |
+|---|---|
+| `tty` | Interactive terminal, with no agent CLI among its ancestors. |
+| `no_tty` | No terminal (a script or pipe). |
+| `agent_parent:<name>` | A known agent CLI is an ancestor. Recorded as `actor=agent` and still allowed: detection, not prevention. |
+| `dashboard_token` | The API, with the session token. |
+
+### Criteria edits after `start`
+
+Changing the criteria of an `in_progress` node moves it to
+`awaiting_approval`, keeping its owner and lease, and forces its tier to
+`high`. The PreToolUse hook blocks Edit/Write on it until `approve
+task:ID`.
 
 ### Risk tiers (P2)
 
@@ -670,7 +703,24 @@ both already real as of P1; P3 found no gap to close here.
 ## Idempotency
 
 `--request-id` dedupe window: 24 hours, scoped per (verb, request_id).
+Every mutating verb accepts one:
+
+- CLI: `--request-id ID`.
+- MCP: a `request_id` argument.
+- API: `request_id` in the JSON body for start/done/fail/ask, and the
+  `X-Request-Id` header for every other mutating endpoint.
+
+A duplicate returns `{"noop": true, ...}`. For verbs without an event
+of their own, it returns `{"noop": true, "result": <first result>}`,
+recorded as a `request.<verb>.completed` event.
+
 Notes dedupe by SHA-256 content hash, independent of request-id.
+
+## Files outside the repo
+
+`muvue serve` writes `~/.muvue/daemon/<repo-hash>.json`. The file is
+mode 0600, contains `{"port": N, "pid": N}`, and is removed on exit.
+The session token is never written to it.
 
 ## Events
 

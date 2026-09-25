@@ -17,6 +17,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events
 from . import nodes as nodes_mod
@@ -36,13 +37,11 @@ class HumanOnly(AskError):
     worth it for one call site each."""
 
 
-def _require_human(actor: str) -> None:
-    if actor != "human":
-        raise HumanOnly(
-            f"only a human may answer a question (actor was {actor!r}); "
-            "answer is never exposed over MCP (plan section 4)"
-        )
-
+def _require_human(actor: str, actor_evidence: str | None = None) -> None:
+    try:
+        actor_mod.require_human(actor, actor_evidence)
+    except actor_mod.HumanOnly as e:
+        raise HumanOnly(str(e)) from None
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -64,11 +63,18 @@ def ask(
     node_id: int,
     *,
     question: str,
-    default: str | None,
+    default: str,
+    default_ok: bool = False,
     actor: str = "agent",
     actor_evidence: str = "tty",
     request_id: str | None = None,
 ) -> dict:
+    """v4 section 4: `ask --default TEXT [--default-ok]`. A proposed
+    default is mandatory so an unanswered question always has something
+    to fall back on; `default_ok` records that the agent may proceed with
+    it once `planning.ask_timeout_minutes` passes."""
+    if not default:
+        raise AskError("ask needs a proposed default answer (--default)")
     with db_mod.write_txn(conn):
         node = nodes_mod.get_node(conn, node_id)
         dup = events.find_recent_by_request_id(conn, request_id, "question.asked") if request_id else None
@@ -77,9 +83,9 @@ def ask(
 
         with db_mod.write_txn(conn):
             cur = conn.execute(
-                "INSERT INTO questions (node_id, project_id, text, default_answer) "
-                "VALUES (?, ?, ?, ?)",
-                (node_id, node["project_id"], question, default),
+                "INSERT INTO questions (node_id, project_id, text, default_answer, default_ok) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (node_id, node["project_id"], question, default, int(default_ok)),
             )
             question_id = cur.lastrowid
             row = get_question(conn, question_id)
@@ -104,7 +110,7 @@ def answer(
     actor: str = "human",
     actor_evidence: str = "tty",
 ) -> dict:
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         q = get_question(conn, question_id)
         if q["status"] != "open":
@@ -148,7 +154,7 @@ def wait(
     if elapsed < timedelta(minutes=timeout_minutes):
         return {"status": "pending"}
 
-    if default_ok:
+    if default_ok or q["default_ok"]:
         with db_mod.write_txn(conn):
             conn.execute(
                 "UPDATE questions SET status = 'answered', answer = ?, "

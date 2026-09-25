@@ -26,7 +26,11 @@ see P5's acceptance criterion 1.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -193,6 +197,83 @@ USAGE_PARSERS: dict[str, Callable[[str], DriverResult]] = {
 }
 
 
+# Driver subprocesses currently running in this process, so `stop_all`
+# (called when the runner is told to stop) can kill them.
+_ACTIVE: set[subprocess.Popen] = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def stop_all(sig: int = signal.SIGTERM) -> int:
+    """Signal every running driver's whole process group (the command runs
+    through a shell, so the agent CLI is a grandchild). Returns how many
+    were signalled."""
+    with _ACTIVE_LOCK:
+        procs = list(_ACTIVE)
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return len(procs)
+
+
+def _run_streaming(
+    command: str, cwd: Path, stdin_text: str, *, timeout: int, log_path: Path | None,
+) -> tuple[int, str, str]:
+    """Run `command` in its own session, feed `stdin_text`, and collect
+    stdout/stderr -- copying each line to `log_path` as it arrives so a
+    running node's output can be tailed (`GET /nodes/{id}/logs`). Raises
+    `subprocess.TimeoutExpired` after killing the process group."""
+    proc = subprocess.Popen(
+        command, shell=True, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    with _ACTIVE_LOCK:
+        _ACTIVE.add(proc)
+    log = open(log_path, "a", encoding="utf-8") if log_path is not None else None
+    log_lock = threading.Lock()
+    chunks: dict[str, list[str]] = {"out": [], "err": []}
+
+    def pump(stream, key: str, prefix: str) -> None:
+        for line in iter(stream.readline, ""):
+            chunks[key].append(line)
+            if log is not None:
+                with log_lock:
+                    log.write(prefix + line)
+                    log.flush()
+        stream.close()
+
+    readers = [
+        threading.Thread(target=pump, args=(proc.stdout, "out", ""), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, "err", "[stderr] "), daemon=True),
+    ]
+    for r in readers:
+        r.start()
+    try:
+        try:
+            proc.stdin.write(stdin_text)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+            raise
+        for r in readers:
+            r.join(timeout=5)
+    finally:
+        with _ACTIVE_LOCK:
+            _ACTIVE.discard(proc)
+        if log is not None:
+            log.close()
+    return proc.returncode, "".join(chunks["out"]), "".join(chunks["err"])
+
+
 def invoke_driver(
     agent_name: str,
     agent_cfg: AgentConfig,
@@ -200,6 +281,7 @@ def invoke_driver(
     cwd: Path,
     *,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    log_path: Path | None = None,
 ) -> DriverResult:
     """Run `auth_check` (if configured), then `command` with `brief_text`
     piped on stdin, in `cwd`. Never reads/stores/passes any vendor
@@ -210,7 +292,10 @@ def invoke_driver(
     A failing `auth_check` -- driver-unavailable, e.g. not logged in --
     is reported as `status="unavailable"`, not raised: the runner must not
     crash on this, only handle it (block or fall back), per the P5
-    prompt's requirement."""
+    prompt's requirement.
+
+    `log_path`: append the driver's output there line by line as it runs.
+    The command runs in its own session so `stop_all` can end it."""
     cwd = Path(cwd)
     if agent_cfg.auth_check.strip():
         check = subprocess.run(
@@ -222,15 +307,14 @@ def invoke_driver(
                 error=(check.stderr or check.stdout or "auth_check failed").strip(),
             )
 
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"--- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {agent_name}: "
+                    f"{agent_cfg.command}\n")
     try:
-        proc = subprocess.run(
-            agent_cfg.command,
-            shell=True,
-            cwd=cwd,
-            input=brief_text,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        returncode, stdout, stderr = _run_streaming(
+            agent_cfg.command, cwd, brief_text, timeout=timeout, log_path=log_path,
         )
     except subprocess.TimeoutExpired:
         return DriverResult(status="failed", error=f"driver timed out after {timeout}s")
@@ -239,16 +323,16 @@ def invoke_driver(
 
     parser = USAGE_PARSERS.get(agent_cfg.usage_parser)
     if parser is None:
-        status = "done" if proc.returncode == 0 else "failed"
-        result = DriverResult(status=status, error="" if status == "done" else proc.stderr)
+        status = "done" if returncode == 0 else "failed"
+        result = DriverResult(status=status, error="" if status == "done" else stderr)
     else:
-        result = parser(proc.stdout)
-        if proc.returncode != 0 and result.status == "done":
+        result = parser(stdout)
+        if returncode != 0 and result.status == "done":
             # A nonzero exit always overrides a parser that otherwise
             # thought it saw success -- the process itself disagrees.
             result.status = "failed"
-            result.error = result.error or proc.stderr.strip()
+            result.error = result.error or stderr.strip()
 
-    result.raw_stdout = proc.stdout
-    result.raw_stderr = proc.stderr
+    result.raw_stdout = stdout
+    result.raw_stderr = stderr
     return result

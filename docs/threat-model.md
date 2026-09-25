@@ -123,9 +123,13 @@ web-page-originated**, not local:
   same-user adversary that obtains a TTY, or that reads the daemon's
   memory to recover the in-memory token, can still issue authenticated
   requests; those requests are still logged with `actor_evidence`
-  (`tty`, `dashboard_token`, `mcp`, `hook`, `subprocess`) and are
+  (`tty`, `no_tty`, `agent_parent:<name>`, `dashboard_token`, `mcp`,
+  `hook`, `subprocess`) and are
   visible in the dashboard's rubber-stamp KPI and event timeline, but
-  they are not *blocked*.
+  they are not *blocked*. `agent_parent:<name>` comes from walking
+  the caller's parent processes for a known agent CLI (`core.actor`).
+  An agent that re-parents itself, for example through `setsid` plus a
+  daemonised shell, escapes this check.
 - **Prompt injection via MCP.** Contained by the pre-existing verb
   split (human verbs are never exposed over MCP at all — plan §4),
   frozen criteria (Gate 2, plan §5), and the strict-mode airlock (plan

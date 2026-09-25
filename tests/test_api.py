@@ -255,13 +255,13 @@ def test_pause_refuses_start_then_resume_allows_it(client, conn, ready_task, aut
     project_id = ready_task["project"]["id"]
     r = client.post(f"/projects/{project_id}/pause", headers=auth_headers)
     assert r.status_code == 200
-    assert r.json()["phase"] == "paused"
+    assert r.json()["project"]["phase"] == "paused"
 
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 409
 
     r = client.post(f"/projects/{project_id}/resume", headers=auth_headers)
-    assert r.json()["phase"] == "executing"
+    assert r.json()["project"]["phase"] == "executing"
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
 

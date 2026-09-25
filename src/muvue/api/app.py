@@ -205,6 +205,13 @@ def create_app(
         if not session.verify_and_touch(token):
             raise HTTPException(status_code=403, detail="missing or invalid session token")
 
+    def _request_id(request: Request) -> str | None:
+        """Plan section 4: every mutating verb accepts a request id. Verbs
+        whose body already carries `request_id` (start/done/fail/ask) read
+        it there; the rest take the `X-Request-Id` header so body-less
+        POSTs can be deduped too."""
+        return request.headers.get("x-request-id") or None
+
     def _handle_core_error(exc: Exception) -> None:
         if isinstance(exc, LookupError):
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -219,6 +226,8 @@ def create_app(
                 core.merge.MergeError,
                 core.close.CloseError,
                 core.imports.ImportError_,
+                core.actor.HumanOnly,
+                ValueError,
             ),
         ):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -675,14 +684,16 @@ def create_app(
         node_id: int,
         request: Request,
         question: str = Body(...),
-        default: str | None = Body(default=None),
+        default: str = Body(...),
+        default_ok: bool = Body(default=False),
         request_id: str | None = Body(default=None),
     ) -> dict:
         _require_session(request)
         with _conn() as conn:
             try:
                 result = core.asks.ask(
-                    conn, node_id, question=question, default=default, request_id=request_id,
+                    conn, node_id, question=question, default=default, default_ok=default_ok,
+                    request_id=request_id,
                     actor_evidence="dashboard_token",
                 )
             except Exception as e:
@@ -726,9 +737,12 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.revisions.replan_add_subtask(
+                result = core.idempotency.once(
+                    conn, _request_id(request), "replan",
+                    lambda: core.revisions.replan_add_subtask(
                     conn, parent_task_id=node_id, title=title, body_md=body_md,
                     actor_evidence="dashboard_token",
+                ), actor="agent",
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -745,9 +759,12 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.nodes.add_note(
+                result = core.idempotency.once(
+                    conn, _request_id(request), "comment",
+                    lambda: core.nodes.add_note(
                     conn, node_id, kind="feedback", text=text, actor="human", pinned=pinned,
                     actor_evidence="dashboard_token",
+                ),
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -760,7 +777,10 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.revisions.propose_revision(conn, project_id, node_ids, actor_evidence="dashboard_token")
+                result = core.idempotency.once(
+                    conn, _request_id(request), "propose-revision",
+                    lambda: core.revisions.propose_revision(conn, project_id, node_ids, actor_evidence="dashboard_token"),
+                )
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -777,20 +797,23 @@ def create_app(
         n: int | None = Body(default=None),
     ) -> dict:
         _require_session(request)
+        if target == "revision" and n is None:
+            raise HTTPException(status_code=422, detail="revision approval needs n")
+
+        def _apply() -> dict:
+            if target == "spec":
+                return core.gates.approve_spec(conn, node_id, actor_evidence="dashboard_token")
+            if target == "gate2":
+                return core.gates.approve_gate2(conn, node_id, config=config, actor_evidence="dashboard_token")
+            if target == "revision":
+                return core.revisions.approve_revision(conn, node_id, n, config=config, actor_evidence="dashboard_token")
+            if target == "review":
+                return core.nodes.approve_review(conn, node_id, actor_evidence="dashboard_token")
+            return core.gates.approve_node(conn, node_id, config=config, actor_evidence="dashboard_token")
+
         with _conn() as conn:
             try:
-                if target == "spec":
-                    result = core.gates.approve_spec(conn, node_id, actor_evidence="dashboard_token")
-                elif target == "gate2":
-                    result = core.gates.approve_gate2(conn, node_id, config=config, actor_evidence="dashboard_token")
-                elif target == "revision":
-                    if n is None:
-                        raise HTTPException(status_code=422, detail="revision approval needs n")
-                    result = core.revisions.approve_revision(conn, node_id, n, config=config, actor_evidence="dashboard_token")
-                elif target == "review":
-                    result = core.nodes.approve_review(conn, node_id, actor_evidence="dashboard_token")
-                else:
-                    result = core.gates.approve_node(conn, node_id, config=config, actor_evidence="dashboard_token")
+                result = core.idempotency.once(conn, _request_id(request), "approve", _apply)
             except HTTPException:
                 raise
             except Exception as e:
@@ -804,7 +827,10 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.nodes.reject_review(conn, node_id, feedback=feedback, actor_evidence="dashboard_token")
+                result = core.idempotency.once(
+                    conn, _request_id(request), "reject",
+                    lambda: core.nodes.reject_review(conn, node_id, feedback=feedback, actor_evidence="dashboard_token"),
+                )
             except Exception as e:
                 _handle_core_error(e)
         return result
@@ -812,11 +838,14 @@ def create_app(
     @app.post("/events/{event_id}/ack")
     def ack_event(event_id: int, request: Request) -> dict:
         _require_session(request)
-        with _conn() as conn:
-            row = core.events.ack_event(conn, event_id)
+        def _apply() -> dict:
+            row = core.events.ack_event(conn, event_id, actor_evidence="dashboard_token")
             if row is None:
                 raise HTTPException(status_code=404, detail=f"no such event: {event_id}")
-        return dict(row)
+            return dict(row)
+
+        with _conn() as conn:
+            return core.idempotency.once(conn, _request_id(request), "ack", _apply)
 
     @app.post("/nodes/{node_id}/merge")
     def merge_node(node_id: int, request: Request, pr: bool = False) -> dict:
@@ -829,7 +858,11 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.merge.attempt_merge(conn, node_id, repo_root)  # merge.py: actor_evidence hardcoded "subprocess" internally
+                result = core.idempotency.once(
+                    conn, _request_id(request), "merge",
+                    lambda: core.merge.attempt_merge(conn, node_id, repo_root),  # merge.py: actor_evidence hardcoded "subprocess" internally
+                    atomic=False,
+                )
                 if pr:
                     result["pr_body"] = core.pr.generate_pr_body(conn, node_id)
             except Exception as e:
@@ -843,9 +876,12 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.nodes.handoff(
+                result = core.idempotency.once(
+                    conn, _request_id(request), "handoff",
+                    lambda: core.nodes.handoff(
                     conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
                     actor_evidence="dashboard_token",
+                ),
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -865,9 +901,12 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.imports.import_github_issue(
+                result = core.idempotency.once(
+                    conn, _request_id(request), "import",
+                    lambda: core.imports.import_github_issue(
                     conn, node_id, issue_number, data=data, actor="human",
                     actor_evidence="dashboard_token",
+                ), atomic=False,
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -897,9 +936,12 @@ def create_app(
         _require_session(request)
         with _conn() as conn:
             try:
-                result = core.close.close_project(
+                result = core.idempotency.once(
+                    conn, _request_id(request), "close",
+                    lambda: core.close.close_project(
                     conn, project_id, repo_root, actor="human", confirm=True,
                     actor_evidence="dashboard_token",
+                ), atomic=False,
                 )
             except Exception as e:
                 _handle_core_error(e)
@@ -907,22 +949,34 @@ def create_app(
 
     @app.post("/projects/{project_id}/pause")
     def pause_project(project_id: int, request: Request) -> dict:
+        """Emergency stop: pause the project and kill its runner processes
+        (`core.projects.pause_project`)."""
         _require_session(request)
         with _conn() as conn:
             try:
-                row = core.projects.set_phase(conn, project_id, "paused")
+                result = core.idempotency.once(
+                    conn, _request_id(request), "pause",
+                    lambda: core.projects.pause_project(
+                    conn, project_id, repo_root=repo_root, actor_evidence="dashboard_token",
+                ), atomic=False,
+                )
             except Exception as e:
                 _handle_core_error(e)
-        return dict(row)
+        return result
 
     @app.post("/projects/{project_id}/resume")
     def resume_project(project_id: int, request: Request) -> dict:
         _require_session(request)
         with _conn() as conn:
             try:
-                row = core.projects.set_phase(conn, project_id, "executing")
+                result = core.idempotency.once(
+                    conn, _request_id(request), "resume",
+                    lambda: core.projects.resume_project(
+                    conn, project_id, actor_evidence="dashboard_token",
+                ),
+                )
             except Exception as e:
                 _handle_core_error(e)
-        return dict(row)
+        return result
 
     return app

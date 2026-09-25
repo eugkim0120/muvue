@@ -246,3 +246,52 @@ def test_raising_the_auto_criterion_threshold_lets_medium_through(conn, project,
     row = nodes.get_node(conn, task["id"])
     assert row["risk_tier"] == "medium"
     assert row["status"] == "ready"
+
+
+# -- v4 section 5: criteria edit mid-flight -> awaiting_approval -----------
+
+
+def test_criteria_edit_on_in_progress_node_parks_it_awaiting_approval(conn, project, config):
+    task = _decompose_one_task(conn, project)
+    gates.approve_gate2(conn, project["id"], config=config)
+    nodes.start(conn, task["id"], owner="agent-1")
+
+    edited = gates.edit_criteria(conn, task["id"], criteria_json='["passes tests", "new rule"]')
+    assert edited["re_approval_required"] is True
+    parked = nodes.get_node(conn, task["id"])
+    assert parked["status"] == "awaiting_approval"
+    assert parked["owner"] == "agent-1"
+    assert parked["risk_tier"] == "high"
+
+    with pytest.raises(gates.HumanOnly):
+        gates.approve_node(conn, task["id"], config=config, actor="agent")
+
+    resumed = gates.approve_node(conn, task["id"], config=config)["node"]
+    assert resumed["status"] == "in_progress"
+    assert resumed["owner"] == "agent-1"
+    assert resumed["criteria_hash"] != task["criteria_hash"]
+
+
+def test_awaiting_approval_blocks_pre_tool_use_edits(config, tmp_path):
+    """The PreToolUse block on `awaiting_approval` is reachable now that
+    something sets that status."""
+    from muvue import _hook
+    from muvue.core.repo_init import init_repo
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    rc = core_db.connect(repo / ".muvue" / "muvue.db")
+    try:
+        p = projects.create_project(rc, goal="g")
+        t = _decompose_one_task(rc, p)
+        gates.approve_gate2(rc, p["id"], config=config)
+        nodes.start(rc, t["id"], owner="agent-1")
+        gates.edit_criteria(rc, t["id"], criteria_json='["changed"]')
+    finally:
+        rc.close()
+    result = _hook.pre_tool_use(
+        str(repo), {"tool_name": "Edit", "tool_input": {"file_path": "a.py"}, "node_id": t["id"]}
+    )
+    assert result["decision"] == "block"
+    assert "awaiting_approval" in result["reason"]

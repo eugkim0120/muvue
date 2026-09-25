@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W4: human/agent control surface
+
+### Added
+- **Real `pause`, `resume`, `reject` and `ack` in the CLI.** They
+  replace the "not implemented" stubs, which contradicted decision #26.
+  `reject review:ID --feedback TEXT` sends a node in review back to
+  `in_progress` with the feedback as a note.
+- **`pause` stops running agents.** It sends SIGTERM to every `muvue
+  run` process registered for the repo (`.muvue/runners/<pid>.json`).
+  The runner then kills each driver's process group, releases its
+  leased nodes back to `ready` without using up an attempt
+  (`node.released`), and exits with reason `stopped` (decision #122).
+- **Agent output is logged.** Drivers stream their output to
+  `.muvue/logs/<node>.log`, which is gitignored.
+- **Invoker detection** (`core.actor`, decision #123, supersedes #73).
+  A human verb whose caller descends from `claude`, `codex`, `gemini`,
+  `cursor-agent` or `aider` is recorded as `actor=agent` with
+  `actor_evidence=agent_parent:<name>`. It is still allowed: this is
+  detection, not prevention. A call with no TTY is recorded as
+  `no_tty`.
+- **`--request-id` on every mutating verb.**
+  - CLI: `--request-id` on every verb.
+  - MCP: a `request_id` argument on `note` and `replan`.
+  - API: an `X-Request-Id` header on every mutating endpoint that does
+    not already take `request_id` in its body.
+  - A repeated call returns `{"noop": true, "result": <first result>}`
+    (#124).
+- **`ask --default TEXT [--default-ok]`** (v4 section 4). `--default`
+  is now required. `--default-ok` is stored on the question
+  (`questions.default_ok`, schema 7), so `wait` applies the default on
+  timeout without a flag of its own. `wait --default-ok` still works
+  (#125).
+- **`serve` writes `~/.muvue/daemon/<repo-hash>.json`.** The file is
+  created with mode 0600, contains only `{"port", "pid"}`, and is
+  removed when the daemon exits on SIGINT or SIGTERM.
+
+### Changed
+- **Editing criteria on an `in_progress` node** parks the node in
+  `awaiting_approval` with its lease intact, and sets its tier to
+  `high`. PreToolUse blocks edits until a human runs `approve task:ID`,
+  which hands the node back to the same owner in `in_progress` (#126).
+  Until now nothing ever set `awaiting_approval`.
+- `POST /projects/{id}/pause` now returns `{"project",
+  "stopped_runners"}`. `resume` on a project that isn't paused returns
+  409.
+
 ## [Unreleased] - v4 delta closure, W3: data model and replay
 
 ### Added

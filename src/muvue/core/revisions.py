@@ -143,7 +143,7 @@ def approve_revision(
     actor_evidence: str = "tty",
     config: MuvueConfig | None = None,
 ) -> dict:
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         revision = conn.execute(
             "SELECT * FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)

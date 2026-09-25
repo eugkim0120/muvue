@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,7 +20,6 @@ app.add_typer(adapter_app, name="adapter")
 project_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Project-level verbs.")
 app.add_typer(project_app, name="project")
 
-NOT_IMPLEMENTED = "not implemented in P0"
 
 
 
@@ -39,6 +39,26 @@ def _db_connect(repo_root: Path):
 
 def _load_config(repo_root: Path) -> core.MuvueConfig:
     return core.load_config(repo_root / ".muvue" / "config.toml")
+
+
+REQUEST_ID_HELP = (
+    "idempotency key: a repeat with the same key within 24h returns the first result "
+    "instead of running again"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def _invoker() -> tuple[str, str]:
+    """`(actor, actor_evidence)` for a human verb issued from this CLI
+    process: an agent CLI in the parent chain records the call as the
+    agent's, and a missing TTY is recorded as `no_tty` (plan section 4;
+    see core/actor.py). Detection, not prevention."""
+    return core.actor.detect_invoker()
+
+
+def _human_kwargs() -> dict:
+    actor, evidence = _invoker()
+    return {"actor": actor, "actor_evidence": evidence}
 
 
 def _echo_json(obj) -> None:
@@ -293,6 +313,7 @@ def serve(
     cookie on first load (`POST /auth/exchange`) and the fragment is
     then irrelevant. v3's `~/.muvue/session` file is gone entirely.
     """
+    import signal
     import socket
 
     import uvicorn
@@ -349,8 +370,19 @@ def serve(
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))
     sock.listen(2048)
-    typer.echo(f"muvue daemon listening on http://{host}:{port}")
-    uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
+    # uvicorn re-raises the SIGINT/SIGTERM it captured once it has shut
+    # down. SIGINT's default handler turns that into KeyboardInterrupt;
+    # give SIGTERM the same treatment so the `finally` below always
+    # removes the port file instead of the process dying mid-unwind.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    daemon_mod.write_port_file(repo_root, port=port, pid=os.getpid())
+    try:
+        typer.echo(f"muvue daemon listening on http://{host}:{port}")
+        uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        daemon_mod.remove_port_file(repo_root, pid=os.getpid())
 
 
 @adapter_app.command("install")
@@ -473,6 +505,7 @@ def project_create(
     supersedes: list[int] = typer.Option(
         [], "--supersedes", help="repeatable; project id this one supersedes"
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Create a new project (`core.projects.create_project`). Prints the
@@ -481,9 +514,13 @@ def project_create(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.projects.create_project(
-            conn, goal=goal, repo_root=repo_root, follows=list(follows),
-            supersedes=list(supersedes),
+        def _apply():
+            return core.projects.create_project(
+                conn, goal=goal, repo_root=repo_root, follows=list(follows),
+                supersedes=list(supersedes),
+            )
+        result = core.idempotency.once(
+            conn, request_id, "project.create", _apply, actor=_invoker()[0],
         )
     finally:
         conn.close()
@@ -500,6 +537,7 @@ def spec(
     project_id: int = typer.Argument(...),
     title: str = typer.Option(..., "--title"),
     body: str = typer.Option(..., "--body"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Gate 1: agent submits a spec node for a project
@@ -508,7 +546,11 @@ def spec(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.gates.submit_spec(conn, project_id=project_id, title=title, body_md=body)
+        def _apply():
+            return core.gates.submit_spec(conn, project_id=project_id, title=title, body_md=body)
+        result = core.idempotency.once(
+            conn, request_id, "spec", _apply, actor="agent",
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -527,6 +569,7 @@ def decompose(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this task waits on"
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Gate 2: agent decomposes an approved spec into a task node
@@ -536,20 +579,25 @@ def decompose(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        spec_node = core.nodes.get_node(conn, spec_id)
-        result = core.nodes.create_node(
-            conn,
-            project_id=spec_node["project_id"],
-            kind="task",
-            title=title,
-            parent_id=spec_id,
-            body_md=body,
-            criteria=list(criteria),
-            criteria_mode=criteria_mode,
-            predicted_touches=list(predicted_touches),
-            depends_on=list(depends_on),
-            status="pending",
-            actor="agent",
+        def _apply():
+            spec_node = core.nodes.get_node(conn, spec_id)
+            result = core.nodes.create_node(
+                conn,
+                project_id=spec_node["project_id"],
+                kind="task",
+                title=title,
+                parent_id=spec_id,
+                body_md=body,
+                criteria=list(criteria),
+                criteria_mode=criteria_mode,
+                predicted_touches=list(predicted_touches),
+                depends_on=list(depends_on),
+                status="pending",
+                actor="agent",
+            )
+            return result
+        result = core.idempotency.once(
+            conn, request_id, "decompose", _apply, actor="agent",
         )
     finally:
         conn.close()
@@ -679,12 +727,17 @@ def note(
     text: str = typer.Option(..., "--text"),
     kind: str = typer.Option("discovery", "--kind"),
     pinned: bool = typer.Option(False, "--pinned"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.nodes.add_note(conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned)
+        def _apply():
+            return core.nodes.add_note(conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned)
+        result = core.idempotency.once(
+            conn, request_id, "note", _apply, actor="agent",
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -694,7 +747,10 @@ def note(
 def ask(
     node_id: int = typer.Argument(...),
     question: str = typer.Option(..., "--question"),
-    default: str = typer.Option(None, "--default"),
+    default: str = typer.Option(..., "--default", help="proposed answer if no human replies"),
+    default_ok: bool = typer.Option(
+        False, "--default-ok", help="proceed with --default once ask_timeout_minutes passes"
+    ),
     request_id: str = typer.Option(None, "--request-id"),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
@@ -702,7 +758,8 @@ def ask(
     conn = _db_connect(repo_root)
     try:
         result = core.asks.ask(
-            conn, node_id, question=question, default=default, request_id=request_id
+            conn, node_id, question=question, default=default, default_ok=default_ok,
+            request_id=request_id,
         )
     finally:
         conn.close()
@@ -754,6 +811,7 @@ def replan(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this subtask waits on"
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Add a subtask within an already-approved task's stated scope. New
@@ -762,9 +820,13 @@ def replan(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.revisions.replan_add_subtask(
-            conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
-            depends_on=list(depends_on),
+        def _apply():
+            return core.revisions.replan_add_subtask(
+                conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
+                depends_on=list(depends_on),
+            )
+        result = core.idempotency.once(
+            conn, request_id, "replan", _apply, actor="agent",
         )
     finally:
         conn.close()
@@ -775,13 +837,19 @@ def replan(
 def propose_revision(
     project_id: int = typer.Argument(...),
     node_ids: str = typer.Option(..., "--node-ids", help="comma-separated node IDs"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        ids = [int(x) for x in node_ids.split(",") if x.strip()]
-        result = core.revisions.propose_revision(conn, project_id, ids)
+        def _apply():
+            ids = [int(x) for x in node_ids.split(",") if x.strip()]
+            result = core.revisions.propose_revision(conn, project_id, ids)
+            return result
+        result = core.idempotency.once(
+            conn, request_id, "propose-revision", _apply, actor="agent",
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -812,6 +880,7 @@ def approve(
         ..., help="'spec:ID', 'node:ID', 'gate2:PROJECT_ID', 'revision:PROJECT_ID:N', "
         "or 'review:ID'"
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human-only approval verb (never exposed over MCP): Gate 1 (spec),
@@ -822,23 +891,29 @@ def approve(
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
-        kind, _, rest = target.partition(":")
-        if kind == "spec":
-            result = core.gates.approve_spec(conn, int(rest))
-        elif kind == "node":
-            result = core.gates.approve_node(conn, int(rest), config=config)
-        elif kind == "gate2":
-            result = core.gates.approve_gate2(conn, int(rest), config=config)
-        elif kind == "revision":
-            project_id_s, _, n_s = rest.partition(":")
-            result = core.revisions.approve_revision(
-                conn, int(project_id_s), int(n_s), config=config
-            )
-        elif kind == "review":
-            result = core.nodes.approve_review(conn, int(rest))
-        else:
-            typer.echo(f"unknown approve target: {target!r}", err=True)
-            raise typer.Exit(1)
+        def _apply():
+            kind, _, rest = target.partition(":")
+            who = _human_kwargs()
+            if kind == "spec":
+                result = core.gates.approve_spec(conn, int(rest), **who)
+            elif kind == "node":
+                result = core.gates.approve_node(conn, int(rest), config=config, **who)
+            elif kind == "gate2":
+                result = core.gates.approve_gate2(conn, int(rest), config=config, **who)
+            elif kind == "revision":
+                project_id_s, _, n_s = rest.partition(":")
+                result = core.revisions.approve_revision(
+                    conn, int(project_id_s), int(n_s), config=config, **who
+                )
+            elif kind == "review":
+                result = core.nodes.approve_review(conn, int(rest), **who)
+            else:
+                typer.echo(f"unknown approve target: {target!r}", err=True)
+                raise typer.Exit(1)
+            return result
+        result = core.idempotency.once(
+            conn, request_id, "approve", _apply, actor=_invoker()[0],
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -848,6 +923,7 @@ def approve(
 def answer(
     question_id: int = typer.Argument(...),
     text: str = typer.Option(..., "--text"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human-only: answer an open question created by `ask` (never exposed
@@ -856,20 +932,64 @@ def answer(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.asks.answer(conn, question_id, text=text)
+        def _apply():
+            return core.asks.answer(conn, question_id, text=text, **_human_kwargs())
+        result = core.idempotency.once(
+            conn, request_id, "answer", _apply, actor=_invoker()[0],
+        )
     finally:
         conn.close()
     _echo_json(result)
 
 
 @app.command()
-def reject() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def reject(
+    target: str = typer.Argument(..., help="'review:NODE_ID' -- a node sitting in review"),
+    feedback: str = typer.Option(..., "--feedback", help="why, recorded as a feedback note"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb: send a node in `review` back to its owner (`in_progress`)
+    with feedback (`core.nodes.reject_review`)."""
+    kind, _, rest = target.partition(":")
+    if kind != "review" or not rest.isdigit():
+        typer.echo(f"unknown reject target: {target!r}; expected 'review:NODE_ID'", err=True)
+        raise typer.Exit(1)
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        def _apply():
+            return core.nodes.reject_review(conn, int(rest), feedback=feedback, **_human_kwargs())
+        result = core.idempotency.once(
+            conn, request_id, "reject", _apply, actor=_invoker()[0],
+        )
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
-def ack() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def ack(
+    event_id: int = typer.Argument(..., help="inbox item (event) id"),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Human verb: acknowledge an inbox item so it leaves the inbox."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        def _apply():
+            row = core.events.ack_event(conn, event_id, **_human_kwargs())
+            if row is None:
+                typer.echo(f"no such event: {event_id}", err=True)
+                raise typer.Exit(1)
+            return dict(row)
+        result = core.idempotency.once(
+            conn, request_id, "ack", _apply, actor=_invoker()[0],
+        )
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
@@ -923,6 +1043,7 @@ def merge(
         None, "--repo", help="'owner/name' for --create's `gh` call; omit to use the current "
         "directory's gh-detected repo",
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 6 "Merging"): attempt to merge strict-mode
@@ -940,23 +1061,28 @@ def merge(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        if node_id is not None:
-            result = core.merge.attempt_merge(conn, node_id, repo_root)
-            if pr:
-                node = core.nodes.get_node(conn, node_id)
-                body = core.pr.generate_pr_body(conn, node_id)
-                result["pr_body"] = body
-                if create:
-                    try:
-                        result["pr"] = core.github.create_pr_via_gh(
-                            head=f"node-{node_id}", base="main",
-                            title=node["title"], body=body, repo=repo,
-                        )
-                    except core.github.GithubError as exc:
-                        typer.echo(f"gh pr create failed: {exc}", err=True)
-                        raise typer.Exit(1) from exc
-        else:
-            result = core.merge.merge_pending(conn, repo_root)
+        def _apply():
+            if node_id is not None:
+                result = core.merge.attempt_merge(conn, node_id, repo_root)
+                if pr:
+                    node = core.nodes.get_node(conn, node_id)
+                    body = core.pr.generate_pr_body(conn, node_id)
+                    result["pr_body"] = body
+                    if create:
+                        try:
+                            result["pr"] = core.github.create_pr_via_gh(
+                                head=f"node-{node_id}", base="main",
+                                title=node["title"], body=body, repo=repo,
+                            )
+                        except core.github.GithubError as exc:
+                            typer.echo(f"gh pr create failed: {exc}", err=True)
+                            raise typer.Exit(1) from exc
+            else:
+                result = core.merge.merge_pending(conn, repo_root)
+            return result
+        result = core.idempotency.once(
+            conn, request_id, "merge", _apply, actor=_invoker()[0], atomic=False,
+        )
     finally:
         conn.close()
     _echo_json(result)
@@ -969,6 +1095,7 @@ def close(
         False, "--yes", help="commit the proposed structure diff and close the project "
         "(default: dry-run preview only)",
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 9): with `--yes`, commit the project's
@@ -980,20 +1107,63 @@ def close(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.close.close_project(conn, project_id, repo_root, confirm=yes)
+        def _apply():
+            return core.close.close_project(
+                conn, project_id, repo_root, confirm=yes, **_human_kwargs()
+            )
+        result = core.idempotency.once(
+            conn, request_id, "close", _apply, actor=_invoker()[0], atomic=False,
+        )
     finally:
         conn.close()
     _echo_json(result)
 
 
 @app.command()
-def pause() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def pause(
+    project_id: int = typer.Argument(...),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Emergency stop (plan section 5): the project refuses `start`, the
+    dashboard turns red, and its runner processes are killed -- their
+    in-flight nodes go back to `ready` without using up an attempt."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        def _apply():
+            return core.projects.pause_project(
+                conn, project_id, repo_root=repo_root, **_human_kwargs()
+            )
+        result = core.idempotency.once(
+            conn, request_id, "pause", _apply, actor=_invoker()[0], atomic=False,
+        )
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
-def resume() -> None:
-    typer.echo(NOT_IMPLEMENTED)
+def resume(
+    project_id: int = typer.Argument(...),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    """Reverse `pause`: the project goes back to `executing`."""
+    repo_root = _find_repo_root(path)
+    conn = _db_connect(repo_root)
+    try:
+        def _apply():
+            return core.projects.resume_project(conn, project_id, **_human_kwargs())
+        result = core.idempotency.once(
+            conn, request_id, "resume", _apply, actor=_invoker()[0],
+        )
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    finally:
+        conn.close()
+    _echo_json(result)
 
 
 @app.command()
@@ -1002,6 +1172,7 @@ def handoff(
     to: str = typer.Option(
         ..., "--to", help="new owner identity, e.g. a human session id or 'runner:<agent>'"
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 6 "Handoff"): reassign a node's lease so a
@@ -1011,8 +1182,13 @@ def handoff(
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
-        result = core.nodes.handoff(
-            conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
+        def _apply():
+            return core.nodes.handoff(
+                conn, node_id, new_owner=to, lease_minutes=config.planning.lease_minutes,
+                **_human_kwargs(),
+            )
+        result = core.idempotency.once(
+            conn, request_id, "handoff", _apply, actor=_invoker()[0],
         )
     finally:
         conn.close()
@@ -1033,6 +1209,7 @@ def import_(
         None, "--repo", help="'owner/name' for the `gh` fetch; omit to use the current "
         "directory's gh-detected repo",
     ),
+    request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 4/11): link NODE_ID to a GitHub issue/PR
@@ -1048,19 +1225,24 @@ def import_(
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        if data is not None:
-            result = core.imports.import_github_issue(
-                conn, node_id, issue_number, data_path=data,
-            )
-        else:
-            fetch_fn = functools.partial(core.github.fetch_issue_via_gh, repo=repo)
-            try:
+        def _apply():
+            if data is not None:
                 result = core.imports.import_github_issue(
-                    conn, node_id, issue_number, fetch_fn=fetch_fn,
+                    conn, node_id, issue_number, data_path=data, **_human_kwargs(),
                 )
-            except core.github.GithubError as exc:
-                typer.echo(f"gh fetch failed: {exc}", err=True)
-                raise typer.Exit(1) from exc
+            else:
+                fetch_fn = functools.partial(core.github.fetch_issue_via_gh, repo=repo)
+                try:
+                    result = core.imports.import_github_issue(
+                        conn, node_id, issue_number, fetch_fn=fetch_fn, **_human_kwargs(),
+                    )
+                except core.github.GithubError as exc:
+                    typer.echo(f"gh fetch failed: {exc}", err=True)
+                    raise typer.Exit(1) from exc
+            return result
+        result = core.idempotency.once(
+            conn, request_id, "import", _apply, actor=_invoker()[0], atomic=False,
+        )
     finally:
         conn.close()
     _echo_json(result)

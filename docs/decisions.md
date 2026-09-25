@@ -1802,3 +1802,55 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `--project-id` it writes every project's `.jsonl.gz` archive plus
     `unscoped.jsonl.gz`, instead of a flat `events.json`.
 
+122. **`pause` is an emergency stop for running agents.** Every `muvue
+    run` process registers itself in `.muvue/runners/<pid>.json` and
+    handles SIGTERM. `pause` sends SIGTERM to the project's runners and
+    waits up to 15s for their registry files to disappear. It checks the
+    registry file rather than the PID, because a zombie runner still
+    has a PID. The runner kills each driver's process group (drivers
+    run under `start_new_session=True`) and releases its leases to
+    `ready` without using up an attempt: the agent didn't fail, a human
+    stopped it. A runner that finds its project paused between nodes
+    also stops, with reason `project_paused`.
+
+123. **Invoker detection is implemented; supersedes #73.** v4 section 4
+    names `actor_evidence` as the compensating control for agents
+    calling human verbs. `core.actor.detect_invoker` walks the parent
+    process chain through `/proc/<pid>/stat` and `cmdline`, falling
+    back to `ps` where there is no `/proc`. An ancestor whose command
+    name or argv[0] is a known agent CLI (`claude`, `codex`, `gemini`,
+    `cursor-agent`, `aider`) makes the call `actor=agent`,
+    `actor_evidence=agent_parent:<name>`. `require_human` still allows
+    that pairing, because v4 principle 10 asks for detection, not
+    prevention: an agent can get a TTY, so blocking here would only
+    look like safety. Otherwise the evidence is `tty` or `no_tty`. The
+    API records `dashboard_token` and MCP records `mcp`, as before.
+
+124. **Request-id for verbs that have no event of their own.** `start`,
+    `done`, `fail` and `ask` already dedupe on their own events. Every
+    other mutating verb goes through `core.idempotency.once`, which
+    records a `request.<verb>.completed` event carrying the result and
+    replays that result for a duplicate within 24h. Verbs that do slow
+    work outside the DB (merge, close, import, pause) check and record
+    in separate transactions, so the write lock isn't held across git
+    or process waits. Two concurrent duplicates of those verbs can
+    therefore both run, and each verb's own idempotency covers that
+    race. The API reads the id from the `X-Request-Id` header, so a
+    body-less POST can carry one.
+
+125. **`ask` takes the default policy at ask time.** v4 section 4 puts
+    `--default-ok` on `ask`, not `wait`. It is stored as
+    `questions.default_ok` (schema 7). `wait` applies the default on
+    timeout if either the question or the `wait` call says so. `wait
+    --default-ok` is kept for compatibility. `--default` is required,
+    because an unanswered question with no proposal can only block.
+
+126. **Criteria edits after `start` park the node.** Before this,
+    `edit_criteria` refused an `in_progress` node, so `awaiting_approval`
+    was unreachable and the PreToolUse check for it was dead code. A
+    changed criteria hash on an `in_progress` node now moves it to
+    `awaiting_approval`, keeping the owner and lease, with the tier
+    forced to `high`. `approve_node` accepts `awaiting_approval`,
+    refreezes the hash, and moves the node back to `in_progress`. An
+    edit that leaves the hash unchanged only bumps `version`, as
+    before.

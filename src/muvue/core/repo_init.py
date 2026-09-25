@@ -143,6 +143,9 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         ".muvue/queue.lock",
         # `muvue rebuild --apply` backups.
         ".muvue/muvue.db.bak-*",
+        # Runner registry (core/runners.py) and per-node driver logs.
+        ".muvue/runners/",
+        ".muvue/logs/",
         # Not listed in plan section 2's committed-files table (only
         # config.toml/components.json/decisions.json are meant to be
         # committed) -- gitignored so an ordinary `git add -A` mid-project

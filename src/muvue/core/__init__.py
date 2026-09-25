@@ -5,6 +5,7 @@ it issues raw SQL against .muvue/muvue.db.
 """
 
 from . import (
+    actor,
     adapters,
     asks,
     close,
@@ -18,6 +19,7 @@ from . import (
     github,
     history,
     hooks,
+    idempotency,
     imports,
     merge,
     migrate,
@@ -31,6 +33,7 @@ from . import (
     revisions,
     risk,
     runner,
+    runners,
     spend,
     state_machine,
     strict,
@@ -39,6 +42,7 @@ from . import (
 from .config import ConfigError, MuvueConfig, load_config
 
 __all__ = [
+    "actor",
     "adapters",
     "asks",
     "close",
@@ -52,6 +56,7 @@ __all__ = [
     "github",
     "history",
     "hooks",
+    "idempotency",
     "imports",
     "merge",
     "migrate",
@@ -65,6 +70,7 @@ __all__ = [
     "revisions",
     "risk",
     "runner",
+    "runners",
     "spend",
     "state_machine",
     "strict",

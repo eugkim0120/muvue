@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events
 from . import nodes as nodes_mod
@@ -29,13 +30,11 @@ class HumanOnly(GateError):
     human verb directly against core to be refused by core itself."""
 
 
-def _require_human(actor: str) -> None:
-    if actor != "human":
-        raise HumanOnly(
-            f"only a human may perform this action (actor was {actor!r}); "
-            "human verbs are never exposed over MCP (plan section 4)"
-        )
-
+def _require_human(actor: str, actor_evidence: str | None = None) -> None:
+    try:
+        actor_mod.require_human(actor, actor_evidence)
+    except actor_mod.HumanOnly as e:
+        raise HumanOnly(str(e)) from None
 
 def _hash_criteria(criteria_json: str) -> str:
     return hashlib.sha256(criteria_json.encode()).hexdigest()
@@ -70,7 +69,7 @@ def approve_spec(
 ) -> dict:
     """Gate 1 approval: pending -> ready. Human-only, enforced here (see
     `_require_human`/`HumanOnly`) -- not only at the CLI layer."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = nodes_mod.get_node(conn, node_id)
         if node["kind"] != "spec":
@@ -124,10 +123,10 @@ def approve_node(
     `pending -> ready`. Used for the initial Gate 2 approval of a task node
     and for re-approval after a post-freeze criteria edit (both are the
     same operation: freeze the current criteria, unblock `start`)."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = nodes_mod.get_node(conn, node_id)
-        if node["status"] != "pending":
+        if node["status"] not in ("pending", "awaiting_approval"):
             raise GateError(
                 f"node {node_id} is status={node['status']!r}, not pending approval"
             )
@@ -176,7 +175,10 @@ def approve_node(
             )
         frozen_hash = _hash_criteria(node["criteria_json"])
         conn.execute("UPDATE nodes SET criteria_hash = ? WHERE id = ?", (frozen_hash, node_id))
-        row = nodes_mod.ready(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        if node["status"] == "awaiting_approval":
+            row = nodes_mod.resume_approved(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        else:
+            row = nodes_mod.ready(conn, node_id, actor=actor, actor_evidence=actor_evidence)
         return {"node": dict(row), "warnings": warnings}
 
 
@@ -202,7 +204,7 @@ def approve_gate2(
     freezing each one's criteria and running the granularity lint. On
     success flips `project.phase` from `planning` to `executing`, which is
     what `start` gates on (P1 acceptance #1)."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         pending = conn.execute(
             "SELECT * FROM nodes WHERE project_id = ? AND kind IN ('task', 'subtask') "
@@ -248,10 +250,12 @@ def edit_criteria(
     (has a `criteria_hash` from a prior Gate 2 / revision approval) and the
     new criteria hash differs, bump `risk_tier` to `high` and pull the node
     back to `pending` so `start` is refused until a human re-approves it
-    via `approve_node` (P1 acceptance #2)."""
+    via `approve_node` (P1 acceptance #2). An `in_progress` node keeps its
+    lease and parks in `awaiting_approval` instead (v4 section 5);
+    `approve_node` hands it back to the same owner."""
     with db_mod.write_txn(conn):
         node = nodes_mod.get_node(conn, node_id)
-        if node["status"] not in ("ready", "pending"):
+        if node["status"] not in ("ready", "pending", "in_progress"):
             raise GateError(
                 f"cannot edit criteria on node {node_id} while status={node['status']!r}"
             )
@@ -285,5 +289,7 @@ def edit_criteria(
 
         if changed and row["status"] == "ready":
             row = nodes_mod.to_pending(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        elif changed and row["status"] == "in_progress":
+            row = nodes_mod.await_approval(conn, node_id, actor=actor, actor_evidence=actor_evidence)
 
         return {"node": dict(row), "re_approval_required": changed}

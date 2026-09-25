@@ -25,8 +25,8 @@ def conn(tmp_path: Path):
     c.close()
 
 
-def test_schema_version_is_6():
-    assert SCHEMA_VERSION == 6
+def test_schema_version_is_7():
+    assert SCHEMA_VERSION == 7
 
 
 def test_new_columns_and_tables_exist(conn):

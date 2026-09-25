@@ -58,6 +58,10 @@ def run_migrate(repo_root: Path) -> int:
             # per-project budget columns.
             for column in ("budget_unit", "budget_limit", "spent"):
                 _drop_column_if_present(conn, "projects", column)
+            # SCHEMA_VERSION 6 -> 7 (v4 section 4): questions.default_ok.
+            _add_column_if_missing(
+                conn, "questions", "default_ok", "INTEGER NOT NULL DEFAULT 0"
+            )
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

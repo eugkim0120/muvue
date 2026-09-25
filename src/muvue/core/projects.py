@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events
 from . import gitutil
@@ -107,3 +108,42 @@ def set_phase(
             payload=dict(row),
         )
         return row
+
+
+def pause_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    *,
+    repo_root: Path | None = None,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+) -> dict:
+    """Emergency stop (plan section 5): refuse `start`, flip the dashboard
+    red, and kill the project's runner processes. The phase change is
+    committed before runners are signalled, so a runner that is mid-node
+    sees `paused` and stops cleanly; its driver subprocesses are killed and
+    their nodes released to `ready` (see `core.runners.stop`)."""
+    actor_mod.require_human(actor, actor_evidence)
+    row = set_phase(conn, project_id, "paused", actor=actor, actor_evidence=actor_evidence)
+    stopped: list[int] = []
+    if repo_root is not None:
+        from . import runners as runners_mod
+
+        stopped = runners_mod.stop(repo_root, project_id)
+    return {"project": dict(row), "stopped_runners": stopped}
+
+
+def resume_project(
+    conn: sqlite3.Connection,
+    project_id: int,
+    *,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+) -> dict:
+    """Reverse `pause_project`: back to `executing`. Only a paused project
+    can be resumed (a planning project still needs Gate 2)."""
+    actor_mod.require_human(actor, actor_evidence)
+    if get_project(conn, project_id)["phase"] != "paused":
+        raise ValueError(f"project {project_id} is not paused")
+    row = set_phase(conn, project_id, "executing", actor=actor, actor_evidence=actor_evidence)
+    return {"project": dict(row)}

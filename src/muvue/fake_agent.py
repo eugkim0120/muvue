@@ -51,6 +51,8 @@ vacuous lessons); adversarial (...); rate-limited"):
   report).
 - `failed` -- reports a clean `status: "failed"` result (the driver ran
   and cleanly reported it could not complete the work).
+- `slow` -- prints progress, sleeps `MUVUE_FAKE_SLEEP_SECONDS` (default
+  30), then succeeds: a long-running agent for pause and log-tail tests.
 
 `--check` runs this script in "auth_check" mode instead (e.g.
 `auth_check = "muvue-fake-agent --check"`): prints a version line and
@@ -65,7 +67,7 @@ import json
 import os
 import sys
 
-BEHAVIORS = ("cooperative", "lazy", "adversarial", "rate_limited", "crash", "failed")
+BEHAVIORS = ("cooperative", "lazy", "adversarial", "rate_limited", "crash", "failed", "slow")
 
 
 def _result_line(**fields) -> str:
@@ -77,8 +79,15 @@ def _run(behavior: str, brief_raw: str) -> int:
     # result line; a couple of harmless non-result JSON lines here keep
     # the shape realistic and exercise the parser's "only the last result
     # line wins" contract.
-    print(json.dumps({"type": "progress", "message": "reading brief"}))
-    print(json.dumps({"type": "progress", "message": f"behavior={behavior}"}))
+    print(json.dumps({"type": "progress", "message": "reading brief"}), flush=True)
+    print(json.dumps({"type": "progress", "message": f"behavior={behavior}"}), flush=True)
+
+    if behavior == "slow":
+        import time
+
+        print(json.dumps({"type": "progress", "message": "working slowly"}), flush=True)
+        time.sleep(float(os.environ.get("MUVUE_FAKE_SLEEP_SECONDS", "30")))
+        behavior = "cooperative"
 
     if behavior == "cooperative":
         print(_result_line(

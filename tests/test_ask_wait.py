@@ -147,3 +147,51 @@ def test_answer_via_real_cli(conn, in_progress_task, tmp_path: Path):
     payload = json.loads(result.stdout)
     assert payload["question"]["status"] == "answered"
     assert payload["question"]["answer"] == "yes, proceed"
+
+
+# -- v4 section 4: `ask --default TEXT --default-ok` ------------------------
+
+
+def test_ask_requires_a_proposed_default(conn, in_progress_task):
+    with pytest.raises(asks.AskError, match="default"):
+        asks.ask(conn, in_progress_task["id"], question="q?", default="")
+
+
+def test_default_ok_set_at_ask_time_applies_default_on_timeout(conn, in_progress_task, config):
+    q = asks.ask(
+        conn, in_progress_task["id"], question="q?", default="yes", default_ok=True
+    )["question"]
+    assert q["default_ok"] == 1
+    past_deadline = datetime.now(timezone.utc) + timedelta(
+        minutes=config.planning.ask_timeout_minutes + 1
+    )
+    result = asks.wait(
+        conn, q["id"], timeout_minutes=config.planning.ask_timeout_minutes, now=past_deadline
+    )
+    assert result == {"status": "default_applied", "answer": "yes"}
+    assert nodes.get_node(conn, in_progress_task["id"])["status"] == "in_progress"
+
+
+def test_cli_ask_default_is_required_and_default_ok_is_stored(tmp_path: Path):
+    init_repo(tmp_path)
+    repo_conn = core_db.connect(tmp_path / ".muvue" / "muvue.db")
+    project = projects.create_project(repo_conn, goal="cli ask")
+    task = nodes.create_node(
+        repo_conn, project_id=project["id"], kind="task", title="t",
+        criteria=["works"], criteria_mode="auto", status="pending",
+    )
+    gates.approve_gate2(repo_conn, project["id"], config=MuvueConfig())
+    repo_conn.close()
+
+    def cli(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "muvue", *args, "--path", str(tmp_path)],
+            cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        )
+
+    missing = cli("ask", str(task["id"]), "--question", "q?")
+    assert missing.returncode != 0
+    assert "--default" in missing.stderr
+    ok = cli("ask", str(task["id"]), "--question", "q?", "--default", "yes", "--default-ok")
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads(ok.stdout)["question"]["default_ok"] == 1

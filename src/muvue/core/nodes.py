@@ -18,6 +18,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from . import actor as actor_mod
 from . import db as db_mod
 from . import events, gitutil, review, risk, state_machine
 
@@ -39,13 +40,11 @@ class HumanOnly(NodeError):
     CLI/API/MCP surface)."""
 
 
-def _require_human(actor: str) -> None:
-    if actor != "human":
-        raise HumanOnly(
-            f"only a human may perform this action (actor was {actor!r}); "
-            "human verbs are never exposed over MCP (plan section 4)"
-        )
-
+def _require_human(actor: str, actor_evidence: str | None = None) -> None:
+    try:
+        actor_mod.require_human(actor, actor_evidence)
+    except actor_mod.HumanOnly as e:
+        raise HumanOnly(str(e)) from None
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -193,6 +192,27 @@ def ready(
         )
 
 
+def release_lease(
+    conn: sqlite3.Connection,
+    node_id: int,
+    *,
+    owner: str,
+    actor: str = "daemon",
+    actor_evidence: str = "subprocess",
+) -> sqlite3.Row:
+    """in_progress -> ready with the lease cleared and `attempts` left
+    alone: the work was interrupted (a `pause` stopped its runner), not
+    failed by the agent."""
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        return _apply_transition(
+            conn, node, to_status="ready", lease_actor=owner, event_actor_role=actor,
+            event_type="node.released", request_id=None,
+            extra_columns={"owner": None, "lease_until": None},
+            actor_evidence=actor_evidence,
+        )
+
+
 def to_pending(
     conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
 ) -> sqlite3.Row:
@@ -204,6 +224,34 @@ def to_pending(
         return _apply_transition(
             conn, node, to_status="pending", lease_actor=node["owner"] or "",
             event_actor_role=actor, event_type="node.pending", request_id=None,
+            actor_evidence=actor_evidence,
+        )
+
+
+def await_approval(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> sqlite3.Row:
+    """in_progress -> awaiting_approval. A criteria edit after Gate 2
+    parks the running node, lease intact, until a human re-approves
+    (v4 section 5); PreToolUse blocks edits meanwhile."""
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        return _apply_transition(
+            conn, node, to_status="awaiting_approval", lease_actor=node["owner"] or "",
+            event_actor_role=actor, event_type="node.awaiting_approval", request_id=None,
+            actor_evidence=actor_evidence,
+        )
+
+
+def resume_approved(
+    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+) -> sqlite3.Row:
+    """awaiting_approval -> in_progress, same owner, after re-approval."""
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        return _apply_transition(
+            conn, node, to_status="in_progress", lease_actor=node["owner"] or "",
+            event_actor_role=actor, event_type="node.approval_resumed", request_id=None,
             actor_evidence=actor_evidence,
         )
 
@@ -523,7 +571,7 @@ def approve_review(
     Logs a `metric.rubber_stamp` event when the elapsed time since the
     node entered `review` is under 10 seconds (plan section 5: "Time-to-
     approve under 10s is logged as a rubber-stamp signal")."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = get_node(conn, node_id)
         if node["status"] != "review":
@@ -574,7 +622,7 @@ def reject_review(
     `reject --feedback`): review -> in_progress, feedback recorded as a
     `feedback` note so the agent picks it up on its next `brief`/`show`.
     Refuses (`HumanOnly`) if `actor != "human"`."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = get_node(conn, node_id)
         if node["status"] != "review":
@@ -711,7 +759,7 @@ def handoff(
     happening, not who the new owner will be). An already-`in_progress`
     node has no status change to validate, so its owner/lease are updated
     directly. Refuses (`HumanOnly`) if `actor != "human"`."""
-    _require_human(actor)
+    _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = get_node(conn, node_id)
         if node["status"] not in ("in_progress", "blocked"):

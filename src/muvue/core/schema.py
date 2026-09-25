@@ -28,9 +28,12 @@ Process graph tables per plan section 3, plus empty structure-graph tables
   per-project `projects.budget_unit/budget_limit/spent` columns. v4
   budgets are per driver (`[agents.<x>.budget]`, `agent_spend`); nothing
   ever enforced the old columns.
+- SCHEMA_VERSION 6 -> 7 (v4 section 4, `ask --default TEXT --default-ok`):
+  `questions.default_ok` -- set when the agent asks, so `wait` applies
+  the proposed default on timeout without needing its own flag.
 """
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -201,6 +204,7 @@ CREATE TABLE IF NOT EXISTS questions (
     project_id INTEGER NOT NULL REFERENCES projects(id),
     text TEXT NOT NULL,
     default_answer TEXT,
+    default_ok INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'answered', 'timed_out')),
     answer TEXT,
