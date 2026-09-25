@@ -1292,8 +1292,36 @@ def import_(
     _echo_json(result)
 
 
+def _user_errors() -> tuple[type[Exception], ...]:
+    """Core's domain errors: the ones the API maps to 404/409, plus
+    strict-mode and config failures. They describe the user's input or
+    the project's state, so the CLI reports them as one line."""
+    return (
+        LookupError,
+        core.nodes.NodeError,
+        core.gates.GateError,
+        core.asks.AskError,
+        core.state_machine.InvalidTransition,
+        core.state_machine.NotLeaseOwner,
+        core.merge.MergeError,
+        core.close.CloseError,
+        core.imports.ImportError_,
+        core.actor.HumanOnly,
+        core.strict.StrictModeError,
+        core.config.ConfigError,
+    )
+
+
 def main() -> None:
-    app()
+    try:
+        app()
+    except _user_errors() as e:
+        # KeyError and IndexError are LookupErrors too, but from muvue
+        # they mean a bug, so they keep their traceback.
+        if isinstance(e, (KeyError, IndexError)):
+            raise
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
