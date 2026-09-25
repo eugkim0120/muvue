@@ -44,11 +44,12 @@ def _start(conn: sqlite3.Connection, config, args: dict, repo_root: Path | None 
     )
 
 
-def _done(conn: sqlite3.Connection, config, args: dict) -> dict:
+def _done(conn: sqlite3.Connection, config, args: dict, repo_root: Path) -> dict:
     return core.nodes.done(
         conn, args["node_id"], owner=args["owner"], summary=args.get("summary"),
         request_id=args.get("request_id"), config=config,
         expected_version=args.get("version"), actor_evidence="mcp",
+        run_checks=core.review.default_run_checks, cwd=str(repo_root),
     )
 
 
@@ -92,7 +93,8 @@ def _replan(conn: sqlite3.Connection, config, args: dict) -> dict:
         conn, args.get("request_id"), "replan",
         lambda: core.revisions.replan_add_subtask(
             conn, parent_task_id=args["parent_task_id"], title=args["title"],
-            body_md=args.get("body_md", ""), actor_evidence="mcp",
+            body_md=args.get("body_md", ""), predicted_touches=args.get("predicted_touches"),
+            config=config, actor_evidence="mcp",
         ),
         actor="agent",
     )
@@ -112,7 +114,7 @@ TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "note": (_note, {"type": "object", "properties": {"node_id": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}, "pinned": {"type": "boolean"}, "request_id": {"type": "string"}}, "required": ["node_id", "text"]}, "Record a discovery/decision/lesson note."),
     "ask": (_ask, {"type": "object", "properties": {"node_id": {"type": "integer"}, "question": {"type": "string"}, "default": {"type": "string"}, "default_ok": {"type": "boolean"}, "request_id": {"type": "string"}}, "required": ["node_id", "question", "default"]}, "Ask a human a question with a proposed default."),
     "wait": (_wait, {"type": "object", "properties": {"question_id": {"type": "integer"}, "default_ok": {"type": "boolean"}}, "required": ["question_id"]}, "Poll a question once."),
-    "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
+    "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}, "predicted_touches": {"type": "array", "items": {"type": "string"}}, "request_id": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
     "status": (_status, {"type": "object", "properties": {"project_id": {"type": "integer"}}}, "Node counts by status."),
 }
 
@@ -145,7 +147,7 @@ def _call_tool(repo_root: Path, config, name: str, arguments: dict) -> dict:
             # coherence -- "every start" -- and, pre-existing, strict-mode
             # worktree binding; every other verb's core.* call takes
             # (conn, ...) with no repo_root parameter at all).
-            if name == "start":
+            if name in ("start", "done"):
                 result = handler(conn, config, arguments, repo_root)
             else:
                 result = handler(conn, config, arguments)

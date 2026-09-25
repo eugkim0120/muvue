@@ -35,6 +35,7 @@ from . import nodes as nodes_mod
 from . import projects as projects_mod
 from . import runners as runners_mod
 from . import queries
+from . import review as review_mod
 from . import spend as spend_mod
 from .config import MuvueConfig
 
@@ -437,7 +438,7 @@ def run_node(
     if result.status == "done":
         outcome = nodes_mod.done(
             conn, node["id"], owner=owner, summary=result.summary or None, config=config,
-            run_checks=None, cwd=cwd, actor_evidence="subprocess",
+            run_checks=review_mod.default_run_checks, cwd=cwd, actor_evidence="subprocess",
         )
         node_status = outcome["node"]["status"]
         return {

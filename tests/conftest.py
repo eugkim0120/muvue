@@ -43,3 +43,18 @@ def make_git_fixture(tmp_path: Path, name: str) -> Path:
 @pytest.fixture(params=FIXTURE_NAMES)
 def git_fixture_repo(tmp_path, request) -> Path:
     return make_git_fixture(tmp_path, request.param)
+
+
+def use_passing_checks(repo_root: Path) -> None:
+    """`done` runs `[checks] test` and `lint` itself (v4 section 5). A
+    temp repo has no test suite (and this host may lack ruff), so tests
+    that expect an auto-approved `done` through the CLI point both
+    commands at `true`."""
+    config_path = repo_root / ".muvue" / "config.toml"
+    text = config_path.read_text()
+    for line in ('test = "pytest -q"', 'lint = "ruff check ."'):
+        assert line in text, f"fixture assumes DEFAULT_CONFIG_TOML has {line!r}"
+    text = text.replace('test = "pytest -q"', 'test = "true"').replace(
+        'lint = "ruff check ."', 'lint = "true"'
+    )
+    config_path.write_text(text)

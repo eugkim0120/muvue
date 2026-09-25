@@ -233,7 +233,8 @@ def test_strict_auto_checks_run_in_the_worktree_not_repo_root(conn, project, str
     from muvue.core import review
 
     review.dispatch(conn, node, strict_config, run_checks=fake_run_checks, cwd=str(repo))
-    assert seen_cwds == [result["node"]["worktree"]]
+    # test and lint both run, both in the worktree.
+    assert seen_cwds == [result["node"]["worktree"]] * 2
 
 
 def test_strict_dispatch_is_noop_when_no_worktree_bound(conn, project, strict_config):

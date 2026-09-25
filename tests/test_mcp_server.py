@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from muvue.core import db as core_db, gates, nodes, projects
-from muvue.core.config import MuvueConfig
+from muvue.core.config import ChecksConfig, MuvueConfig
 from muvue.core.repo_init import init_repo
 from muvue.mcp_server import TOOLS, handle_request
 
@@ -27,7 +27,9 @@ def repo_root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config() -> MuvueConfig:
-    return MuvueConfig()
+    # `done` runs [checks] itself (v4 section 5); the temp repo has no
+    # test suite, so use commands that pass.
+    return MuvueConfig(checks=ChecksConfig(test="true", lint="true"))
 
 
 @pytest.fixture

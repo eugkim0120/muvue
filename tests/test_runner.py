@@ -19,7 +19,11 @@ import pytest
 
 from muvue.core import db as core_db
 from muvue.core import gates, nodes, projects, runner as runner_mod
-from muvue.core.config import AgentBudgetConfig, AgentConfig, MuvueConfig, RoutingConfig
+from muvue.core.config import AgentBudgetConfig, AgentConfig, ChecksConfig, MuvueConfig, RoutingConfig
+
+# `done` runs [checks] itself (v4 section 5); temp repos have no test
+# suite, so the runner tests use commands that pass.
+PASSING_CHECKS = ChecksConfig(test="true", lint="true")
 
 FAKE_AGENT_AVAILABLE = shutil.which("muvue-fake-agent") is not None
 pytestmark = pytest.mark.skipif(
@@ -30,6 +34,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 def config() -> MuvueConfig:
     return MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens"),
         },
@@ -218,6 +223,7 @@ def test_rate_limit_wait_mode_blocks_without_fallback(conn, project, db_path, re
         conn, project_id=project["id"], kind="task", title="t", status="ready",
     )
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(
                 command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
@@ -317,6 +323,7 @@ def test_one_driver_exhausted_other_driver_keeps_scheduling(conn, project, db_pa
     its nodes stop getting scheduled while the generous one's nodes keep
     completing, and the run doesn't halt overall."""
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "tight": AgentConfig(
                 command="muvue-fake-agent", usage_parser="fake", cost_model="tokens",
@@ -406,6 +413,7 @@ def test_max_wall_clock_minutes_stops_independent_of_driver_budget(conn, project
 
 def test_routing_picks_agent_by_node_kind(conn, project, db_path, repo_root):
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens"),
             "other": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens"),
@@ -419,6 +427,7 @@ def test_routing_picks_agent_by_node_kind(conn, project, db_path, repo_root):
 
 def test_agent_override_beats_routing(conn, project, db_path, repo_root):
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens"),
             "other": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens"),
@@ -511,6 +520,7 @@ def test_max_concurrency_caps_batch_per_agent(conn):
     project = projects.create_project(conn, goal="concurrency cap")
     projects.set_phase(conn, project["id"], "executing")
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={"fake": AgentConfig(command="muvue-fake-agent", usage_parser="fake", cost_model="tokens", max_concurrency=1)},
         routing=RoutingConfig(spec="fake", task="fake", subtask="fake"),
     )

@@ -94,7 +94,29 @@ def show_node(conn: sqlite3.Connection, node_id: int) -> dict:
             (node_id,),
         )
     ]
-    return {"node": dict(node), "notes": notes, "commits": commits, "predicted_touches": touches}
+    return {
+        "node": dict(node), "notes": notes, "commits": commits, "predicted_touches": touches,
+        "verification": _VERIFICATION[node["criteria_mode"]],
+    }
+
+
+# v4 section 5: muvue runs `auto` criteria itself; `external` ones run in
+# the agent's environment and are shown as unverified; `manual` waits
+# for a human.
+_VERIFICATION = {"auto": "checked_by_muvue", "external": "unverified", "manual": "human"}
+
+
+def unverified_external(conn: sqlite3.Connection) -> list[dict]:
+    """Nodes in review whose criteria muvue could not run (`external`):
+    the inbox lists them so a human checks before approving."""
+    return [
+        {"node_id": r["id"], "project_id": r["project_id"], "title": r["title"]}
+        for r in db_mod.query_all(
+            conn,
+            "SELECT id, project_id, title FROM nodes WHERE status = 'review' "
+            "AND criteria_mode = 'external' AND deleted_at IS NULL ORDER BY id",
+        )
+    ]
 
 
 def brief_node(conn: sqlite3.Connection, node_id: int) -> dict:

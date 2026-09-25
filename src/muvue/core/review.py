@@ -78,20 +78,48 @@ def _criteria_mode_result(node: sqlite3.Row, config: MuvueConfig, *, run_checks,
             "payload": {"node_id": node["id"]},
         }
     if mode == "auto" and run_checks is not None:
-        # Only actually runs a check command when the caller opts in by
-        # passing `run_checks` (the CLI/API wire in `default_run_checks`,
-        # a real subprocess call -- see core.nodes.done). Every existing
-        # P0-P2 call site omits it, so this preserves their exact
-        # behavior: `core.risk`'s tier/test-touch gate alone still
-        # decides auto-criteria nodes when no check runner is wired in.
-        passed = run_checks(config.checks.test, cwd)
-        if not passed:
-            return {
-                "flag": True,
-                "event_type": "review.auto_check_failed",
-                "payload": {"node_id": node["id"], "command": config.checks.test},
-            }
+        # Every surface (CLI, MCP, API, runner) wires in
+        # `default_run_checks`; `core.nodes.done` runs them before its
+        # write transaction and hands the results in here. `None` is
+        # left for core unit tests that exercise the tier gate alone.
+        for command in check_commands(config):
+            if not run_checks(command, cwd):
+                return {
+                    "flag": True,
+                    "event_type": "review.auto_check_failed",
+                    "payload": {"node_id": node["id"], "command": command},
+                }
     return {"flag": False, "event_type": None, "payload": {}}
+
+
+def check_commands(config: MuvueConfig) -> list[str]:
+    """`[checks] test` then `[checks] lint`; an empty command is skipped."""
+    return [c for c in (config.checks.test, config.checks.lint) if c.strip()]
+
+
+def check_cwd(node: sqlite3.Row, config: MuvueConfig, cwd: str) -> str | None:
+    """Where `dispatch` runs checks for this node: the checkout in light
+    mode, the node's own worktree in strict mode (None if it has none,
+    in which case strict dispatch is a no-op)."""
+    if config.mode == "strict":
+        return node["worktree"]
+    return cwd
+
+
+def precompute_checks(
+    node: sqlite3.Row, config: MuvueConfig, run_checks: RunChecks | None, cwd: str
+) -> RunChecks | None:
+    """Run the check commands now and return a lookup with the same
+    signature as `run_checks`. `core.nodes.done` calls this before it
+    opens its write transaction, so a slow test suite never holds the
+    database write lock."""
+    if run_checks is None or node["criteria_mode"] != "auto":
+        return run_checks
+    where = check_cwd(node, config, cwd)
+    if where is None:
+        return run_checks
+    results = {command: run_checks(command, where) for command in check_commands(config)}
+    return lambda command, _cwd: results[command]
 
 
 def _stale_touched_component_ids(conn: sqlite3.Connection, node: sqlite3.Row) -> list[int]:

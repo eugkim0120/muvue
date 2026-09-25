@@ -11,6 +11,7 @@ nodes that changed. Nodes untouched by the diff keep their existing
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import sqlite3
 
@@ -33,34 +34,70 @@ def replan_add_subtask(
     body_md: str = "",
     criteria: list[str] | None = None,
     depends_on: list[int] | None = None,
+    predicted_touches: list[str] | None = None,
+    config: MuvueConfig | None = None,
     actor: str = "agent",
     actor_evidence: str = "tty",
 ) -> dict:
-    """Add a subtask within an approved task's stated scope. No new
-    approval required (plan section 6): the subtask is created `ready`
-    directly, since it inherits scope from its already-approved parent."""
-    parent = nodes_mod.get_node(conn, parent_task_id)
-    if parent["kind"] != "task":
-        raise GateError(f"node {parent_task_id} is kind={parent['kind']!r}, not a task")
-    if parent["criteria_hash"] is None:
-        raise GateError(
-            f"task {parent_task_id} has not been Gate 2 approved yet; "
-            "replan cannot add subtasks to an unapproved task"
+    """Add a subtask under an approved task. Plan section 6: `replan` may
+    add subtasks "within an approved task's stated scope without
+    approval". Inside scope means every predicted touch falls under one
+    of the parent's `predicted_touches` globs, and the parent has fewer
+    than `planning.max_subtasks` subtasks. Such a subtask is created
+    `ready`. Anything else is created `pending`, which needs `approve
+    task:ID`, and a `replan.gated` event records why."""
+    max_subtasks = (config or MuvueConfig()).planning.max_subtasks
+    with db_mod.write_txn(conn):
+        parent = nodes_mod.get_node(conn, parent_task_id)
+        if parent["kind"] != "task":
+            raise GateError(f"node {parent_task_id} is kind={parent['kind']!r}, not a task")
+        if parent["criteria_hash"] is None:
+            raise GateError(
+                f"task {parent_task_id} has not been Gate 2 approved yet; "
+                "replan cannot add subtasks to an unapproved task"
+            )
+        parent_globs = [
+            r["path_glob"]
+            for r in conn.execute(
+                "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (parent_task_id,)
+            )
+        ]
+        outside = [
+            t for t in predicted_touches or []
+            if not any(fnmatch.fnmatch(t, g) for g in parent_globs)
+        ]
+        existing = conn.execute(
+            "SELECT COUNT(*) c FROM nodes WHERE parent_id = ? AND kind = 'subtask' "
+            "AND deleted_at IS NULL",
+            (parent_task_id,),
+        ).fetchone()["c"]
+        reasons = []
+        if outside:
+            reasons.append(f"touches outside the parent's predicted_touches: {outside}")
+        if existing >= max_subtasks:
+            reasons.append(f"parent already has {existing} subtasks (max_subtasks={max_subtasks})")
+
+        row = nodes_mod.create_node(
+            conn,
+            project_id=parent["project_id"],
+            parent_id=parent_task_id,
+            kind="subtask",
+            title=title,
+            body_md=body_md,
+            criteria=criteria,
+            depends_on=depends_on,
+            predicted_touches=predicted_touches,
+            status="pending" if reasons else "ready",
+            actor=actor,
+            actor_evidence=actor_evidence,
         )
-    row = nodes_mod.create_node(
-        conn,
-        project_id=parent["project_id"],
-        parent_id=parent_task_id,
-        kind="subtask",
-        title=title,
-        body_md=body_md,
-        criteria=criteria,
-        depends_on=depends_on,
-        status="ready",
-        actor=actor,
-        actor_evidence=actor_evidence,
-    )
-    return dict(row)
+        if reasons:
+            events.record_event(
+                conn, project_id=parent["project_id"], node_id=row["id"], actor=actor,
+                actor_evidence=actor_evidence, type_="replan.gated",
+                payload={"parent_task_id": parent_task_id, "reason": "; ".join(reasons)},
+            )
+        return dict(row)
 
 
 def propose_revision(

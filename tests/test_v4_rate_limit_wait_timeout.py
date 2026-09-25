@@ -24,7 +24,11 @@ import pytest
 
 from muvue.core import db as core_db
 from muvue.core import nodes, projects, runner as runner_mod
-from muvue.core.config import AgentConfig, MuvueConfig, RoutingConfig
+from muvue.core.config import AgentConfig, ChecksConfig, MuvueConfig, RoutingConfig
+
+# `done` runs [checks] itself (v4 section 5); temp repos have no test
+# suite, so the runner tests use commands that pass.
+PASSING_CHECKS = ChecksConfig(test="true", lint="true")
 
 FAKE_AGENT_AVAILABLE = shutil.which("muvue-fake-agent") is not None
 pytestmark = pytest.mark.skipif(
@@ -75,6 +79,7 @@ def test_rate_limit_wait_past_max_wait_minutes_escalates_to_pause(conn, project,
         conn, project_id=project["id"], kind="task", title="t", status="ready",
     )
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(
                 command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
@@ -113,6 +118,7 @@ def test_rate_limit_wait_past_max_wait_minutes_escalates_to_fallback(conn, proje
         criteria_mode="auto", criteria=["ok"],
     )
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "claude": AgentConfig(
                 command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
@@ -169,6 +175,7 @@ def test_rate_limit_that_clears_before_max_wait_never_hits_timeout_path(conn, pr
     conn.commit()
 
     cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(
                 command="muvue-fake-agent", usage_parser="fake", cost_model="tokens",

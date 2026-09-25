@@ -36,7 +36,9 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config() -> MuvueConfig:
-    return MuvueConfig()
+    # `done` runs [checks] itself (v4 section 5); an empty temp repo has
+    # no test suite, so use commands that pass.
+    return MuvueConfig(checks=ChecksConfig(test="true", lint="true"))
 
 
 @pytest.fixture
@@ -130,10 +132,10 @@ def test_start_without_session_token_is_rejected(client, ready_task):
     assert r.status_code == 403
 
 
-# -- opt-in `run_checks` wiring at the API layer (P3 decision #38) ---------
+# -- `done` runs auto checks by default (v4 section 5) -------------------
 
 
-def test_done_without_run_checks_ignores_a_failing_test_command(repo):
+def test_done_runs_checks_by_default_and_flags_a_failure(repo):
     config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
     app = create_app(repo, config=config)
     client = TestClient(app, base_url=BASE_URL)
@@ -151,31 +153,6 @@ def test_done_without_run_checks_ignores_a_failing_test_command(repo):
 
     client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=headers)
     r = client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"}, headers=headers)
-    assert r.status_code == 200
-    assert r.json()["node"]["status"] == "done"
-    assert r.json()["auto_approved"] is True
-
-
-def test_done_with_run_checks_flags_a_failing_test_command(repo):
-    config = MuvueConfig(checks=ChecksConfig(test="false", lint="true"))
-    app = create_app(repo, config=config)
-    client = TestClient(app, base_url=BASE_URL)
-    headers = {"Authorization": f"Bearer {app.state.session.token}"}
-    conn = core_db.connect(repo / ".muvue" / "muvue.db")
-    project = projects.create_project(conn, goal="api run_checks test")
-    task = nodes.create_node(
-        conn, project_id=project["id"], kind="task", title="t",
-        criteria=["passes"], criteria_mode="auto",
-        predicted_touches=["a.py"], status="pending",
-    )
-    gates.approve_gate2(conn, project["id"], config=config)
-    node_id = task["id"]
-    conn.close()
-
-    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=headers)
-    r = client.post(
-        f"/nodes/{node_id}/done", json={"owner": "agent-1", "run_checks": True}, headers=headers
-    )
     assert r.status_code == 200
     assert r.json()["node"]["status"] == "review"
     assert r.json()["auto_approved"] is False

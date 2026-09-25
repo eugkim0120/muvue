@@ -1854,3 +1854,49 @@ reading here. Real `decisions` table entries start once dogfooding begins
     refreezes the hash, and moves the node back to `in_progress`. An
     edit that leaves the hash unchanged only bumps `version`, as
     before.
+
+127. **Diff size and deletions come from git; supersedes #18 and #19.**
+    `node_commits` has recorded each node's commit SHAs since P3, so the
+    real diff is available. `core.nodes.done` runs `git show --numstat`
+    and `git show --diff-filter=D --name-only` over those SHAs before
+    its write transaction, in the checkout (light) or the node's
+    worktree (strict). The line total is compared against
+    `risk.max_diff_lines`, and any deleted file forces `high`. The file
+    count against `max_files_per_task` uses committed paths. If git
+    can't read the commits, or the node has none, the touch-count
+    proxy from #18 still applies. Binary files count as zero lines.
+
+128. **`auto` criteria always run; supersedes #38.** #38 made checks
+    opt-in because turning them on changed P0-P2 behaviour. v4 section
+    5 says "muvue runs `auto` criteria itself", and an opt-in flag that
+    an agent can simply omit makes `auto` criteria self-attested. The
+    CLI, MCP, API and runner now always pass `default_run_checks`, and
+    `[checks] lint` runs after `test`. A missing tool (for example no
+    `ruff` installed) fails the check and flags the node for review.
+    That is noisy, but it is honest, and it is fixed in `config.toml`.
+    Core `done(run_checks=None)` remains for unit tests of the tier
+    gate. Checks run before the write transaction so a long suite
+    doesn't block every other writer.
+
+129. **Rubber-stamp is a medium/high metric across all approvals.** v4
+    section 5: "Time-to-approve under 10 s on a medium/high node is
+    logged as a rubber-stamp signal." The old code timed only
+    `approve_review`, for every tier, and divided by all `node.done`
+    events, which included auto-approvals. `nodes.log_approval_timing`
+    now times `approve_review` from `node.review`, and `approve_node`
+    (Gate 2, revisions, re-approval) from the latest `node.created`,
+    `node.pending` or `node.awaiting_approval`. It records
+    `metric.approval_timed` for every medium/high approval and
+    `metric.rubber_stamp` for the fast ones. The KPI is the ratio of
+    the two.
+
+130. **`replan` scope is enforced by globs and count.** Section 6:
+    "`replan` may add subtasks within an approved task's stated scope
+    without approval." The stated scope is read as the parent's
+    `predicted_touches`: a subtask glob is inside when `fnmatch` matches
+    it against a parent glob. That is a string-level check, so
+    `src/**` under a parent `src/*` passes, because `*` in `fnmatch`
+    crosses `/`. A subtask with no predicted touches inherits the
+    parent's scope. Out-of-scope subtasks, or ones past `max_subtasks`,
+    are created `pending` rather than refused, so the agent's plan is
+    kept and a human decides.

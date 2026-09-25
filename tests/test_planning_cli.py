@@ -16,6 +16,8 @@ from pathlib import Path
 
 from muvue.core.repo_init import init_repo
 
+from conftest import use_passing_checks
+
 
 def _run(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -125,6 +127,7 @@ def test_full_planning_to_execution_loop_via_cli_only(tmp_path: Path):
     spec -> decompose -> approve gate2 -> start -> done, entirely through
     `muvue` subprocess calls. No raw `core.*` call anywhere in this test."""
     init_repo(tmp_path)
+    use_passing_checks(tmp_path)
     path_args = ["--path", str(tmp_path)]
 
     project = json.loads(

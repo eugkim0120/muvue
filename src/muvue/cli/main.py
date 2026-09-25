@@ -639,13 +639,10 @@ def done(
     version: int = typer.Option(
         None, "--version", help="expected nodes.version from start; mismatch fails the call"
     ),
-    run_checks: bool = typer.Option(
-        False, "--run-checks",
-        help="actually run config.checks.test for auto-criteria nodes (light mode, "
-        "opt-in -- see docs/decisions.md #38); default preserves risk-tier-only gating",
-    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
+    """Finish a node. For `auto` criteria muvue runs `[checks] test` and
+    `[checks] lint` itself (v4 section 5); a failure stops at review."""
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
@@ -653,8 +650,7 @@ def done(
         result = core.nodes.done(
             conn, node_id, owner=owner, request_id=request_id, summary=summary,
             config=config, expected_version=version,
-            run_checks=core.review.default_run_checks if run_checks else None,
-            cwd=str(repo_root),
+            run_checks=core.review.default_run_checks, cwd=str(repo_root),
         )
     finally:
         conn.close()
@@ -811,19 +807,25 @@ def replan(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this subtask waits on"
     ),
+    predicted_touches: list[str] = typer.Option(
+        [], "--predicted-touches", help="repeatable path glob; must fall inside the parent's touches"
+    ),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
-    """Add a subtask within an already-approved task's stated scope. New
-    tasks, deletions, or criteria changes need a plan revision instead
-    (see `propose-revision` / `approve-revision`)."""
+    """Add a subtask within an already-approved task's stated scope. A
+    subtask outside the parent's touches, or past `max_subtasks`, is
+    created `pending` and needs `approve task:ID`. New tasks, deletions,
+    or criteria changes need a plan revision instead."""
     repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
         def _apply():
             return core.revisions.replan_add_subtask(
                 conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
-                depends_on=list(depends_on),
+                depends_on=list(depends_on), predicted_touches=list(predicted_touches),
+                config=config,
             )
         result = core.idempotency.once(
             conn, request_id, "replan", _apply, actor="agent",

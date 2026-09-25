@@ -179,6 +179,11 @@ def approve_node(
             row = nodes_mod.resume_approved(conn, node_id, actor=actor, actor_evidence=actor_evidence)
         else:
             row = nodes_mod.ready(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        nodes_mod.log_approval_timing(
+            conn, row, approval="node",
+            since_types=("node.created", "node.pending", "node.awaiting_approval"),
+            actor=actor, actor_evidence=actor_evidence,
+        )
         return {"node": dict(row), "warnings": warnings}
 
 

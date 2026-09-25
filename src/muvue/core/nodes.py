@@ -440,7 +440,19 @@ def done(
     straight to `done`; anything else (medium/high tier, or a diff that
     touches test files) stops at `review` and needs a human
     `nodes.approve_review`.
+
+    Check commands and `git show` run *before* the write transaction
+    opens, so a slow test suite never holds the database write lock.
     """
+    checks, stats = run_checks, None
+    if config is not None:
+        pre = get_node(conn, node_id)
+        if pre["status"] == "in_progress":
+            checks = review.precompute_checks(pre, config, run_checks, cwd)
+            shas = risk.node_commit_shas(conn, node_id)
+            if shas:
+                stats = risk.diff_stats(review.check_cwd(pre, config, cwd) or cwd, shas)
+
     with db_mod.write_txn(conn):
         node = get_node(conn, node_id)
         if node["status"] == "done":
@@ -485,7 +497,11 @@ def done(
             # yet. Never lowers the tier -- see core.risk.compute_tier.
             touches_outside = risk.touches_outside_predicted(conn, node_id)
             tier = risk.max_tier(
-                risk.compute_tier(conn, reviewing, config, touches_outside_predicted=touches_outside),
+                risk.compute_tier(
+                    conn, reviewing, config, touches_outside_predicted=touches_outside,
+                    diff_lines=stats["lines"] if stats else None,
+                    has_deletions=bool(stats and stats["deleted"]),
+                ),
                 reviewing["risk_tier"],
             )
             flagged = risk.is_flagged(conn, reviewing, config)
@@ -495,7 +511,7 @@ def done(
             # Light-mode `review` dispatch (plan section 5, P3): auto/external/
             # manual criteria modes each add their own reason to flag a node to
             # `review`, on top of core.risk's tier/test-touch flag.
-            dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
+            dispatch = review.dispatch(conn, reviewing, config, run_checks=checks, cwd=cwd)
             if dispatch["flag"]:
                 flagged = True
                 events.record_event(
@@ -553,6 +569,51 @@ def done(
             return {"noop": False, "node": dict(row), "auto_approved": False}
 
 
+RUBBER_STAMP_SECONDS = 10
+
+
+def log_approval_timing(
+    conn: sqlite3.Connection,
+    node: sqlite3.Row,
+    *,
+    approval: str,
+    since_types: tuple[str, ...],
+    actor: str,
+    actor_evidence: str,
+) -> None:
+    """v4 section 5: "Time-to-approve under 10 s on a medium/high node is
+    logged as a rubber-stamp signal." Every medium/high approval records
+    `metric.approval_timed` (the KPI denominator); one faster than
+    `RUBBER_STAMP_SECONDS` also records `metric.rubber_stamp`. Low-tier
+    approvals are not timed: fast is fine there. Elapsed time runs from
+    the latest event of `since_types`, i.e. when the node started waiting
+    for this approval."""
+    tier = node["risk_tier"]
+    if tier not in ("medium", "high"):
+        return
+    placeholders = ", ".join("?" for _ in since_types)
+    with db_mod.write_txn(conn):
+        waiting = conn.execute(
+            f"SELECT ts FROM events WHERE node_id = ? AND type IN ({placeholders}) "
+            "ORDER BY id DESC LIMIT 1",
+            (node["id"], *since_types),
+        ).fetchone()
+        if waiting is None:
+            return
+        entered = datetime.strptime(waiting["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+        elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
+        payload = {"elapsed_seconds": elapsed, "tier": tier, "approval": approval}
+        for type_ in ("metric.approval_timed",) + (
+            ("metric.rubber_stamp",) if elapsed < RUBBER_STAMP_SECONDS else ()
+        ):
+            events.record_event(
+                conn, project_id=node["project_id"], node_id=node["id"], actor=actor,
+                actor_evidence=actor_evidence, type_=type_, payload=payload,
+            )
+
+
 def approve_review(
     conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
 ) -> dict:
@@ -568,19 +629,13 @@ def approve_review(
 
     Refuses (`HumanOnly`) if `actor != "human"`.
 
-    Logs a `metric.rubber_stamp` event when the elapsed time since the
-    node entered `review` is under 10 seconds (plan section 5: "Time-to-
-    approve under 10s is logged as a rubber-stamp signal")."""
+    Times the approval for the rubber-stamp KPI
+    (`log_approval_timing`)."""
     _require_human(actor, actor_evidence)
     with db_mod.write_txn(conn):
         node = get_node(conn, node_id)
         if node["status"] != "review":
             raise NodeError(f"node {node_id} is status={node['status']!r}, not in review")
-        review_event = conn.execute(
-            "SELECT ts FROM events WHERE node_id = ? AND type = 'node.review' "
-            "ORDER BY id DESC LIMIT 1",
-            (node_id,),
-        ).fetchone()
         row = _apply_transition(
             conn,
             node,
@@ -592,21 +647,10 @@ def approve_review(
             extra_columns={"lease_until": None},
             actor_evidence=actor_evidence,
         )
-        if review_event is not None:
-            entered = datetime.strptime(review_event["ts"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-                tzinfo=timezone.utc
-            )
-            elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
-            if elapsed < 10:
-                events.record_event(
-                    conn,
-                    project_id=row["project_id"],
-                    node_id=node_id,
-                    actor=actor,
-                    actor_evidence=actor_evidence,
-                    type_="metric.rubber_stamp",
-                    payload={"elapsed_seconds": elapsed},
-                )
+        log_approval_timing(
+            conn, row, approval="review", since_types=("node.review",),
+            actor=actor, actor_evidence=actor_evidence,
+        )
         return {"node": dict(row)}
 
 

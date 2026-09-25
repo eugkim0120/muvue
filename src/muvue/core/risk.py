@@ -1,29 +1,25 @@
 """Risk-tier computation (plan section 5): the single source of truth for
-diff size, path globs, deletions and criteria-edit signals.
+diff size, path globs, deletions, criteria edits, touches outside the
+prediction, and structure signals.
 
-"Structure-graph signals (touched invariants, external interfaces) added
-once components exist" (plan section 5) -- P3+, not implemented here.
+Diff size is real once a node has commits: `diff_stats` sums `git show
+--numstat` over the node's `node_commits` and lists files the commits
+deleted. `core.nodes.done` computes it before its write transaction and
+passes `diff_lines`/`has_deletions` in. With no commits (Gate 2, or an
+agent that never committed) the touch count stands in, as it did before
+(docs/decisions.md #127).
 
-P0/P1 track no line-level diff, only `predicted_touches` (a set of path
-globs a node is expected to touch) and, once committed, `node_commits.files`
-(a JSON list of file paths actually touched). Neither carries an added/
-removed line count. Per the P2 prompt ("diff size (from predicted_touches
-count or actual node_commits diff if available -- predicted_touches is what
-P0/P1 already track, use that)"), diff size is approximated by touch count
-against `planning.max_files_per_task` (medium) and `risk.max_diff_lines`
-(high) -- see docs/decisions.md for why file-count is read as the proxy
-for both thresholds.
-
-Deletions have no producer yet (no git-diff capture exists before P3's
-hooks/structure layer): `has_deletions` is accepted as an explicit
-parameter so the signal is wired into the one tier function now, but
-nothing currently sets it to True. Documented as a decision, not a bug.
+Structure signals: touching a component that carries invariants forces
+`high`; touching a deprecated component raises to at least `medium`.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import json
 import sqlite3
+import subprocess
+from pathlib import Path
 
 from . import db as db_mod
 from .config import MuvueConfig
@@ -101,6 +97,80 @@ def is_test_touch(path: str) -> bool:
     return any(fnmatch.fnmatch(parts[-1], g) for g in _TEST_FILE_GLOBS)
 
 
+def diff_stats(repo: str | Path, shas: list[str]) -> dict | None:
+    """Lines changed (added + removed) across `shas`, and the files they
+    deleted. None if git can't read the commits here (not a repo, or the
+    commits live elsewhere), so the caller falls back to touch count.
+    Binary files count as zero lines; their size isn't a line signal."""
+    lines = 0
+    deleted: list[str] = []
+    for sha in shas:
+        numstat = subprocess.run(
+            ["git", "show", "--numstat", "--format=", sha],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if numstat.returncode != 0:
+            return None
+        for row in numstat.stdout.splitlines():
+            added, removed, _path = row.split("\t", 2)
+            if added != "-":
+                lines += int(added) + int(removed)
+        gone = subprocess.run(
+            ["git", "show", "--diff-filter=D", "--name-only", "--format=", sha],
+            cwd=repo, capture_output=True, text=True,
+        )
+        if gone.returncode != 0:
+            return None
+        deleted.extend(p for p in gone.stdout.splitlines() if p)
+    return {"lines": lines, "deleted": sorted(set(deleted))}
+
+
+def node_commit_shas(conn: sqlite3.Connection, node_id: int) -> list[str]:
+    return [
+        row["sha"]
+        for row in db_mod.query_all(
+            conn, "SELECT sha FROM node_commits WHERE node_id = ? ORDER BY rowid", (node_id,)
+        )
+    ]
+
+
+def _component_paths(anchors_json: str | None) -> list[str]:
+    try:
+        anchors = json.loads(anchors_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(anchors, dict):
+        return list(anchors)
+    if isinstance(anchors, list):
+        return [a for a in anchors if isinstance(a, str)]
+    return []
+
+
+def structure_tier(conn: sqlite3.Connection, node_id: int) -> str:
+    """v4 section 5: "Structure-graph signals (touched invariants,
+    external interfaces) added once components exist." A node touches a
+    component when one of its predicted globs or actual paths covers one
+    of the component's anchor paths."""
+    globs = _node_touches(conn, node_id) + _actual_touches(conn, node_id)
+    if not globs:
+        return "low"
+    tier = "low"
+    for row in db_mod.query_all(
+        conn,
+        "SELECT c.id, c.status, c.anchors_json, "
+        "(SELECT COUNT(*) FROM invariants i WHERE i.component_id = c.id) AS n_invariants "
+        "FROM components c",
+    ):
+        paths = _component_paths(row["anchors_json"])
+        if not paths or not touches_globs(paths, globs):
+            continue
+        if row["n_invariants"]:
+            return "high"
+        if row["status"] == "deprecated":
+            tier = "medium"
+    return tier
+
+
 def compute_tier(
     conn: sqlite3.Connection,
     node: sqlite3.Row,
@@ -109,6 +179,7 @@ def compute_tier(
     criteria_edited: bool = False,
     has_deletions: bool = False,
     touches_outside_predicted: bool = False,
+    diff_lines: int | None = None,
 ) -> str:
     """Compute a node's risk tier from diff size, path globs, deletions,
     criteria edits, and touches outside `predicted_touches` (plan section
@@ -136,26 +207,29 @@ def compute_tier(
     if touches_globs(touches, config.risk.globs):
         return "high"
 
-    n_touches = len(touches)
-    if n_touches > config.risk.max_diff_lines:
+    actual = _actual_touches(conn, node["id"])
+    n_files = len(actual) if actual else len(touches)
+    # Real diff lines when the caller has them; otherwise the touch count
+    # stands in for both thresholds, as before (#127).
+    size = diff_lines if diff_lines is not None else len(touches)
+    if size > config.risk.max_diff_lines:
         tier = "high"
-    elif n_touches > config.planning.max_files_per_task:
+    elif n_files > config.planning.max_files_per_task:
         tier = "medium"
     else:
         tier = "low"
 
     if touches_outside_predicted:
         tier = max_tier(tier, "medium")
-    return tier
+    return max_tier(tier, structure_tier(conn, node["id"]))
 
 
 def is_flagged(conn: sqlite3.Connection, node: sqlite3.Row, config: MuvueConfig) -> bool:
     """"Diffs touching test files or criteria are always flagged" (plan
-    section 5) -- read here as: any predicted touch looks test-shaped, or
-    the node's `risk_tier` is already `high` because of a criteria edit
-    (see `core.gates.edit_criteria`). Overrides low-tier auto-approval
-    regardless of tier."""
-    touches = _node_touches(conn, node["id"])
+    section 5): any predicted or actually committed path looks
+    test-shaped. Criteria edits already force `high` (see
+    `core.gates.edit_criteria`). Overrides low-tier auto-approval."""
+    touches = _node_touches(conn, node["id"]) + _actual_touches(conn, node["id"])
     if any(is_test_touch(t) for t in touches):
         return True
     return False

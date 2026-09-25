@@ -169,10 +169,13 @@ diff-only against the previous revision:
   `removed` nodes. `unchanged` nodes are never read or written — their
   `status` and `criteria_hash` are untouched. Approving the same revision
   twice is a no-op.
-- `replan PARENT_TASK_ID --title TEXT` (`core.revisions.replan_add_subtask`)
-  adds a subtask directly to `ready` under an already-Gate-2-approved task
-  (`criteria_hash` not `NULL`) — no new approval, since it's scoped inside
-  the parent's already-approved criteria. Raises `GateError` if the parent
+- `replan PARENT_TASK_ID --title TEXT [--predicted-touches GLOB ...]`
+  (`core.revisions.replan_add_subtask`) adds a subtask under an
+  already-Gate-2-approved task (`criteria_hash` not `NULL`). It goes
+  straight to `ready` when it stays in scope: every predicted touch
+  falls under one of the parent's globs, and the parent has fewer than
+  `planning.max_subtasks` subtasks. Otherwise it is created `pending`,
+  a `replan.gated` event records why, and it needs `approve task:ID`. Raises `GateError` if the parent
   hasn't been Gate 2 approved yet. New tasks, deletions, and criteria
   changes always go through a plan revision instead.
 
@@ -219,10 +222,20 @@ used by `core.gates.approve_node` (initial freeze only -- a re-approval
 after a criteria edit never recomputes down, see below) and by
 `core.nodes.done` when called with `config`:
 
-- `criteria_edited=True` or `has_deletions=True` -> `high` unconditionally.
+- `criteria_edited=True` -> `high` unconditionally.
+- The node's commits delete a file (`has_deletions`, from `git show
+  --diff-filter=D` over `node_commits`) -> `high`.
 - Any `predicted_touches` path matches `risk.globs` -> `high`.
-- Touch count over `risk.max_diff_lines` -> `high`; over
-  `planning.max_files_per_task` -> `medium`; else `low`.
+- Diff size over `risk.max_diff_lines` -> `high`. Diff size is the real
+  added plus removed line count (`git show --numstat` over the node's
+  commits) once the node has commits, and the touch count before that.
+- More files than `planning.max_files_per_task` -> `medium`. Files are
+  the actually committed paths when there are any, otherwise the
+  predicted globs.
+- Structure signals: touching a component with invariants -> `high`;
+  touching a deprecated component -> at least `medium`. A node touches
+  a component when a predicted glob or committed path covers one of its
+  anchor paths.
 - `touches_outside_predicted=True` (v4 §5, new tier input) raises the
   touch-count tier above to at least `medium`, never lowers it --
   `core.risk.touches_outside_predicted(conn, node_id)` compares
@@ -236,7 +249,8 @@ after a criteria edit never recomputes down, see below) and by
   used so a `done`-time diff-signal recompute can never downgrade a tier a
   criteria edit already forced to `high` (P2 acceptance #4), and so the
   touches-outside-predicted signal above never downgrades either.
-- `core.risk.is_flagged` -- true if any predicted touch looks test-shaped.
+- `core.risk.is_flagged` -- true if any predicted or committed path
+  looks test-shaped.
   "Diffs touching test files or criteria are always flagged" (plan
   section 5): always overrides auto-approval regardless of tier.
 
@@ -249,9 +263,15 @@ routed through `core.risk`: `low` tier and unflagged auto-approves
 straight through to `done` (records a `review.auto_approved` event, actor
 `daemon`); otherwise the node stops at `review` (records a
 `review.awaiting` event) and needs `core.nodes.approve_review` (human
-`review -> done`, logs `metric.rubber_stamp` if under 10s elapsed since
-entering `review`) or `core.nodes.reject_review` (`review -> in_progress`
+`review -> done`) or `core.nodes.reject_review` (`review -> in_progress`
 + a `feedback` note).
+
+Rubber-stamp signal: every approval of a medium- or high-tier node,
+whether `approve_review` or a Gate 2 or re-approval through
+`approve_node`, records `metric.approval_timed`. If it came less than
+10s after the node started waiting, it also records
+`metric.rubber_stamp`. `/kpis` `rubber_stamp_rate` is rubber stamps
+divided by timed approvals. Low-tier approvals are not timed.
 
 Note: `review.auto_approved` / `review.awaiting` deliberately do **not**
 start with `node.` -- `rebuild.py` treats any `node.*` event's payload as
@@ -579,16 +599,18 @@ repo's *current* branch on every call:
 
 On top of P2's risk-tier/test-touch gate, `core.review.dispatch`
 (called from `nodes.done` when `config.mode == "light"`) adds a
-criteria-mode-specific flag: `manual` always waits for a human;
-`external` is always flagged (core can't verify an external criterion
-in-process); `auto` runs an injectable `run_checks(cmd, cwd) -> bool` in
-the checkout -- omitted (every current CLI/API call), it's a no-op and
-`core.risk` alone decides, preserving P0-P2 behavior exactly.
-`core.review.default_run_checks` is a real subprocess runner, wired into
-the CLI (`done --run-checks`) and API (`POST /nodes/{id}/done
-{"run_checks": true}`) as an explicit opt-in (default `false`/omitted
-preserves risk-tier-only gating byte-for-byte -- see `docs/decisions.md`
-#38 and its dogfood-gate follow-up).
+criteria-mode-specific flag:
+
+- `manual` always waits for a human.
+- `external` is always flagged. muvue can't run it, so `GET
+  /nodes/{id}` reports `"verification": "unverified"` and `/inbox`
+  lists the node under `unverified_external`.
+- `auto`: muvue runs `[checks] test` and then `[checks] lint` itself
+  (an empty command is skipped), in the checkout in light mode or in
+  the node's worktree in strict mode. A failure flags `review` with
+  `review.auto_check_failed` naming the command. The CLI, MCP, API and
+  runner always run them; there is no opt-out flag (decision #128).
+  The commands run before `done` opens its write transaction.
 
 ## Strict mode (P4)
 
@@ -696,9 +718,10 @@ caller to hand-join a comma string.
 
 ## `replan` (P1, confirmed complete in P3)
 
-`replan PARENT_TASK_ID --title TEXT [--body TEXT]`
-(`core.revisions.replan_add_subtask`) and `POST /nodes/{id}/replan` were
-both already real as of P1; P3 found no gap to close here.
+`replan PARENT_TASK_ID --title TEXT [--body TEXT] [--predicted-touches GLOB ...]`
+(`core.revisions.replan_add_subtask`), MCP `replan` and `POST
+/nodes/{id}/replan` share the scope check described under Plan
+revisions.
 
 ## Idempotency
 

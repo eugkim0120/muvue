@@ -375,9 +375,11 @@ def create_app(
                     "AND acked_at IS NULL ORDER BY id",
                 )
             )
+            unverified = core.queries.unverified_external(conn)
         return {
             "questions": questions,
             "review": review,
+            "unverified_external": unverified,
             "blocked": blocked,
             "signals": signals,
             "audit_items": audit_items,
@@ -386,9 +388,9 @@ def create_app(
 
     @app.get("/kpis")
     def kpis() -> dict:
-        """Rubber-stamp rate is real: it's a ratio over events this phase
-        already logs (`metric.rubber_stamp` vs total `node.done`
-        approvals via `nodes.approve_review`). `tokens_per_node` /
+        """Rubber-stamp rate: fast approvals over all timed approvals, both
+        counted on medium/high nodes only (`nodes.log_approval_timing`,
+        v4 section 5). `tokens_per_node` /
         `spend_vs_budget` are real as of P5: `node_usage` is now populated
         by `core.runner`, so these read it directly instead of stubbing.
         `drift_pct` is real as of P7: `core.drift.drift_pct` (plan
@@ -397,7 +399,7 @@ def create_app(
         with _conn() as conn:
             total_reviewed = core.db.query_one(
                 conn,
-                "SELECT COUNT(*) c FROM events WHERE type = 'node.done'",
+                "SELECT COUNT(*) c FROM events WHERE type = 'metric.approval_timed'",
             )["c"]
             rubber_stamps = core.db.query_one(
                 conn,
@@ -519,33 +521,9 @@ def create_app(
     def show_node(node_id: int) -> dict:
         with _conn() as conn:
             try:
-                node = core.nodes.get_node(conn, node_id)
+                return core.queries.show_node(conn, node_id)
             except LookupError as e:
                 _handle_core_error(e)
-            notes = _rows_to_list(
-                core.db.query_all(
-                    conn,
-                    "SELECT * FROM notes WHERE node_id = ? ORDER BY id",
-                    (node_id,),
-                )
-            )
-            commits = _rows_to_list(
-                core.db.query_all(conn, "SELECT * FROM node_commits WHERE node_id = ?", (node_id,))
-            )
-            touches = [
-                r["path_glob"]
-                for r in core.db.query_all(
-                    conn,
-                    "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
-                    (node_id,),
-                )
-            ]
-        return {
-            "node": dict(node),
-            "notes": notes,
-            "commits": commits,
-            "predicted_touches": touches,
-        }
 
     @app.get("/nodes/{node_id}/diff")
     def node_diff(node_id: int) -> dict:
@@ -636,11 +614,6 @@ def create_app(
         summary: str | None = Body(default=None),
         request_id: str | None = Body(default=None),
         version: int | None = Body(default=None),
-        run_checks: bool = Body(
-            default=False,
-            description="actually run config.checks.test for auto-criteria nodes "
-            "(opt-in -- see docs/decisions.md #38); default preserves risk-tier-only gating",
-        ),
     ) -> dict:
         _require_session(request)
         with _conn() as conn:
@@ -648,7 +621,7 @@ def create_app(
                 result = core.nodes.done(
                     conn, node_id, owner=owner, summary=summary, request_id=request_id,
                     config=config, expected_version=version,
-                    run_checks=core.review.default_run_checks if run_checks else None,
+                    run_checks=core.review.default_run_checks,
                     cwd=str(repo_root), actor_evidence="dashboard_token",
                 )
             except Exception as e:
@@ -732,7 +705,11 @@ def create_app(
 
     @app.post("/nodes/{node_id}/replan")
     def replan_node(
-        node_id: int, request: Request, title: str = Body(...), body_md: str = Body(default="")
+        node_id: int,
+        request: Request,
+        title: str = Body(...),
+        body_md: str = Body(default=""),
+        predicted_touches: list[str] | None = Body(default=None),
     ) -> dict:
         _require_session(request)
         with _conn() as conn:
@@ -741,6 +718,7 @@ def create_app(
                     conn, _request_id(request), "replan",
                     lambda: core.revisions.replan_add_subtask(
                     conn, parent_task_id=node_id, title=title, body_md=body_md,
+                    predicted_touches=predicted_touches, config=config,
                     actor_evidence="dashboard_token",
                 ), actor="agent",
                 )

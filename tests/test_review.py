@@ -145,7 +145,7 @@ def test_rebuild_matches_live_through_gated_review_flow(conn, project, config):
     assert rebuild.diff_state(conn) == {}
 
 
-# -- opt-in `run_checks` wiring at the CLI/API layer (P3 decision #38) -----
+# -- `done` runs auto checks on every surface (v4 section 5) --------------
 
 
 def _run_cli(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -160,7 +160,7 @@ def _repo_with_check(tmp_path: Path, *, test_cmd: str) -> Path:
     config_path = tmp_path / ".muvue" / "config.toml"
     text = config_path.read_text().replace(
         'test = "pytest -q"', f'test = "{test_cmd}"'
-    )
+    ).replace('lint = "ruff check ."', 'lint = "true"')
     assert f'test = "{test_cmd}"' in text, "fixture assumes DEFAULT_CONFIG_TOML's checks.test literal"
     config_path.write_text(text)
     return tmp_path
@@ -179,9 +179,9 @@ def _ready_task_via_cli(repo_root: Path, config) -> int:
     return task["id"]
 
 
-def test_done_without_run_checks_flag_ignores_a_failing_test_command(tmp_path):
-    """Default (flag omitted) preserves P0-P2 behavior exactly (decision
-    #38): risk tier alone decides, even though checks.test would fail."""
+def test_cli_done_runs_auto_checks_by_default_and_flags_a_failure(tmp_path):
+    """v4 section 5: "muvue runs `auto` criteria itself" -- no opt-in flag
+    (supersedes decision #38)."""
     repo_root = _repo_with_check(tmp_path, test_cmd="false")
     config = MuvueConfig()
     node_id = _ready_task_via_cli(repo_root, config)
@@ -189,34 +189,16 @@ def test_done_without_run_checks_flag_ignores_a_failing_test_command(tmp_path):
     result = _run_cli(repo_root, "done", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["node"]["status"] == "done"
-    assert payload["auto_approved"] is True
-
-
-def test_done_with_run_checks_flag_flags_a_failing_test_command(tmp_path):
-    repo_root = _repo_with_check(tmp_path, test_cmd="false")
-    config = MuvueConfig()
-    node_id = _ready_task_via_cli(repo_root, config)
-    _run_cli(repo_root, "start", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
-    result = _run_cli(
-        repo_root, "done", str(node_id), "--owner", "agent-1", "--run-checks",
-        "--path", str(repo_root),
-    )
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
     assert payload["node"]["status"] == "review"
     assert payload["auto_approved"] is False
 
 
-def test_done_with_run_checks_flag_passes_a_passing_test_command(tmp_path):
+def test_cli_done_passes_when_the_checks_pass(tmp_path):
     repo_root = _repo_with_check(tmp_path, test_cmd="true")
     config = MuvueConfig()
     node_id = _ready_task_via_cli(repo_root, config)
     _run_cli(repo_root, "start", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
-    result = _run_cli(
-        repo_root, "done", str(node_id), "--owner", "agent-1", "--run-checks",
-        "--path", str(repo_root),
-    )
+    result = _run_cli(repo_root, "done", str(node_id), "--owner", "agent-1", "--path", str(repo_root))
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["node"]["status"] == "done"

@@ -16,6 +16,8 @@ import pytest
 
 from muvue.core.repo_init import init_repo
 
+from conftest import use_passing_checks
+
 FAKE_AGENT_AVAILABLE = shutil.which("muvue-fake-agent") is not None
 pytestmark = pytest.mark.skipif(
     not FAKE_AGENT_AVAILABLE, reason="muvue-fake-agent console script not installed"
@@ -34,6 +36,7 @@ def _setup_ready_task(tmp_path: Path) -> Path:
     `[routing] * = "fake"` (see core/config.py's DEFAULT_CONFIG_TOML) --
     exactly plan section 2's documented default."""
     init_repo(tmp_path)
+    use_passing_checks(tmp_path)
     project = json.loads(_run(tmp_path, "project", "create", "--goal", "g", "--path", str(tmp_path)).stdout)
     spec = json.loads(
         _run(

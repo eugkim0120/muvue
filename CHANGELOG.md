@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W5: review and risk
+
+### Changed
+- **muvue runs `auto` criteria itself** (v4 section 5; decision #128,
+  supersedes #38).
+  - `done` runs `[checks] test` and then `[checks] lint` on every
+    surface: CLI, MCP, API and the runner.
+  - `done --run-checks` and the API's `run_checks` body field are gone.
+  - An empty command is skipped.
+  - The commands run before the write transaction opens.
+  - Strict mode still runs them in the node's worktree.
+- **Risk tier from real diffs** (#127, supersedes #18 and #19). Once a
+  node has commits, diff size is the added plus removed line count from
+  `git show --numstat`. A commit that deletes a file forces `high`.
+  "More than `max_files_per_task`" counts committed files.
+- **Structure signals raise the tier.** Touching a component with
+  invariants forces `high`. Touching a deprecated component raises the
+  tier to at least `medium`.
+- **Test-file flag uses committed paths too**, not only predicted ones.
+- **Rubber-stamp is measured on medium/high approvals only**, and
+  includes Gate 2 and re-approvals as well as review approvals.
+  `metric.approval_timed` is the new KPI denominator (#129).
+- **`replan` is scope-checked** (#130). A subtask whose
+  `--predicted-touches` fall outside the parent's, or that would
+  exceed `max_subtasks`, is created `pending` with a `replan.gated`
+  event, and needs `approve task:ID`.
+
+### Added
+- `GET /nodes/{id}` reports `verification`: `checked_by_muvue`,
+  `unverified` (external criteria) or `human`. `/inbox` lists nodes in
+  review with external criteria under `unverified_external`.
+
 ## [Unreleased] - v4 delta closure, W4: human/agent control surface
 
 ### Added
