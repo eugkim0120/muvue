@@ -73,3 +73,30 @@ def test_uninit_keeps_edits_made_after_init(tmp_path: Path):
     assert "muvue" not in gitignore.read_text()
     assert "echo my own post-commit step" in hook.read_text()
     assert "muvue" not in hook.read_text()
+
+
+def _as_pre_v4_shim(repo: Path) -> Path:
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text(hook.read_text().replace(
+        next(line for line in hook.read_text().splitlines() if "muvue._hook" in line),
+        "/usr/bin/python3 -m muvue hook post-commit",
+    ))
+    return hook
+
+
+def test_doctor_reports_a_pre_v4_shim_and_repair_upgrades_it(tmp_path: Path):
+    repo = make_git_fixture(tmp_path, "plain_python")
+    before = _snapshot(repo)
+    repo_init.init_repo(repo)
+    hook = _as_pre_v4_shim(repo)
+    report = doctor.run_doctor(repo, skip_security_probes=True)
+    assert report.ok is False
+    assert any("outdated" in issue and "post-commit" in issue for issue in report.issues)
+
+    report = doctor.run_doctor(repo, repair=True, skip_security_probes=True)
+    assert report.ok is True, report.issues
+    assert "-m muvue._hook post-commit" in hook.read_text()
+    assert "-m muvue hook post-commit" not in hook.read_text()
+
+    repo_init.uninit_repo(repo)
+    assert _diff_snapshots(before, _snapshot(repo)) == ""

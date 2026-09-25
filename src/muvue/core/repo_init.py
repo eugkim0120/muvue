@@ -92,6 +92,27 @@ def _gitignore_marker() -> tuple[str, str]:
     return ("# >>> muvue >>>", "# <<< muvue <<<")
 
 
+def _shim_command(name: str) -> str:
+    # prepare-commit-msg needs git's arguments (the message file, its source).
+    args = ' "$@"' if name == "prepare-commit-msg" else ""
+    return f"{hook_fast_path_command(name)}{args}"
+
+
+def shim_is_current(content: str, name: str) -> bool:
+    """Whether the installed shim block for `name` runs the stdlib fast
+    path the way this muvue would. A pre-v4 shim runs the full CLI
+    (`-m muvue hook NAME`). A different interpreter path is not outdated:
+    a `muvue doctor` run from another environment (`uvx`, say) must not
+    repoint shims at itself."""
+    begin, end = _hook_marker(name)
+    lines = content.splitlines()
+    if begin not in lines or end not in lines:
+        return False
+    block = lines[lines.index(begin) + 1 : lines.index(end)]
+    wanted = f"-m muvue._hook {name}" + (' "$@"' if name == "prepare-commit-msg" else "")
+    return any(line.rstrip().endswith(wanted) for line in block)
+
+
 def _install_hook_shim(path: Path, name: str, backups: dict[str, str | None]) -> None:
     key = str(path)
     if key not in backups:
@@ -102,10 +123,7 @@ def _install_hook_shim(path: Path, name: str, backups: dict[str, str | None]) ->
     # stdlib-only `muvue._hook` entry point, not the full Typer CLI
     # (`-m muvue hook`, ~150-400ms cold) -- `-S` skips `site` init too.
     # See src/muvue/_hook.py and docs/decisions.md.
-    # prepare-commit-msg needs git's arguments (the message file, its source).
-    args = ' "$@"' if name == "prepare-commit-msg" else ""
-    body = f"{hook_fast_path_command(name)}{args}\n"
-    block = f"{begin}\n{body}{end}\n"
+    block = f"{begin}\n{_shim_command(name)}\n{end}\n"
 
     if path.exists():
         content = path.read_text()
@@ -258,10 +276,17 @@ def repair_install(repo_root: Path) -> list[str]:
     husky_dir = repo_root / ".husky"
     for name in HOOK_NAMES:
         path = husky_dir / name if husky_dir.is_dir() else repo_root / ".git" / "hooks" / name
-        begin, _ = _hook_marker(name)
+        begin, end = _hook_marker(name)
         if not path.exists() or begin not in path.read_text():
             _install_hook_shim(path, name, backups)
             repaired.append(f"reinstalled hook shim: {path}")
+        elif not shim_is_current(path.read_text(), name):
+            content = path.read_text()
+            backups.setdefault(str(path), _without_muvue_blocks(content))
+            lines = content.split("\n")
+            first, last = lines.index(begin), lines.index(end)
+            path.write_text("\n".join([*lines[: first + 1], _shim_command(name), *lines[last:]]))
+            repaired.append(f"upgraded outdated hook shim: {path}")
     missing = gitignore_missing_entries(repo_root)
     if missing:
         _update_gitignore(repo_root, backups)

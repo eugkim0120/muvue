@@ -23,7 +23,7 @@ from . import hooks as hooks_mod
 from . import migrate as migrate_mod
 from . import runner as runner_mod
 from .config import PROTOCOL_VERSION, ConfigError, load_config
-from .repo_init import HOOK_NAMES, _hook_marker, gitignore_missing_entries, init_repo, repair_install
+from .repo_init import HOOK_NAMES, _hook_marker, gitignore_missing_entries, init_repo, repair_install, shim_is_current
 from .schema import SCHEMA_VERSION
 
 
@@ -485,6 +485,11 @@ def run_doctor(
             report.fail(f"hook shim missing or not installed: {path} (--repair to fix)")
         else:
             content = path.read_text()
+            if not shim_is_current(content, name):
+                report.fail(
+                    f"hook shim {name} in {path} is outdated: it does not run the "
+                    "stdlib fast path (--repair to fix)"
+                )
             # Verify the shim uses an absolute interpreter path (plan
             # section 5). v4 section 4a: current shims are
             # `PYTHONPATH=<dir> <python> -S -m muvue._hook NAME` (the
