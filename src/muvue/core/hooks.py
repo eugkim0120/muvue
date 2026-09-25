@@ -50,13 +50,19 @@ def handle_post_commit(
     commit_sha: str,
     message: str,
     files: list[str] | None = None,
+    bound_node_id: int | None = None,
 ) -> dict:
     """Pure-data entry point (no subprocess/git access): parse `message`
     for node trailers, link `commit_sha` to every resolvable node, and
     enqueue anchor-hash/staleness signals for the ones that resolved.
     Unresolvable ids (the node doesn't exist, or was soft-deleted) are
-    silently skipped -- trailers are labels, not trusted for binding."""
+    silently skipped -- trailers are labels, not trusted for binding.
+    `bound_node_id` is the node whose worktree the commit was made in:
+    that binding is trusted (v4 section 5), so it links with or without
+    a trailer."""
     node_ids = trailers.parse_node_ids(message)
+    if bound_node_id is not None and bound_node_id not in node_ids:
+        node_ids = [bound_node_id, *node_ids]
     files_json = json.dumps(files or [])
     linked: list[int] = []
     with db_mod.write_txn(conn):
@@ -144,7 +150,7 @@ def handle_post_commit_from_git(conn: sqlite3.Connection, repo_root: Path) -> di
 
 
 def handle_post_commit_from_git_sha(
-    conn: sqlite3.Connection, repo_root: Path, commit_sha: str
+    conn: sqlite3.Connection, repo_root: Path, commit_sha: str, *, bound_node_id: int | None = None,
 ) -> dict:
     """Same as `handle_post_commit_from_git`, parameterized on an
     explicit `commit_sha` instead of always reading HEAD -- what
@@ -164,10 +170,40 @@ def handle_post_commit_from_git_sha(
     message = _git(repo_root, "log", "-1", "--pretty=%B", commit_sha)
     files_raw = _git(repo_root, "diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha)
     files = [f for f in files_raw.splitlines() if f]
-    result = handle_post_commit(conn, commit_sha=commit_sha, message=message, files=files)
+    result = handle_post_commit(
+        conn, commit_sha=commit_sha, message=message, files=files, bound_node_id=bound_node_id,
+    )
     newly_stale = drift_mod.mark_stale_for_commit(conn, repo_root, commit_sha, files)
     result["newly_stale_component_ids"] = newly_stale
     return result
+
+
+def link_worktree_commits(
+    conn: sqlite3.Connection, node_id: int, worktree: str | Path
+) -> list[str]:
+    """Link the commits on node `node_id`'s worktree branch that no hook
+    linked. Node worktrees live under `~/.muvue/worktrees/`, outside the
+    repo, so the post-commit hook there finds no `.muvue/` and spools
+    nothing (and airlock worktrees don't run the repo's hooks at all).
+    The branch's own commits are those not reachable from any non-node
+    branch; each one not already in `node_commits` goes through the
+    normal post-commit path, oldest first, with git run inside the
+    worktree and the node bound whether or not the commit has a trailer."""
+    worktree = Path(worktree)
+    shas = _git(
+        worktree, "rev-list", "--reverse", "HEAD",
+        "--not", "--exclude=node-*", "--branches",
+    ).split()
+    known = {
+        row["sha"] for row in db_mod.query_all(conn, "SELECT DISTINCT sha FROM node_commits")
+    }
+    linked = []
+    for sha in shas:
+        if sha in known:
+            continue
+        handle_post_commit_from_git_sha(conn, worktree, sha, bound_node_id=node_id)
+        linked.append(sha)
+    return linked
 
 
 # --------------------------------------------------------------------------

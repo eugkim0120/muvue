@@ -156,3 +156,77 @@ def test_run_parallel_isolates_nodes_and_merges_in_dependency_order(conn, config
     merged = [m["node_id"] for m in result["merged"] if m["status"] == "merged"]
     assert sorted(merged) == sorted([first["id"], second["id"], third["id"]])
     assert merged.index(first["id"]) < merged.index(second["id"])
+
+
+def test_done_links_commits_made_in_the_per_node_worktree(conn, config, repo):
+    # The worktree lives under ~/.muvue/worktrees/, outside the repo, so
+    # the post-commit hook there finds no `.muvue/` and spools nothing.
+    # `done` must link the branch's commits itself before judging risk.
+    node = _task(conn, config, "a", ["a.py"])
+    _approve_all(conn, config)
+    started = nodes.start(conn, node["id"], owner="agent-1", config=config, repo_root=repo)["node"]
+    wt = Path(started["worktree"])
+    (wt / "a.py").write_text("a = 1\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", f"work\n\nMuvue-Node: {node['id']}")
+    sha = _git(wt, "rev-parse", "HEAD")
+
+    nodes.done(conn, node["id"], owner="agent-1", config=config, cwd=str(wt))
+
+    linked = conn.execute("SELECT sha FROM node_commits WHERE node_id = ?", (node["id"],)).fetchall()
+    assert [r["sha"] for r in linked] == [sha]
+    touched = conn.execute("SELECT path FROM actual_touches WHERE node_id = ?", (node["id"],)).fetchall()
+    assert [r["path"] for r in touched] == ["a.py"]
+
+
+def test_done_does_not_relink_commits_already_linked(conn, config, repo):
+    node = _task(conn, config, "a", ["a.py"])
+    _approve_all(conn, config)
+    started = nodes.start(conn, node["id"], owner="agent-1", config=config, repo_root=repo)["node"]
+    wt = Path(started["worktree"])
+    (wt / "a.py").write_text("a = 1\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", f"work\n\nMuvue-Node: {node['id']}")
+    from muvue.core import hooks
+    hooks.link_worktree_commits(conn, node["id"], wt)
+    hooks.link_worktree_commits(conn, node["id"], wt)
+    events = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE type = 'commit.linked' AND node_id = ?", (node["id"],)
+    ).fetchone()["n"]
+    assert events == 1
+
+
+def test_done_links_untrailered_worktree_commits_to_the_bound_node(conn, config, repo):
+    # v4 section 5: trailers are labels; the worktree binding is trusted.
+    node = _task(conn, config, "a", ["a.py"])
+    _approve_all(conn, config)
+    started = nodes.start(conn, node["id"], owner="agent-1", config=config, repo_root=repo)["node"]
+    wt = Path(started["worktree"])
+    (wt / "a.py").write_text("a = 1\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "work without a trailer")
+    sha = _git(wt, "rev-parse", "HEAD")
+
+    nodes.done(conn, node["id"], owner="agent-1", config=config, cwd=str(wt))
+
+    linked = conn.execute("SELECT sha FROM node_commits WHERE node_id = ?", (node["id"],)).fetchall()
+    assert [r["sha"] for r in linked] == [sha]
+    flagged = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE type LIKE '%unattributed%'"
+    ).fetchone()["n"]
+    assert flagged == 0
+
+
+def test_worktree_commit_does_not_take_the_main_checkouts_current_node(conn, config, repo):
+    from muvue.core import adapters
+
+    a = _task(conn, config, "a", ["a.py"])
+    b = _task(conn, config, "b", ["b.py"])
+    _approve_all(conn, config)
+    nodes.start(conn, a["id"], owner="agent-1", config=config, repo_root=repo)
+    adapters.set_current_node(repo, a["id"])
+    wt = Path(nodes.start(conn, b["id"], owner="agent-2", config=config, repo_root=repo)["node"]["worktree"])
+    (wt / "b.py").write_text("b = 1\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", "b's work")
+    assert f"Muvue-Node: {a['id']}" not in _git(wt, "log", "-1", "--pretty=%B")

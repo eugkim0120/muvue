@@ -363,3 +363,21 @@ def test_light_pre_push_never_blocks(conn, project, strict_config, repo, tmp_pat
     push = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"],
                           cwd=repo, capture_output=True, text=True)
     assert push.returncode == 0, push.stderr
+
+
+def test_done_links_commits_made_in_the_airlock_worktree(conn, project, strict_config, repo):
+    # Airlock worktrees run the airlock's hooks, not the repo's, so no
+    # post-commit line is ever spooled for them.
+    task = _ready_task(conn, project, strict_config, criteria_mode="manual")
+    result = nodes.start(conn, task["id"], owner="agent-1", config=strict_config, repo_root=repo)
+    wt = Path(result["node"]["worktree"])
+    (wt / "app.py").write_text("x = 2\n")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-q", "-m", f"work\n\nMuvue-Node: {task['id']}")
+    sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+    nodes.done(conn, task["id"], owner="agent-1", config=strict_config,
+               run_checks=lambda cmd, cwd: True, cwd=str(repo))
+
+    linked = conn.execute("SELECT sha FROM node_commits WHERE node_id = ?", (task["id"],)).fetchall()
+    assert [r["sha"] for r in linked] == [sha]

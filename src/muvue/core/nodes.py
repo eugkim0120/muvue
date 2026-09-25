@@ -17,6 +17,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import actor as actor_mod
 from . import db as db_mod
@@ -471,6 +472,9 @@ def done(
     if config is not None:
         pre = get_node(conn, node_id)
         if pre["status"] == "in_progress":
+            if pre["worktree"] and Path(pre["worktree"]).exists():
+                from . import hooks  # hooks imports this module
+                hooks.link_worktree_commits(conn, node_id, pre["worktree"])
             checks = review.precompute_checks(pre, config, run_checks, cwd)
             shas = risk.node_commit_shas(conn, node_id)
             if shas:
