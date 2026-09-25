@@ -18,7 +18,7 @@ from pathlib import Path
 from . import db as core_db
 from .config import DEFAULT_CONFIG_TOML
 
-HOOK_NAMES = ["post-commit", "pre-push"]
+HOOK_NAMES = ["post-commit", "pre-push", "prepare-commit-msg"]
 MANIFEST_NAME = ".init_manifest.json"
 
 
@@ -102,7 +102,9 @@ def _install_hook_shim(path: Path, name: str, backups: dict[str, str | None]) ->
     # stdlib-only `muvue._hook` entry point, not the full Typer CLI
     # (`-m muvue hook`, ~150-400ms cold) -- `-S` skips `site` init too.
     # See src/muvue/_hook.py and docs/decisions.md.
-    body = f"{hook_fast_path_command(name)}\n"
+    # prepare-commit-msg needs git's arguments (the message file, its source).
+    args = ' "$@"' if name == "prepare-commit-msg" else ""
+    body = f"{hook_fast_path_command(name)}{args}\n"
     block = f"{begin}\n{body}{end}\n"
 
     if path.exists():

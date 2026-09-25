@@ -585,12 +585,51 @@ def pre_push(repo_root: str, lines: list[str]) -> HookOutcome:
     return HookOutcome(1 if problems else 0, "", "".join(f"muvue: rejected: {p}\n" for p in problems))
 
 
+def prepare_commit_msg(repo_root: str, msg_path: str, source: str | None) -> None:
+    """Add `Muvue-Node: <id>` to the commit message when
+    `.muvue/current_node` names a node that is `in_progress`, so linking
+    a commit doesn't depend on the agent remembering the trailer. A
+    message that already carries a trailer, a merge or squash message,
+    and a stale current_node file (the node has moved on) are left
+    alone. Fails open: any error leaves the message untouched."""
+    import re
+
+    if source in ("merge", "squash"):
+        return
+    node_id = _get_current_node(repo_root)
+    if node_id is None:
+        return
+    try:
+        with open(msg_path) as f:
+            message = f.read()
+        if re.search(_TRAILER_RE, message, re.MULTILINE):
+            return
+        row = _read_db(
+            repo_root,
+            lambda conn: conn.execute(
+                "SELECT status FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+            ).fetchone(),
+        )
+    except Exception:
+        return
+    if row is None or row["status"] != "in_progress":
+        return
+    body = message.rstrip("\n")
+    last_line = body.rsplit("\n", 1)[-1]
+    sep = "\n" if re.match(r"^[A-Za-z-]+: ", last_line) and "\n\n" in body else "\n\n"
+    with open(msg_path, "w") as f:
+        f.write(f"{body}{sep}Muvue-Node: {node_id}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         return 0
     name = argv[0]
-    path = argv[1] if len(argv) > 1 else "."
+    # git runs hooks from the working tree's top level. prepare-commit-msg's
+    # first argument is the message file, which for a linked worktree sits
+    # in the main repository's `.git/`, so it must not pick the repo root.
+    path = argv[1] if len(argv) > 1 and name != "prepare-commit-msg" else "."
     if name == "pre-receive":
         # Runs inside the bare airlock, which has no `.muvue/`. Unlike
         # the other hooks this one fails closed: it is the enforcement.
@@ -614,6 +653,11 @@ def main(argv: list[str] | None = None) -> int:
     if name == "post-commit":
         sha = _read_head_sha(repo_root)
         _append_queue(repo_root, {"event": "post-commit", "ts": _now_iso(), "sha": sha})
+        return 0
+
+    if name == "prepare-commit-msg":
+        if len(argv) > 1:
+            prepare_commit_msg(repo_root, argv[1], argv[2] if len(argv) > 2 else None)
         return 0
 
     if name == "pre-push":
