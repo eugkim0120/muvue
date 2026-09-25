@@ -13,15 +13,14 @@ import {
   DEFAULT_DAEMON_URL,
   joinUrl,
   NONCE_PATH,
+  approveTarget,
   resolveEndpoint,
   shouldReprompt,
 } from "../src/lib";
 
 /**
- * Minimal hand-rolled assertions instead of Node's `assert` module: this
- * package intentionally has no dev dependency beyond `@types/vscode` and
- * `typescript` (plan working rule 2), and `assert`'s type declarations
- * come from `@types/node`, which we don't otherwise need.
+ * Minimal hand-rolled assertions: this suite runs with plain `node`,
+ * outside any test framework and without the `vscode` module.
  */
 const assert = {
   strictEqual(actual: unknown, expected: unknown): void {
@@ -99,6 +98,15 @@ test("resolveEndpoint maps approveNode onto POST /nodes/{id}/approve", () => {
     method: "POST",
     path: "/nodes/42/approve",
   });
+});
+
+test("approveTarget approves a node in review as a review", () => {
+  assert.strictEqual(approveTarget("review"), "review");
+});
+
+test("approveTarget approves a pending or re-gated node as a node", () => {
+  assert.strictEqual(approveTarget("pending"), "node");
+  assert.strictEqual(approveTarget("awaiting_approval"), "node");
 });
 
 test("resolveEndpoint maps pauseProject onto POST /projects/{id}/pause", () => {

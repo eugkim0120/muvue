@@ -36,3 +36,12 @@ jobs:
           node-version: "22"
       - run: npm ci
       - run: npm test
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+        working-directory: .
+      - name: P8 acceptance in a real VS Code Extension Host, against a live daemon
+        run: xvfb-run -a npm run test:host
+        env:
+          MUVUE_CMD: uv run --project ${{ github.workspace }} muvue

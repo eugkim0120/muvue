@@ -16,7 +16,7 @@
     "onCommand:muvue.approveNode",
     "onCommand:muvue.pauseProject"
   ],
-  "main": "./out/extension.js",
+  "main": "./out/src/extension.js",
   "contributes": {
     "commands": [
       {
@@ -45,10 +45,13 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "npm run compile && node ./out/test/lib.test.js"
+    "test": "npm run compile && node ./out/test/lib.test.js",
+    "test:host": "npm run compile && node ./out/test/host/runTest.js"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
     "typescript": "^5.4.0"
   }
 }

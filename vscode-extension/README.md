@@ -35,7 +35,7 @@ daemon's memory and changes every time `serve` restarts. Human verbs
 | Command | Title | Daemon call |
 |---|---|---|
 | `muvue.openDashboard` | muvue: Open Dashboard | `GET /` (via iframe, not a direct fetch) |
-| `muvue.approveNode` | muvue: Approve Node | `POST /nodes/{id}/approve` |
+| `muvue.approveNode` | muvue: Approve Node | `GET /nodes/{id}`, then `POST /nodes/{id}/approve` |
 | `muvue.pauseProject` | muvue: Pause Project (Emergency Stop) | `POST /projects/{id}/pause` |
 
 `approveNode` and `pauseProject` prompt for a numeric id, then for the
@@ -44,6 +44,10 @@ never in `SecretStorage` or settings (v4 section 8a: nothing
 token-shaped on disk), and removes a token that an older version stored.
 A 403 means the token is stale (the daemon restarted), so the extension
 forgets it and asks again.
+
+`approveNode` reads the node's status first: a node in `review` is
+approved as a review, and a `pending` node, or one whose criteria changed
+after Gate 2, as a node.
 
 `openDashboard` uses the token to mint a one-time nonce (`POST
 /auth/nonce`) and opens the iframe at `#n=<nonce>`. The dashboard
@@ -68,41 +72,36 @@ npm run compile   # tsc -p ./  -> out/
 
 ```sh
 npm test          # compiles, then runs test/lib.test.ts's pure-logic
-                   # assertions with plain `node` (no framework, no
-                   # `vscode` module needed)
+                  # assertions with plain `node`
+xvfb-run -a npm run test:host   # the real Extension Host (drop xvfb-run on a desktop)
 ```
 
-The Python side of this repo also has a real-process integration test,
-`tests/test_vscode_extension_p8.py`, which spawns a real `muvue serve`
-subprocess and asserts (1) `GET /` is byte-identical to the shipped
-`src/muvue/api/static/index.html` -- exactly what this extension's iframe
-would load -- and (2) `GET /events/stream` is a live SSE endpoint that
-actually emits a `data:` line, which is what that same `index.html`'s own
-`EventSource` connects to once the page is loaded inside the iframe.
+`test:host` downloads VS Code into `.vscode-test/`, scaffolds a scratch
+repository with the muvue CLI (`MUVUE_CMD`, default `muvue`), starts
+`muvue serve` on it, and launches VS Code with this extension. Inside the
+Extension Host, `test/host/suite.ts` checks, against the live daemon:
 
-## What is verified, and what is not
+- the three commands are registered;
+- "Approve Node" approves a node in `review`, and a wrong token gets a
+  403 and a second prompt;
+- "Open Dashboard" loads the daemon's own `GET /` in the webview, and
+  that page exchanges its one-time nonce and opens the SSE stream
+  (`/events/stream`). The daemon sits behind a small logging proxy so
+  the suite can see those requests;
+- "Pause Project" pauses the project.
 
-This environment has no live VS Code Extension Host (no `code` binary, no
-`@vscode/test-electron` sandbox available). What's actually been
-exercised:
+CI runs both on every push (`.github/workflows/ci.yml`). The api token
+goes to the Extension Host through its environment and is never written
+to disk.
 
-- **Type-checked and compiled cleanly** against `@types/vscode` (`tsc -p
-  ./`, strict mode) -- `src/extension.ts` and `src/lib.ts`.
-- **Unit-tested for real** (`test/lib.test.ts`, plain `node`): webview
-  HTML generation (iframe src, CSP scoping), the three commands' endpoint
-  mapping, auth header construction, and URL joining.
-- **Integration-tested for real against a live daemon**
-  (`tests/test_vscode_extension_p8.py`, Python/pytest, spawns an actual
-  `muvue serve` subprocess): the exact URLs the extension points its
-  webview and would call, respond exactly as this extension assumes.
-- **Not run inside an actual VS Code window.** `vscode.window.
-  createWebviewPanel`, the CSP as VS Code's real webview host enforces it,
-  the cookie behaviour of the cross-site iframe, and the command palette
-  wiring have not been exercised
-  against a real Extension Host. If you have VS Code installed, the
-  fastest manual check is: `code --extensionDevelopmentPath=$(pwd)
-  <some-repo>`, then run "muvue: Open Dashboard" from the command palette
-  against a `muvue serve` you started separately.
+Two bugs only a real host could show were fixed this way: `main` pointed
+at `out/extension.js` while `tsc` writes `out/src/extension.js`, so the
+extension never loaded; and with `enableScripts: false` the webview's
+sandbox, which the nested iframe inherits, stopped the dashboard's own
+JavaScript from running.
+
+Not covered: a person clicking through the command palette. The suite
+answers input boxes with a stub.
 
 ## Packaging
 

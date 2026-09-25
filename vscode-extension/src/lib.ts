@@ -83,6 +83,13 @@ export function resolveEndpoint(command: MuvueCommandId, id: number): EndpointSp
   }
 }
 
+/** `POST /nodes/{id}/approve` approves different things by `target`: a
+ * node in `review` needs "review"; a `pending` node (Gate 2) or one whose
+ * criteria changed after Gate 2 needs "node". */
+export function approveTarget(status: string): "review" | "node" {
+  return status === "review" ? "review" : "node";
+}
+
 /** Mutating calls need the session token printed by `muvue serve` as a
  * bearer header (src/muvue/api/app.py `_require_session`), and every one
  * of them must be `Content-Type: application/json`, body or not. */

@@ -10,6 +10,7 @@
 
 import * as vscode from "vscode";
 import {
+  approveTarget,
   buildAuthHeaders,
   buildWebviewHtml,
   DEFAULT_DAEMON_URL,
@@ -43,14 +44,20 @@ async function getSessionToken(): Promise<string | undefined> {
   return sessionToken;
 }
 
-/** POSTs to the daemon with the session token. On a 403 the token is
+/** Calls the daemon with the session token. On a 403 the token is
  * dropped and the user is asked once more before giving up. */
-async function postWithToken(path: string): Promise<Response | undefined> {
+async function callWithToken(
+  path: string, method: "GET" | "POST" = "POST", body: object = {},
+): Promise<Response | undefined> {
   const url = joinUrl(getDaemonUrl(), path);
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await getSessionToken();
     if (!token) return undefined;
-    const response = await fetch(url, { method: "POST", headers: buildAuthHeaders(token), body: "{}" });
+    const response = await fetch(url, {
+      method,
+      headers: buildAuthHeaders(token),
+      body: method === "POST" ? JSON.stringify(body) : undefined,
+    });
     if (!shouldReprompt(response.status)) return response;
     sessionToken = undefined;
   }
@@ -75,7 +82,17 @@ async function callHumanVerb(command: "approveNode" | "pauseProject", what: stri
   if (id === undefined) return;
   const { method, path } = resolveEndpoint(command, id);
   try {
-    const response = await postWithToken(path);
+    let body = {};
+    if (command === "approveNode") {
+      const node = await callWithToken(`/nodes/${id}`, "GET");
+      if (!node) return;
+      if (!node.ok) {
+        vscode.window.showErrorMessage(`muvue: GET /nodes/${id} -> ${node.status}: ${await node.text()}`);
+        return;
+      }
+      body = { target: approveTarget(((await node.json()) as { node: { status: string } }).node.status) };
+    }
+    const response = await callWithToken(path, "POST", body);
     if (!response) return;
     if (!response.ok) {
       const body = await response.text();
@@ -99,7 +116,7 @@ async function callHumanVerb(command: "approveNode" | "pauseProject", what: stri
 async function openDashboard(context: vscode.ExtensionContext): Promise<void> {
   let nonce: string | undefined;
   try {
-    const response = await postWithToken(NONCE_PATH);
+    const response = await callWithToken(NONCE_PATH);
     if (response?.ok) nonce = ((await response.json()) as { nonce?: string }).nonce;
   } catch (err) {
     vscode.window.showWarningMessage(`muvue: could not reach daemon at ${getDaemonUrl()}: ${String(err)}`);
@@ -108,7 +125,11 @@ async function openDashboard(context: vscode.ExtensionContext): Promise<void> {
     "muvueDashboard",
     "muvue dashboard",
     vscode.ViewColumn.One,
-    { enableScripts: false, retainContextWhenHidden: true },
+    // Scripts must be enabled: the webview's sandbox is inherited by the
+    // nested iframe, so without `allow-scripts` the dashboard's own JS never
+    // runs. The wrapper page itself still runs none (its CSP has no
+    // script-src, see `buildWebviewHtml`).
+    { enableScripts: true, retainContextWhenHidden: true },
   );
   panel.webview.html = buildWebviewHtml(getDaemonUrl(), nonce);
   context.subscriptions.push(panel);
