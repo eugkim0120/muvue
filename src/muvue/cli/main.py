@@ -397,8 +397,9 @@ def adapter_install(
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Write the given vendor's config, pointing it at muvue's CLI/MCP
-    surface (plan section 7). Codex/Gemini/Cursor writers are best-effort
-    and unverified against live vendor docs -- see docs/providers.md."""
+    surface (plan section 7). The Claude Code hook contract was checked
+    against claude 2.1.281; the Codex/Gemini/Cursor writers are
+    best-effort -- see docs/providers.md for what was verified."""
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     installers = {
@@ -1048,8 +1049,9 @@ def run(
 @app.command()
 def merge(
     node_id: int = typer.Argument(
-        None, help="merge this done node's branch onto main; omit to merge every "
-        "pending done node in dependency order"
+        None, help="merge this done node's branch (onto the airlock's main in strict mode, "
+        "into the checkout in light per_node mode); omit to merge every pending done node "
+        "in dependency order"
     ),
     pr: bool = typer.Option(
         False, "--pr", help="also generate a PR description body (plan section 6/11, P6) -- "
@@ -1066,11 +1068,12 @@ def merge(
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
-    """Human verb (plan section 6 "Merging"): attempt to merge strict-mode
-    node branch(es) onto the airlock's main. On conflict: the node ->
-    blocked(conflict), attempts + 1, and a "rebase onto main" subtask is
-    created. Light-mode / never-started-strict nodes are a documented
-    no-op (see core/merge.py). `--pr --create` opens a real PR via `gh`
+    """Human verb (plan section 6 "Merging"): merge node branch(es) onto
+    the airlock's main (strict mode) or into the checkout (light mode with
+    `worktree_mode = "per_node"`, only while the checkout is clean). On
+    conflict: the node -> blocked(conflict), attempts + 1, and a "rebase
+    onto main" subtask is created with the same owner. A node with no
+    worktree is a documented no-op (see core/merge.py). `--pr --create` opens a real PR via `gh`
     (see core/github.py); `--pr` alone only returns the body text."""
     if pr and node_id is None:
         typer.echo("--pr requires a single NODE_ID", err=True)

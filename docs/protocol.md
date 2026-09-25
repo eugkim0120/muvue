@@ -60,24 +60,24 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
   per-project `.muvue/history/<id>.jsonl.gz` archive instead.
 - `audit [--n N]` — samples components and drafts updates into the inbox
   (see the drift loop section).
-- `hook NAME` — shim entry point installed by `init`; no business logic
-  yet (ships P3/P4). Must stay cheap (<50ms) per plan section 1.
+- `hook NAME` — the full-CLI twin of the `muvue._hook` fast path that
+  installed shims run (see "Hook fast path" below).
 
-### Agent verbs (real in P0: `start`, `done`, `fail`)
+### Agent verbs
 - `start NODE_ID --owner OWNER [--request-id ID] [--path PATH]` —
   `ready -> in_progress`, sets `owner` + `lease_until`. Duplicate
-  `--request-id` within 24h is a no-op.
+  `--request-id` within 24h is a no-op. Refuses a `blocked` node
+  (decision #148) and any node of a `planning` or `paused` project.
 - `done NODE_ID --owner OWNER [--request-id ID] [--summary TEXT]` —
-  drives `in_progress -> review -> done` in one call (P0 simplification,
-  see `docs/decisions.md`: criteria evaluation and human review ship P1).
-  No-op if the node is already `done`, or on a duplicate `--request-id`
-  within 24h.
-- `fail NODE_ID --owner OWNER --lesson TEXT [--request-id ID]` —
-  increments `attempts`; transitions to `failed` if
-  `attempts >= max_attempts`, else back to `ready` for retry. Always
-  records a `lesson` note (`trigger`, `failure`, `do_instead`, `scope`).
-
-Stubs (print `not implemented in P0`): `brief`, `show`, `note`, `status`.
+  runs `[checks] test` and `lint`, then goes to `review`, and on to
+  `done` only when the risk tier and checks allow auto-approval (see
+  "`done -> review` gating"). No-op if the node is already `done`, or on
+  a duplicate `--request-id` within 24h.
+- `fail NODE_ID --owner OWNER --lesson TEXT --trigger TEXT --do-instead
+  TEXT --scope TEXT [--request-id ID]` — increments `attempts`;
+  transitions to `failed` if `attempts >= max_attempts`, else back to
+  `ready` for retry. Records the four-part `lesson` note.
+- `brief`, `show`, `note`, `status`: see their sections below.
 
 ### Gates (P1)
 
@@ -498,8 +498,10 @@ leftover `queue.draining`) and warns (non-fatal) above 1000 lines.
 **Latency budget:** p95 < 60ms, p99 < 120ms, cold subprocess
 (`tests/test_hook_latency_benchmark.py`, 60 fresh-interpreter
 iterations). The same file times PreToolUse's DB path (an `Edit` on an
-`in_progress` node) against its 150ms deadline: p99 ~27ms locally. Measured locally on this machine (no CI runner available
-in this environment): p95 ~20ms, p99 ~24ms -- well inside budget. See
+`in_progress` node) against its 150ms deadline. CI runs the benchmark
+on GitHub's `ubuntu-latest` runners (`.github/workflows/ci.yml`). First
+CI measurement, 2026-09-25: p95 33.1ms, p99 33.6ms cold, and p99 26.6ms
+on the PreToolUse DB path, all well inside budget. See
 docs/decisions.md #79-#82 for the design decisions this phase made.
 
 **Gate re-check (v4 §11, between P3 and P4):** the gate row's second
@@ -507,8 +509,10 @@ criterion, "median added latency per agent tool call < 100ms", is this
 same cold-`muvue._hook`-subprocess measurement reduced to its median
 (`PreToolUse` fires once per tool call, and its added cost to that call
 IS this measurement) — `test_gate_median_added_latency_per_agent_tool_call`
-in the same file. Measured locally: median ~18.9ms, well inside the
-100ms bar.
+in the same file. On CI: median 25.3ms, well inside the 100ms bar. The
+gate's other criterion, 80% of state transitions logged unprompted, is
+not met: in muvue's own repository only 2 of 63 commits since
+dogfooding began carry a node trailer (measured 2026-09-25).
 
 ## Post-commit hook (P3)
 
@@ -575,8 +579,8 @@ counts by status.
   `core.doctor` warns if that marker no longer matches the repo's
   current `protocol_version`.
 - `codex` / `gemini` / `cursor`: config writers only
-  (`AGENTS.md`/`GEMINI.md`/`.cursor/rules/muvue.mdc`), best-effort and
-  **unverified** against live vendor docs -- see `docs/providers.md`.
+  (`AGENTS.md`/`GEMINI.md`/`.cursor/rules/muvue.mdc`), best-effort; see
+  `docs/providers.md` for what was checked against which CLI version.
 
 **P0.5 note:** the installed `.claude/settings.json` config no longer
 invokes this command -- it invokes `muvue._hook NAME` (see "Hook fast
@@ -954,9 +958,10 @@ Real invocation, `core.drivers.invoke_driver`:
 2. Spawn `command` (`shell=True`, `brief` JSON on stdin), capture
    stdout/stderr.
 3. Parse usage via `usage_parser`:
-   - `claude_stream_json` / `codex_json` / `gemini_json` — **synthetic,
-     unverified against a real vendor CLI** (no network access / logged-
-     in CLI in this environment — see `docs/providers.md` and
+   - `claude_stream_json` — tested against a recorded claude 2.1.281
+     session (decision #151).
+   - `codex_json` / `gemini_json` — **synthetic, unverified against a
+     real vendor CLI** (see `docs/providers.md` and
      `tests/fixtures/vendor_samples/`).
    - `fake` — real, tested against a real `muvue-fake-agent` subprocess.
 4. A rate-limit signal (vendor-specific error text containing a

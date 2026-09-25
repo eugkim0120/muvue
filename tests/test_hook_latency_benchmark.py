@@ -5,11 +5,9 @@ time, not estimated. Each iteration spawns a fresh interpreter (`python
 of the budget; a warm/reused process would not measure what the budget
 is about.
 
-This machine is not CI hardware -- there is no CI runner available in
-this environment. The numbers below are real measurements taken on the
-dev machine this session ran on; see the session's final report for
-the honest "measured locally, not on a CI runner" caveat plan section
-4a's own text anticipates.
+CI runs this file on GitHub's `ubuntu-latest` runners
+(`.github/workflows/ci.yml`), which is the "CI hardware" the budget
+refers to.
 """
 
 from __future__ import annotations

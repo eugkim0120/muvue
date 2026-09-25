@@ -3,6 +3,9 @@
 server needs real implementations for all of section 4's agent verbs,
 not just the ones with prior CLI coverage -- see docs/decisions.md).
 
+It also holds the dashboard's derived reads: a node's diff, the tail of
+its driver log, and the touch-drift KPI.
+
 No mutation happens here; this module exists so `cli/main.py` and
 `mcp_server.py` share one query implementation instead of duplicating
 the row-assembly `muvue.api.app.show_node` already established the shape

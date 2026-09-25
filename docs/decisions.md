@@ -27,7 +27,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
    keeps these as two separate parameters (`lease_actor` vs
    `event_actor_role`) so both constraints are satisfiable simultaneously.
 
-4. **Hook shims target `post-commit` and `pre-push` only for P0.** Plan
+4. *(Superseded by #142.)* **Hook shims target `post-commit` and `pre-push` only for P0.** Plan
    section 7 lists more adapter-specific hooks (SessionStart, PreToolUse,
    etc.) but those are Claude Code adapter concerns for P3. P0 only needs
    the generic git-level shim file format described in section 5, so it
@@ -41,7 +41,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
    acceptance check) instead of relying on marker-stripping being
    lossless.
 
-6. **`export` in P0 is a flat JSON dump** of the whole `events` table to
+6. *(Superseded by #121.)* **`export` in P0 is a flat JSON dump** of the whole `events` table to
    `.muvue/history/events.json`, not the `.jsonl.gz` per-project archive
    described in plan section 9 (that's a P6 `close` concern). It exists
    only so `export` is a real command rather than a bare stub.
@@ -147,7 +147,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     scope" to add within, so `replan` raises `GateError` and the caller
     must go through Gate 2 / a plan revision first.
 
-18. **Diff size is approximated by `predicted_touches` count, against
+18. *(Superseded by #127.)* **Diff size is approximated by `predicted_touches` count, against
     both size thresholds.** Plan section 5 lists "diff size" as a risk
     input, but neither P0 nor P1 track added/removed line counts anywhere
     (`predicted_touches` is a set of path globs; `node_commits.files` is a
@@ -161,7 +161,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     measurement; a real one needs git integration that doesn't exist
     before P3's hooks/structure layer.
 
-19. **`has_deletions` is a wired parameter with no producer yet.** Plan
+19. *(Superseded by #127.)* **`has_deletions` is a wired parameter with no producer yet.** Plan
     section 5 lists "deletions" as a risk-tier input. No P0/P1/P2 table
     records which files a node's diff deleted (`node_commits.files` is
     just a path list, no per-path status). Rather than fabricate a
@@ -265,7 +265,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     restart costs nothing (a reconnecting dashboard just opens a new SSE
     stream).
 
-26. **`pause`/`resume` are implemented for real in P2 (not left as CLI
+26. *(Amended by #122: `pause` now also stops runners.)* **`pause`/`resume` are implemented for real in P2 (not left as CLI
     stubs), scoped to what P2 owns.** Plan section 5's "Emergency stop"
     also says `pause` "kills runner processes" -- there is no runner
     yet (P5), so that part is necessarily out of scope. What P2 *can* do
@@ -357,7 +357,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     links for no safety benefit; taking all of them costs nothing since
     unresolvable/duplicate ids are already handled.
 
-34. **No YAML-aware `.pre-commit-config.yaml` rewriting.** The P3 prompt
+34. *(Superseded by #141.)* **No YAML-aware `.pre-commit-config.yaml` rewriting.** The P3 prompt
     asks to "register with Husky or pre-commit when present" for the
     post-commit hook's *real* behavior. P0 already handles Husky (writes
     into `.husky/post-commit` when `.husky/` exists). Safely rewriting an
@@ -409,7 +409,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `docs/providers.md` and the P3 handoff report as needing human
     verification before v0.1 ships for real.
 
-38. **Light-mode `auto`-criteria checks are opt-in (`run_checks`
+38. *(Superseded by #128.)* **Light-mode `auto`-criteria checks are opt-in (`run_checks`
     parameter), not auto-wired into CLI/API.** Plan section 5 says light
     mode's `auto` criteria "run in the checkout" -- taken literally, that
     means actually executing `checks.test`. But wiring that
@@ -693,7 +693,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     so `components.json`/`decisions.json` readers can tell them apart
     from an explicit `kind='decision'` note without a schema change.
 
-55. **Component diff candidates come from `predicted_touches.path_glob`,
+55. *(Superseded by #136.)* **Component diff candidates come from `predicted_touches.path_glob`,
     not a real static-analysis/anchor-hashing scan.** Section 9's
     anchor-hash/staleness machinery is explicitly P6+ structure-layer
     work per earlier phases' own notes (see docs/protocol.md's P3
@@ -771,7 +771,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     *was* git's object hash; a content hash computed by this module
     stays stable regardless of the repo's own object-hash algorithm).
 
-61. **Reconcile-on-touch (drift loop item 3) matches on
+61. *(Superseded by #138.)* **Reconcile-on-touch (drift loop item 3) matches on
     `predicted_touches` globs against `stale` components' anchor paths,
     not `node_touches`.** The P7 prompt itself names this as the
     documented fallback: `node_touches` (the real per-node
@@ -895,7 +895,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     identical subprocess wrappers, so the live issue-fetch verification
     already covers the mechanism.
 
-70. **`read_txn` is a real (deferred) transaction, not a no-op, but it
+70. *(Superseded by #120.)* **`read_txn` is a real (deferred) transaction, not a no-op, but it
     is never the thing a P0 acceptance criterion depends on.** v4
     section 1.2 requires exactly two context managers, `read_txn`/
     `write_txn`, and calls only `write_txn` load-bearing. The simplest
@@ -951,7 +951,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     driver's `cost_model`" rule) without this table or its accrual path
     changing at all.
 
-73. **`actor_evidence` defaults are assigned per calling *layer*, not
+73. *(Superseded by #123.)* **`actor_evidence` defaults are assigned per calling *layer*, not
     threaded as a live TTY/parent-process detection at each call site.**
     v4 section 3/4 explicitly defers real detection ("walk the parent
     process chain for a known agent CLI") to future dashboard-surfaced
@@ -1035,7 +1035,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     wrong reason). Fixed as part of the section 3 redefinition, verified
     by both new tests in `tests/test_rebuild_property.py`.
 
-78. **`agent_spend`'s replay coverage is out of scope this session.** v4
+78. *(Superseded by #119.)* **`agent_spend`'s replay coverage is out of scope this session.** v4
     section 3 lists "spend" among the replayable projection's
     categories, but wiring `agent_spend` into `core.rebuild`'s
     diff/equality check (a new `_REPLAYABLE_AGENT_SPEND_COLUMNS` entry,
@@ -1068,7 +1068,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     Claude Code adapter config writer (`core/adapters.py`) so they
     can't drift apart.
 
-80. **`SessionStart`'s synchronous `additionalContext` brief injection
+80. *(Superseded by #114.)* **`SessionStart`'s synchronous `additionalContext` brief injection
     and `Stop`'s synchronous "block on unlogged in_progress work" check
     are dropped, not preserved via some exemption.** v4 §4a's own text
     is unambiguous: "Default action is append one JSON line to
@@ -1125,7 +1125,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     resolves) since the queue file is untrusted input a hand-edit or a
     stale `.muvue/current_node` could corrupt.
 
-83. **The daemon's "continuous drain loop" (v4 §4a) rides the existing
+83. *(Superseded by #115.)* **The daemon's "continuous drain loop" (v4 §4a) rides the existing
     SSE `/events/stream` generator in `api/app.py`, not a new
     standalone loop.** No dedicated daemon process/background-task
     loop exists yet -- that's P2a scope (§11: "Daemon core: ... queue
@@ -1217,7 +1217,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     were updated to use `base_url="http://127.0.0.1"` (matching the
     hostname check) rather than the httpx default `http://testserver`.
 
-87. **`doctor`'s live security probes (control 7) spin up a throwaway
+87. *(Amended by #146: control 1 is now probed.)* **`doctor`'s live security probes (control 7) spin up a throwaway
     daemon against an isolated scratch repo, never `repo_root` itself,
     when nothing is already listening -- and this runs by default,
     not opt-in.** The plan text explicitly leaves the "skip vs. spin up
@@ -1411,7 +1411,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     reads `retry_at` back out of the latest `runner.rate_limited` event's
     payload rather than adding a dedicated column for it.
 
-97. **`runner.rate_limit_wait_exhausted` (the "notification fires" for
+97. *(Superseded by #134.)* **`runner.rate_limit_wait_exhausted` (the "notification fires" for
     `max_wait_minutes` timeout escalation) is a `write_txn`-recorded
     event, not a call into `config.notify.url`.** The P5 prompt names
     this as the documented fallback ("if no real notification-sending
@@ -1438,7 +1438,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     with the same error-message shape, so a bad config fails at `load_config`
     rather than silently looping at runtime.
 
-99. **`GET /kpis`' `spend_vs_budget` becomes `max(pct across every
+99. *(Superseded by #147.)* **`GET /kpis`' `spend_vs_budget` becomes `max(pct across every
     configured driver budget, default=0.0)`, not a dict keyed by
     driver.** v4 §2 removed the single global budget number this field
     used to read (`core.runner.budget_state`); nothing in the P5 prompt
@@ -1574,7 +1574,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     loudly (`CloseError`) instead of silently clobbering the first
     commit off the ref.
 
-105. **No `gh pr create` wiring in this session; the required minimum
+105. *(Superseded by #140.)* **No `gh pr create` wiring in this session; the required minimum
     (an unacked `inbox.structure_update_ready` event) is what ships.**
     v4 §9 offers PR-or-inbox and the P6 prompt explicitly marks the PR
     path optional ("this is optional/your call"). `core.github.

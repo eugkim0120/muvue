@@ -420,8 +420,8 @@ assumption).
   rule 9 asks for ("verify and report, don't assume an adjacent
   measurement satisfies a differently-worded new criterion").
 
-### Verified, no change needed
-- **Original P3 gate's 80%-logged-unprompted property.** Spot-checked
+### Checked (correction, 2026-09-25: this is not the gate itself)
+- **Every new feature is reachable through a verb.** Spot-checked
   every v4-delta session's new functionality (per-driver budgets,
   `--parallel` restriction, branch coherence, granularity hard-block,
   `touches_outside_predicted`, `muvue/structure` commits) against
@@ -429,7 +429,13 @@ assumption).
   CLI/API verb (`run --parallel`, `start`, `decompose`/`propose-revision`,
   `close`) -- none is a brand-new human/agent verb that exists only as a
   raw `core.*` call, the class of gap the original gate exercise found
-  and fixed. No new CLI/API wrapper needed.
+  and fixed.
+- This entry used to call the gate's "80% of state transitions logged
+  unprompted" property verified. It checked reachability, which is
+  necessary for that property but doesn't measure it. Measured on
+  2026-09-25 over muvue's own repository since dogfooding began: 2 of
+  63 commits (3%) carry a node trailer. **The gate is not met.** The
+  latency half is met (median 20.9 ms against a 100 ms bar).
 
 ## [Unreleased] - v4 §7: commit-trailer enforcement relocation (changelog item 10)
 

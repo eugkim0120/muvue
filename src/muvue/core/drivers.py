@@ -11,16 +11,14 @@ authentication token or API key; it shells out to whatever CLI
 `config.agents.<name>.command` names and lets that CLI's own login
 persist in its own state, entirely outside muvue.
 
-Vendor usage-parser shapes (`claude_stream_json`, `codex_json`,
-`gemini_json`) are reconstructed from each vendor's documented output
-conventions, **not verified against a real install** -- this environment
-has no network access and no logged-in vendor CLI (same caveat P3's
-adapters.py/docs/providers.md already carry). See
-`tests/fixtures/vendor_samples/` for the synthetic recorded-output samples
-these parsers are tested against, and `docs/providers.md` for the same
-disclaimer in prose. `fake` is the one parser exercised against a real,
-muvue-owned subprocess (`muvue-fake-agent`, `src/muvue/fake_agent.py`) --
-see P5's acceptance criterion 1.
+`claude_stream_json` is tested against a recorded claude 2.1.281
+session (tests/fixtures/vendor_samples/claude_stream_json_live_2_1_281.jsonl).
+`codex_json` and `gemini_json` are reconstructed from each vendor's
+documented output conventions and **not verified against a real
+install**: Codex was logged out and Gemini not installed where they
+were written. `docs/providers.md` says what was checked for each.
+`fake` parses `muvue-fake-agent` (`src/muvue/fake_agent.py`), the
+driver the test suite runs.
 """
 
 from __future__ import annotations

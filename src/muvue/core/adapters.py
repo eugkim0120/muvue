@@ -6,9 +6,9 @@ Claude Code gets a real hook config (`.claude/settings.json`) wired to
 PreToolUse, PreCompact, Stop. Codex/Gemini/Cursor are config writers only
 (plan section 7: "Codex, Gemini, Cursor: config writers"): each gets a
 small instructions/config file pointing at `muvue brief`/`muvue mcp`,
-written in this tool's best-effort guess at that vendor's config format
--- **not verified against live vendor docs** (no network access in this
-environment; see docs/decisions.md and docs/providers.md). Every
+written in this tool's best-effort guess at that vendor's config format.
+Codex's flags were checked against codex-cli 0.142.5; Gemini and Cursor
+were not installed where this was written (see docs/providers.md). Every
 adapter's config embeds `protocol_version`; `core.doctor` warns if an
 installed adapter's embedded version doesn't match the repo's current
 `config.toml` `protocol_version` (plan section 7: "doctor warns on
