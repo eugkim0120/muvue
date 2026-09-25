@@ -2,33 +2,44 @@
 
 [![ci](https://github.com/eugkim0120/muvue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugkim0120/muvue/actions/workflows/ci.yml)
 
-muvue runs an AI coding agent's work as an auditable state machine instead of
-a chat transcript.
+Tired of vibecoding, where an agent works through a plan you can only
+find by scrolling back through a wall of chat? muvue is a CLI and a
+live dashboard for working with AI coding agents through a plan you
+can see and approve, instead of a chat transcript.
 
-- **Every task is a node** in a SQLite-backed graph:
-  `pending -> ready -> in_progress -> review -> done`, plus `blocked`,
-  `awaiting_approval` and `failed`.
-- **Every change is a recorded event**, with who made it and how muvue
-  knows (a TTY, the dashboard's session, a hook, or a detected agent
-  parent process).
-- **Two gates stand between a plan and your repo**: a human approves the
-  spec, then approves its decomposition into tasks, which freezes their
-  acceptance criteria.
-- **At `done`, muvue runs your checks itself** and assigns a risk tier.
-  Low-risk work auto-approves. Anything touching tests, risky paths or a
-  stale component goes to human review.
-- **An unattended runner** drives approved work through vendor CLIs
-  (`claude`, `opencode`, `codex`, `gemini`, or `fake` for testing), with per-driver
-  budgets, rate-limit handling and an emergency stop.
-- **A local dashboard** shows the plan as a DAG, each node's diff and
-  logs, and an inbox of everything waiting on you.
+You and the agent agree on a spec and break it into tasks, each with
+acceptance criteria. You approve both, then the agent does the work,
+either in your own session or unattended through `muvue run`. The
+dashboard shows the plan as a diagram of tasks and dependencies, colored
+by status, and each task's diff, logs and notes. Anything that needs you
+waits in one inbox.
+
+- **You approve before the agent starts.** First the spec, then the
+  task list. Approving the task list freezes each task's acceptance
+  criteria, so the agent can't quietly change what "done" means.
+- **muvue checks the work itself.** When the agent says a task is done,
+  muvue runs your tests and linter and rates the change's risk. Small,
+  clean changes are approved automatically. Changes that touch tests,
+  risky paths or outdated parts of the project wait for your review.
+- **Everything is on the record.** Every step is saved with who took
+  it and how muvue knows: you at a terminal, you in the dashboard, a
+  git hook, or an agent it detected. The agent's commits are linked to
+  their task.
+- **It can run on its own.** `muvue run` hands approved tasks to an
+  agent CLI (`claude` and `opencode` are verified), with a spending
+  limit per agent, rate-limit handling and an emergency stop.
+
+A few words used below: muvue's commands call a task a **node** and
+refer to it by number. The two approvals before work starts are
+**gates**: `approve spec:N` for the spec, `approve gate2:N` for a
+project's task list, and `approve review:N` for a finished task.
 
 ## Requirements
 
 - Python 3.12 or newer, and `git`
 - [`uv`](https://docs.astral.sh/uv/) (recommended), `pipx`, or `pip`
 - Optional:
-  - an agent CLI, if you want muvue to run real agents; `claude` is the
+  - an agent CLI, if you want muvue to run agents unattended; `claude`
     and `opencode` are the ones verified end to end (see
     `docs/providers.md`);
   - an authenticated `gh`, for `close --pr`, `merge --pr --create` and
@@ -63,11 +74,11 @@ muvue init          # writes .muvue/ (config, db), git hook shims, a .gitignore 
 muvue doctor        # checks the install, and live-probes the daemon's security controls
 ```
 
-At `done`, muvue runs `[checks] test` and `lint` from
+When a task is marked done, muvue runs `[checks] test` and `lint` from
 `.muvue/config.toml` (default `pytest -q` and `ruff check .`). Set them to
 commands that work in your repository first. A failing check sends the
-node to review instead of approving it. Likewise `worktree_setup`
-(default `uv sync`) runs in every new node worktree in strict mode or
+task to review instead of approving it. Likewise `worktree_setup`
+(default `uv sync`) runs in every new task worktree in strict mode or
 with `worktree_mode = "per_node"`; set it to your project's setup
 command, or to `""`.
 
@@ -75,33 +86,33 @@ Then plan, approve, run and review:
 
 ```bash
 muvue project create --goal "add a health endpoint"              # -> project 1
-muvue spec 1 --title "Health endpoint" --body "GET /health returns 200"   # -> spec node 1, pending
-muvue approve spec:1                                             # Gate 1
+muvue spec 1 --title "Health endpoint" --body "GET /health returns 200"   # -> spec, node 1
+muvue approve spec:1                                             # approve the spec
 muvue decompose 1 --title "Implement /health" \
   --criteria "GET /health returns 200" --criteria-mode auto \
-  --predicted-touches "app/*.py"                                 # -> task node 2
-muvue approve gate2:1                                            # Gate 2: criteria freeze
-muvue run                                                        # the routed driver works every ready node
+  --predicted-touches "app/*.py"                                 # -> a task, node 2
+muvue approve gate2:1                                            # approve the task list; criteria freeze
+muvue run                                                        # an agent works every ready task
 muvue status                                                     # counts by status
 muvue approve review:2                                           # if it stopped for review
-muvue close 1                                                    # preview what goes into the structure layer
+muvue close 1                                                    # preview what goes into project memory
 muvue close 1 --yes                                              # commit it and close the project
 ```
 
-`init` routes every node kind to the `fake` driver, which reports success
+`init` sends every task to the `fake` agent, which reports success
 without touching files, so this runs anywhere. `muvue uninit` removes
 everything `init` added and leaves the repository as it was.
 
-Human verbs (`approve`, `reject`, `answer`, `ack`, `merge`, `close`,
-`pause`, `resume`, `handoff`) are meant for a person at a terminal or the
-dashboard. When one of them runs under an agent CLI, muvue records it as
+Some commands are meant for you, at a terminal or in the dashboard:
+`approve`, `reject`, `answer`, `ack`, `merge`, `close`, `pause`,
+`resume` and `handoff`. When one of them runs under an agent CLI, muvue records it as
 the agent's action (`actor_evidence = agent_parent:<name>`) and counts it
-in the dashboard's rubber-stamp figures. The call still goes through: this
+in the dashboard's approval figures. The call still goes through: this
 is detection, not prevention (see `docs/threat-model.md`).
 
-## Running real agents
+## Running agents unattended
 
-Add a driver to `.muvue/config.toml` and route node kinds to it. This
+Add an agent to `.muvue/config.toml` and route tasks to it. This
 config ran six tasks unattended against claude 2.1.281:
 
 ```toml
@@ -121,46 +132,47 @@ task = "claude"
 subtask = "claude"
 ```
 
-`muvue run` gives each ready node's agent a fresh session, with the
-node's brief on stdin. The agent is told to commit with a
+`muvue run` gives each ready task's agent a fresh session, with the
+task's brief on stdin. The agent is told to commit with a
 `Muvue-Node: <id>` trailer and which checks muvue will run. After the
-session, muvue links the commits, runs the checks and tiers the risk.
-Then it continues, or stops at the first node that needs you.
+session, muvue links the commits, runs the checks and rates the risk.
+Then it continues, or stops at the first task that needs you.
 
-- `muvue run --node 7`: just that node. `--parallel 2` needs
+- `muvue run --node 7`: just that task. `--parallel 2` needs
   `worktree_mode = "per_node"`, so agents never share a checkout.
 - `muvue pause 1`: emergency stop. The runner and its agent process are
-  terminated, and in-flight nodes go back to `ready`. `muvue resume 1`
+  terminated, and tasks in progress go back to `ready`. `muvue resume 1`
   lets work continue.
-- A driver at 100% of its budget is not scheduled again. A rate-limited
+- An agent at 100% of its budget gets no more tasks. A rate-limited
   one waits up to `max_wait_minutes` in the same run, then falls back or
   pauses (`on_rate_limit_timeout`).
-- Driver output is kept in `.muvue/logs/<node>.log` (gitignored). Claude
+- Agent output is kept in `.muvue/logs/<node>.log` (gitignored). Claude
   runs your own Claude Code hooks even in headless mode, so read these
   logs before sharing them.
 
-`docs/providers.md` records exactly what was verified for each vendor,
-and what wasn't.
+For OpenCode (for example `deepseek-v4.1-flash` or
+`mimo-v2.6-flash-free`), `docs/providers.md` has a working config.
+It records exactly what was verified for each vendor, and what wasn't.
 
-## Working alongside an interactive agent
+## Using it from your own agent session
 
 ```bash
 muvue adapter install claude-code   # hooks in .claude/settings.json
 muvue adapter install codex         # or gemini / cursor: instruction files
-muvue mcp                           # MCP stdio server with the agent verbs only
+muvue mcp                           # MCP stdio server with the agent's commands only
 ```
 
-The Claude Code hooks inject the current node's brief at session start.
-They block edits while a node is `awaiting_approval`, and keep a turn
-from ending while an `in_progress` node has no logged work or touches a
-stale component. Hooks run through a stdlib-only fast path: on CI, p99 is
-34 ms per call.
+The Claude Code hooks give the agent the current task's brief when a
+session starts. They block edits while a task is waiting for your
+approval, and keep a turn from ending while a task in progress has no
+logged work or touches an outdated part of the project memory. Hooks
+run through a stdlib-only fast path: on CI, p99 is 34 ms per call.
 
 Agents use `muvue brief <node> [--budget N] [--since EVENT]`, `start`,
 `note`, `ask --default ...`, `done` and
-`fail --lesson --trigger --do-instead --scope`. While a node started
-with `muvue start` is `in_progress`, the `prepare-commit-msg` hook adds
-its `Muvue-Node:` trailer to every commit, so commits link to the node
+`fail --lesson --trigger --do-instead --scope`. While a task started
+with `muvue start` is in progress, the `prepare-commit-msg` hook adds
+its `Muvue-Node:` trailer to every commit, so commits link to the task
 without the agent having to remember.
 
 ## Dashboard
@@ -178,15 +190,17 @@ muvue serve        # loopback only, port 8765
   and changes on every restart.
 
 The views:
-- **tree**: the project as a DAG, with parent and dependency edges.
-- **node panel**: criteria, notes, commits, the real diff and a live log
+- **tree**: the plan as a diagram, with each task's parent and
+  dependencies, colored by status.
+- **task panel**: criteria, notes, commits, the real diff and a live log
   tail.
 - **spec**: click a line to comment on it; the agent sees the comment in
   its brief.
-- **inbox**: answer questions, approve reviews, and ack signals, audit
-  drafts and structure updates.
-- **timeline**, **revisions**, **KPIs** (drift, touch drift, rubber-stamp
-  rate, spend per driver).
+- **inbox**: answer the agent's questions, approve reviews, and
+  acknowledge warnings, audit drafts and project-memory updates.
+- **timeline**, **revisions**, and **KPIs**: how far work drifted from
+  the plan, how often risky work was approved within 10 seconds, and
+  spend per agent.
 - Pause, resume and close buttons, which act on the project chosen in
   the selector.
 
@@ -201,22 +215,23 @@ a real VS Code Extension Host against a live daemon.
 
 ## Strict mode
 
-With `mode = "strict"`, each node works in its own git worktree, branched
-off a bare "airlock" repository. The airlock's `pre-receive` hook accepts
-a push only to the branch of a node that is actively bound, and never to
-`main`. `pre-push` in your checkout refuses commits that name an
-unfinished node, and `muvue merge` brings finished branches onto `main`.
+With `mode = "strict"`, each task works in its own git worktree,
+branched off a separate bare repository muvue calls the airlock. The
+airlock accepts a push only to the branch of the task being worked on,
+and never to `main`. `pre-push` in your checkout refuses commits that
+name an unfinished task, and `muvue merge` brings finished branches onto
+`main`.
 This guards against accidents and lazy bypasses; it is not isolation
 from a determined same-user process.
 
-## Structure layer
+## Project memory
 
-`close` turns a project's decision notes, pinned lessons and the files
+What a finished project leaves behind for the next one. `close` turns a project's decision notes, pinned lessons and the files
 it actually changed into `decisions` and anchored `components`. It
 commits them on `refs/heads/muvue/structure`, and fast-forwards `main`
 only when your checkout is clean; otherwise it leaves an inbox item, or
 opens a PR with `--pr`. A later commit that edits an anchored file
-marks its component stale. The next node that touches a stale component
+marks its component stale. The next task that touches a stale component
 goes to review, and approving it re-verifies the component. `muvue
 audit` drafts re-verification diffs, and archives lessons nobody has
 used in a while.
@@ -230,11 +245,11 @@ fails with the exact key.
 |---|---|
 | `mode`, `worktree_mode`, `worktree_setup` | `light` or `strict`; `branch` or `per_node` worktrees; the command run in each new worktree |
 | `[checks]` | `test` and `lint`, run by muvue at `done` |
-| `[risk]` | globs and diff size that raise the risk tier |
-| `[planning]` | task size limits, lease length, ask timeout, which tiers need an `auto` criterion |
-| `[agents.<name>]` | driver command, auth check, usage parser, cost model, budget, rate-limit policy |
-| `[routing]` | node kind to driver name |
-| `[budget]` | wall-clock and node-count caps per `muvue run` |
+| `[risk]` | paths and diff size that raise a change's risk level |
+| `[planning]` | task size limits, lease length, ask timeout, which risk levels need an `auto` criterion |
+| `[agents.<name>]` | agent command, auth check, usage parser, cost model, budget, rate-limit policy |
+| `[routing]` | which agent gets each kind of task |
+| `[budget]` | wall-clock and task-count caps per `muvue run` |
 | `[daemon]`, `[notify]` | bind address and extra allowed origins; a URL (ntfy topic or webhook) for inbox notifications |
 
 ## Development
@@ -255,21 +270,21 @@ hook latency benchmark against the v4 budgets.
 - **Dogfood gate: met on the last two projects, with caveats.** The
   plan's gate asks for 80% of state transitions to be logged without
   prompting, across two projects. On muvue's own projects 4 and 5, 18
-  of 19 commits carry their node's trailer, and every node transition
+  of 19 commits carry their task's trailer, and every task's status change
   was logged by the agent doing the work. The agent knew it was being
   measured, and it also approved the gates, which muvue recorded as the
   agent's (`agent_parent:claude`). Before the adapter was tightened,
   only 2 of 63 commits carried a trailer.
 - **Codex and Gemini parsers are unverified.** Only the `claude` and
-  `opencode` drivers have been run end to end; see `docs/providers.md`.
+  `opencode` agents have been run end to end; see `docs/providers.md`.
 - **Rate limits are tested on recorded output only.** No live run has
   hit one.
 
 ## Docs
 
-- `docs/protocol.md`: status machine, every verb, API routes, events
+- `docs/protocol.md`: task statuses, every command, API routes, events
   (protocol version 2)
 - `docs/decisions.md`: numbered decision log
 - `docs/threat-model.md`: the daemon's security model
-- `docs/providers.md`: what's verified per vendor CLI
+- `docs/providers.md`: what's verified for each agent CLI
 - `CHANGELOG.md`

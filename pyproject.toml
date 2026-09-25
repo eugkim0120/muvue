@@ -1,7 +1,7 @@
 [project]
 name = "muvue"
 version = "0.2.0"
-description = "Run an AI coding agent's work as an auditable, gated state machine instead of a chat transcript"
+description = "A CLI and live dashboard for working with AI coding agents through a plan you can see and approve, instead of a chat transcript"
 readme = "README.md"
 authors = [
     { name = "Eugene Kim", email = "eugkim0120@gmail.com" }
