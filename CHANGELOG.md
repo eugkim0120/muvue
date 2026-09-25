@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W12: docs honesty pass, protocol 2
+
+### Changed
+- **`protocol_version` is 2.** `core.config.PROTOCOL_VERSION` is the
+  default for new repos. `doctor` warns when a repo's `config.toml` names
+  another version. `docs/protocol.md` lists what changed.
+- **README rewritten** for the current feature set. It covers real
+  agents, the dashboard's nonce link and api token, strict mode, the
+  structure layer, and known limitations. The quickstart was run
+  verbatim in a fresh repository.
+
+### Fixed (documentation)
+- The dogfood gate was recorded as verified. The check behind that note
+  measured verb reachability, not the logged share. The measured share
+  is 2 of 63 commits, so the gate is not met.
+- Decisions that W1-W11 replaced or amended are marked "Superseded by"
+  or "Amended by".
+- Stale text is gone from `docs/protocol.md`: the P0 stub list, "no CI
+  runner", and the claude parser called unverified. Driver, adapter,
+  merge and query docstrings were updated to match.
+- This workstream was tracked through muvue itself, as project 4 in the
+  repository's own `.muvue/`.
+
 ## [Unreleased] - v4 delta closure, W11: live run against claude
 
 ### Verified
