@@ -30,6 +30,7 @@ from . import db as core_db
 from . import drivers
 from . import events as events_mod
 from . import nodes as nodes_mod
+from . import projects as projects_mod
 from . import queries
 from . import spend as spend_mod
 from .config import MuvueConfig
@@ -46,7 +47,7 @@ _GATING_STATUSES = ("awaiting_approval", "blocked", "failed")
 
 # Outcomes from a just-processed node that also mean "stop scheduling new
 # work and return control" this cycle.
-_BLOCKING_OUTCOMES = {"blocked_rate_limit", "blocked_unavailable", "failed", "review"}
+_BLOCKING_OUTCOMES = {"blocked_rate_limit", "blocked_unavailable", "failed", "review", "project_paused"}
 
 
 def _now() -> datetime:
@@ -64,7 +65,7 @@ def _now() -> datetime:
 # `doctor` validates `[agents.<x>.budget].unit` against (v4 section 2:
 # "`doctor` errors if `budget.unit` is not producible by that driver's
 # `cost_model`"). Not reinvented; see docs/decisions.md.
-EXPECTED_BUDGET_UNIT = {"usd": "usd", "tokens": "tokens", "quota": "requests"}
+EXPECTED_BUDGET_UNIT = {"usd": "usd", "tokens": "tokens", "requests": "requests", "quota": "requests"}
 
 
 def driver_budget_state(conn, agent_name: str, agent_cfg) -> dict | None:
@@ -170,16 +171,16 @@ def _ready_nodes(conn, project_id: int | None):
     runner performing decomposition, and `[routing]` having a `spec` entry
     at all is there for a future decomposition-driving use, not this
     one -- see docs/decisions.md."""
+    # Nodes of a paused project are never scheduled (v4 section 5,
+    # "Emergency stop": pause refuses start).
+    base = (
+        "SELECT n.* FROM nodes n JOIN projects p ON p.id = n.project_id "
+        "WHERE n.status = 'ready' AND n.deleted_at IS NULL "
+        "AND n.kind IN ('task', 'subtask') AND p.phase != 'paused'"
+    )
     if project_id is not None:
-        return conn.execute(
-            "SELECT * FROM nodes WHERE status = 'ready' AND deleted_at IS NULL "
-            "AND kind IN ('task', 'subtask') AND project_id = ? ORDER BY id",
-            (project_id,),
-        ).fetchall()
-    return conn.execute(
-        "SELECT * FROM nodes WHERE status = 'ready' AND deleted_at IS NULL "
-        "AND kind IN ('task', 'subtask') ORDER BY id"
-    ).fetchall()
+        return conn.execute(base + " AND n.project_id = ? ORDER BY n.id", (project_id,)).fetchall()
+    return conn.execute(base + " ORDER BY n.id").fetchall()
 
 
 def _touches(conn, node_id: int) -> list[str]:
@@ -270,6 +271,7 @@ def select_batch(
 _COST_MODEL_TO_SPEND = {
     "usd": lambda r: ("usd", r.cost),
     "tokens": lambda r: ("tokens", r.in_tokens + r.out_tokens),
+    "requests": lambda r: ("requests", r.requests),
     "quota": lambda r: ("requests", r.requests),
 }
 
@@ -367,10 +369,18 @@ def run_node(
     small outcome dict, never raises for a driver-side failure (only a
     genuine `core` programming error propagates)."""
     owner = f"runner:{agent_name}"
-    started = nodes_mod.start(
-        conn, node["id"], owner=owner, config=config, repo_root=repo_root,
-        lease_minutes=config.planning.lease_minutes, actor_evidence="subprocess",
-    )
+    if projects_mod.get_project(conn, node["project_id"])["phase"] == "paused":
+        return {"node_id": node["id"], "agent": agent_name, "outcome": "project_paused"}
+    try:
+        started = nodes_mod.start(
+            conn, node["id"], owner=owner, config=config, repo_root=repo_root,
+            lease_minutes=config.planning.lease_minutes, actor_evidence="subprocess",
+        )
+    except nodes_mod.NodeError:
+        # A pause that landed after this node was selected: stop cleanly.
+        if projects_mod.get_project(conn, node["project_id"])["phase"] == "paused":
+            return {"node_id": node["id"], "agent": agent_name, "outcome": "project_paused"}
+        raise
     if started["noop"]:
         return {"node_id": node["id"], "agent": agent_name, "outcome": "noop"}
     node_row = started["node"]
@@ -626,6 +636,9 @@ def run(
 
         conn = core_db.connect(db_path)
         try:
+            if project_id is not None and projects_mod.get_project(conn, project_id)["phase"] == "paused":
+                paused = {"reason": "project_paused", "project_id": project_id}
+                break
             gating = _gating_nodes(conn, project_id)
             if gating:
                 paused = {"reason": "nodes_need_attention", "nodes": gating}

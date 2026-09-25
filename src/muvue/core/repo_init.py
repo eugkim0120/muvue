@@ -138,6 +138,9 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         # v4 section 2 file layout: "gitignored; hook fast-path spool
         # (append-only)" -- muvue._hook's queue, see src/muvue/_hook.py.
         ".muvue/queue.jsonl",
+        # Drain hand-off file and drainer lock (core/hooks.py drain_queue).
+        ".muvue/queue.draining",
+        ".muvue/queue.lock",
         # Not listed in plan section 2's committed-files table (only
         # config.toml/components.json/decisions.json are meant to be
         # committed) -- gitignored so an ordinary `git add -A` mid-project

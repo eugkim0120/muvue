@@ -69,30 +69,31 @@ def ask(
     actor_evidence: str = "tty",
     request_id: str | None = None,
 ) -> dict:
-    node = nodes_mod.get_node(conn, node_id)
-    dup = events.find_recent_by_request_id(conn, request_id, "question.asked") if request_id else None
-    if dup is not None:
-        return {"noop": True, "question": json.loads(dup["payload"])}
-
     with db_mod.write_txn(conn):
-        cur = conn.execute(
-            "INSERT INTO questions (node_id, project_id, text, default_answer) "
-            "VALUES (?, ?, ?, ?)",
-            (node_id, node["project_id"], question, default),
-        )
-        question_id = cur.lastrowid
-        row = get_question(conn, question_id)
-        events.record_event(
-            conn,
-            project_id=node["project_id"],
-            node_id=node_id,
-            actor=actor,
-            actor_evidence=actor_evidence,
-            type_="question.asked",
-            payload=dict(row),
-            request_id=request_id,
-        )
-        return {"noop": False, "question": dict(row)}
+        node = nodes_mod.get_node(conn, node_id)
+        dup = events.find_recent_by_request_id(conn, request_id, "question.asked") if request_id else None
+        if dup is not None:
+            return {"noop": True, "question": json.loads(dup["payload"])}
+
+        with db_mod.write_txn(conn):
+            cur = conn.execute(
+                "INSERT INTO questions (node_id, project_id, text, default_answer) "
+                "VALUES (?, ?, ?, ?)",
+                (node_id, node["project_id"], question, default),
+            )
+            question_id = cur.lastrowid
+            row = get_question(conn, question_id)
+            events.record_event(
+                conn,
+                project_id=node["project_id"],
+                node_id=node_id,
+                actor=actor,
+                actor_evidence=actor_evidence,
+                type_="question.asked",
+                payload=dict(row),
+                request_id=request_id,
+            )
+            return {"noop": False, "question": dict(row)}
 
 
 def answer(

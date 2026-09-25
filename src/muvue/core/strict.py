@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT_MARKER = "muvue-repo-root"
+UPSTREAM_REF = "refs/muvue/upstream"
 
 
 class StrictModeError(Exception):
@@ -75,8 +76,9 @@ def ensure_airlock(repo_root: Path) -> Path:
     """Create (if missing) the bare repo backing strict mode for
     `repo_root`, install its `pre-receive` shim, and sync `main` from
     `repo_root`'s current HEAD so worktrees branched off it start from
-    real content. Safe to call repeatedly (idempotent creation; the sync
-    push always runs, so `main` never goes stale between binds)."""
+    real content. Safe to call repeatedly: `main` fast-forwards to the
+    checkout's HEAD when it can and is otherwise left as is (see
+    `_advance_main_to_upstream`)."""
     repo_root = Path(repo_root).resolve()
     airlock = airlock_path(repo_root)
     if not airlock.exists():
@@ -89,17 +91,39 @@ def ensure_airlock(repo_root: Path) -> Path:
 
     # A *fetch* (airlock pulling from repo_root), not a push -- pre-receive
     # only fires on the receiving end of a push, and refs/heads/main is
-    # intentionally rejected there (see evaluate_ref_update). muvue itself
-    # is allowed to keep the airlock's main in sync; only agent-initiated
-    # pushes are subject to the hook.
+    # intentionally rejected there (see evaluate_ref_update). The fetch
+    # lands on a side ref, never directly on `main`: `core.merge` advances
+    # the airlock's `main` with merge commits that `repo_root` doesn't
+    # have, and a forced `+HEAD:refs/heads/main` here used to rewind them
+    # on every later `start`.
     fetch = _run_git(
-        "--git-dir", str(airlock), "fetch", str(repo_root), "+HEAD:refs/heads/main",
+        "--git-dir", str(airlock), "fetch", str(repo_root), f"+HEAD:{UPSTREAM_REF}",
     )
     if fetch.returncode != 0:
         raise StrictModeError(
             f"failed to sync main into airlock {airlock}: {fetch.stderr}"
         )
+    _advance_main_to_upstream(airlock)
     return airlock
+
+
+def _advance_main_to_upstream(airlock: Path) -> None:
+    """Seed `main` from the fetched checkout HEAD when missing, and
+    fast-forward it when the checkout moved ahead. When `main` already
+    contains the checkout HEAD (merges ahead) or the two have diverged,
+    `main` is left alone: merge commits are never discarded."""
+    git_dir = ("--git-dir", str(airlock))
+    upstream = _run_git(*git_dir, "rev-parse", "--verify", "-q", UPSTREAM_REF).stdout.strip()
+    main = _run_git(*git_dir, "rev-parse", "--verify", "-q", "refs/heads/main").stdout.strip()
+    if main == upstream:
+        return
+    if main:
+        is_ff = _run_git(*git_dir, "merge-base", "--is-ancestor", main, upstream).returncode == 0
+        if not is_ff:
+            return
+    update = _run_git(*git_dir, "update-ref", "refs/heads/main", upstream)
+    if update.returncode != 0:
+        raise StrictModeError(f"failed to advance airlock main: {update.stderr}")
 
 
 def bind_worktree(node, config, repo_root: Path) -> Path:

@@ -101,7 +101,7 @@ def test_sse_loop_drains_the_hook_fast_path_queue(repo):
     v1 = json.loads(first[len("data: "):].strip())["data_version"]
     v2 = json.loads(second[len("data: "):].strip())["data_version"]
     assert v2 > v1
-    assert queue_path.read_text().strip() == ""
+    assert not queue_path.exists() or queue_path.read_text().strip() == ""
 
     conn = core_db.connect(repo / ".muvue" / "muvue.db")
     row = conn.execute("SELECT type FROM events WHERE type = 'hook.stop'").fetchone()

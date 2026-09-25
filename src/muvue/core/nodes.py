@@ -201,10 +201,6 @@ def start(
     config=None,
     repo_root=None,
 ) -> dict:
-    dup = events.find_recent_by_request_id(conn, request_id, "node.start") if request_id else None
-    if dup is not None:
-        return {"noop": True, "node": dict(get_node(conn, node_id))}
-
     node = get_node(conn, node_id)
     project = conn.execute(
         "SELECT phase, branch FROM projects WHERE id = ?", (node["project_id"],)
@@ -296,6 +292,11 @@ def start(
             extra_columns["worktree"] = str(worktree_path)
 
     with db_mod.write_txn(conn):
+        # Checked inside BEGIN IMMEDIATE so two concurrent calls with the
+        # same request id serialise here instead of both applying.
+        if request_id and events.find_recent_by_request_id(conn, request_id, "node.start"):
+            return {"noop": True, "node": dict(get_node(conn, node_id))}
+        node = get_node(conn, node_id)
         row = _apply_transition(
             conn,
             node,
@@ -371,115 +372,116 @@ def done(
     touches test files) stops at `review` and needs a human
     `nodes.approve_review`.
     """
-    node = get_node(conn, node_id)
-    if node["status"] == "done":
-        return {"noop": True, "node": dict(node)}
-
-    dup = events.find_recent_by_request_id(conn, request_id, "node.done") if request_id else None
-    if dup is not None:
-        return {"noop": True, "node": dict(get_node(conn, node_id))}
-
-    if expected_version is not None and node["version"] != expected_version:
-        raise VersionMismatch(
-            f"cannot mark node {node_id} done: version is {node['version']}, "
-            f"expected {expected_version} (edited since start -- re-brief "
-            "and retry rather than overwrite)"
-        )
-
     with db_mod.write_txn(conn):
-        reviewing = _apply_transition(
-            conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
-            event_type="node.review", request_id=None, actor_evidence=actor_evidence,
-        )
+        node = get_node(conn, node_id)
+        if node["status"] == "done":
+            return {"noop": True, "node": dict(node)}
 
-        if config is None:
-            row = _apply_transition(
-                conn,
-                reviewing,
-                to_status="done",
-                lease_actor=owner,
-                event_actor_role="agent",
-                event_type="node.done",
-                request_id=request_id,
-                extra_columns={"lease_until": None, "summary": summary},
-                actor_evidence=actor_evidence,
+        dup = events.find_recent_by_request_id(conn, request_id, "node.done") if request_id else None
+        if dup is not None:
+            return {"noop": True, "node": dict(get_node(conn, node_id))}
+
+        if expected_version is not None and node["version"] != expected_version:
+            raise VersionMismatch(
+                f"cannot mark node {node_id} done: version is {node['version']}, "
+                f"expected {expected_version} (edited since start -- re-brief "
+                "and retry rather than overwrite)"
             )
-            return {"noop": False, "node": dict(row), "auto_approved": True}
 
-        # v4 section 5: touches outside predicted_touches is a new
-        # tier input, only meaningful once real commits exist
-        # (actual_touches, populated by core.hooks.handle_post_commit) --
-        # so it's compared here, at done()/review time, not at Gate 2
-        # approval (core.gates.approve_node), which has no commit history
-        # yet. Never lowers the tier -- see core.risk.compute_tier.
-        touches_outside = risk.touches_outside_predicted(conn, node_id)
-        tier = risk.max_tier(
-            risk.compute_tier(conn, reviewing, config, touches_outside_predicted=touches_outside),
-            reviewing["risk_tier"],
-        )
-        flagged = risk.is_flagged(conn, reviewing, config)
-        conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
-        reviewing = get_node(conn, node_id)
+        with db_mod.write_txn(conn):
+            reviewing = _apply_transition(
+                conn, node, to_status="review", lease_actor=owner, event_actor_role="agent",
+                event_type="node.review", request_id=None, actor_evidence=actor_evidence,
+            )
 
-        # Light-mode `review` dispatch (plan section 5, P3): auto/external/
-        # manual criteria modes each add their own reason to flag a node to
-        # `review`, on top of core.risk's tier/test-touch flag.
-        dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
-        if dispatch["flag"]:
-            flagged = True
+            if config is None:
+                row = _apply_transition(
+                    conn,
+                    reviewing,
+                    to_status="done",
+                    lease_actor=owner,
+                    event_actor_role="agent",
+                    event_type="node.done",
+                    request_id=request_id,
+                    extra_columns={"lease_until": None, "summary": summary},
+                    actor_evidence=actor_evidence,
+                )
+                return {"noop": False, "node": dict(row), "auto_approved": True}
+
+            # v4 section 5: touches outside predicted_touches is a new
+            # tier input, only meaningful once real commits exist
+            # (actual_touches, populated by core.hooks.handle_post_commit) --
+            # so it's compared here, at done()/review time, not at Gate 2
+            # approval (core.gates.approve_node), which has no commit history
+            # yet. Never lowers the tier -- see core.risk.compute_tier.
+            touches_outside = risk.touches_outside_predicted(conn, node_id)
+            tier = risk.max_tier(
+                risk.compute_tier(conn, reviewing, config, touches_outside_predicted=touches_outside),
+                reviewing["risk_tier"],
+            )
+            flagged = risk.is_flagged(conn, reviewing, config)
+            conn.execute("UPDATE nodes SET risk_tier = ? WHERE id = ?", (tier, node_id))
+            reviewing = get_node(conn, node_id)
+
+            # Light-mode `review` dispatch (plan section 5, P3): auto/external/
+            # manual criteria modes each add their own reason to flag a node to
+            # `review`, on top of core.risk's tier/test-touch flag.
+            dispatch = review.dispatch(conn, reviewing, config, run_checks=run_checks, cwd=cwd)
+            if dispatch["flag"]:
+                flagged = True
+                events.record_event(
+                    conn, project_id=reviewing["project_id"], node_id=node_id, actor="agent",
+                    actor_evidence=actor_evidence,
+                    type_=dispatch["event_type"], payload=dispatch["payload"],
+                )
+
+            if tier == "low" and not flagged:
+                row = _apply_transition(
+                    conn,
+                    reviewing,
+                    to_status="done",
+                    lease_actor=owner,
+                    event_actor_role="agent",
+                    event_type="node.done",
+                    request_id=request_id,
+                    extra_columns={"lease_until": None, "summary": summary},
+                    actor_evidence=actor_evidence,
+                )
+                events.record_event(
+                    conn,
+                    project_id=row["project_id"],
+                    node_id=node_id,
+                    actor="daemon",
+                    actor_evidence="subprocess",
+                    type_="review.auto_approved",
+                    payload={"tier": tier},
+                )
+                return {"noop": False, "node": dict(row), "auto_approved": True}
+
+            conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
+            row = get_node(conn, node_id)
+            # `node.`-prefixed so `rebuild.py` picks up the row snapshot with
+            # `summary` now set -- `review.awaiting` right below deliberately does
+            # *not* start with `node.` (same reason `review.auto_approved` doesn't,
+            # see docs/decisions.md), so it alone would leave the replayed
+            # `summary` stale (found by P5's rebuild-first test, this was a
+            # pre-existing gap since P2 introduced this branch).
             events.record_event(
-                conn, project_id=reviewing["project_id"], node_id=node_id, actor="agent",
+                conn, project_id=row["project_id"], node_id=node_id, actor="agent",
                 actor_evidence=actor_evidence,
-                type_=dispatch["event_type"], payload=dispatch["payload"],
-            )
-
-        if tier == "low" and not flagged:
-            row = _apply_transition(
-                conn,
-                reviewing,
-                to_status="done",
-                lease_actor=owner,
-                event_actor_role="agent",
-                event_type="node.done",
-                request_id=request_id,
-                extra_columns={"lease_until": None, "summary": summary},
-                actor_evidence=actor_evidence,
+                type_="node.summary_recorded", payload=dict(row),
             )
             events.record_event(
                 conn,
                 project_id=row["project_id"],
                 node_id=node_id,
-                actor="daemon",
-                actor_evidence="subprocess",
-                type_="review.auto_approved",
-                payload={"tier": tier},
+                actor="agent",
+                actor_evidence=actor_evidence,
+                type_="review.awaiting",
+                payload={"tier": tier, "flagged": flagged},
+                request_id=request_id,
             )
-            return {"noop": False, "node": dict(row), "auto_approved": True}
-
-        conn.execute("UPDATE nodes SET summary = ? WHERE id = ?", (summary, node_id))
-        row = get_node(conn, node_id)
-        # `node.`-prefixed so `rebuild.py` picks up the row snapshot with
-        # `summary` now set -- `review.awaiting` right below deliberately does
-        # *not* start with `node.` (same reason `review.auto_approved` doesn't,
-        # see docs/decisions.md), so it alone would leave the replayed
-        # `summary` stale (found by P5's rebuild-first test, this was a
-        # pre-existing gap since P2 introduced this branch).
-        events.record_event(
-            conn, project_id=row["project_id"], node_id=node_id, actor="agent",
-            actor_evidence=actor_evidence,
-            type_="node.summary_recorded", payload=dict(row),
-        )
-        events.record_event(
-            conn,
-            project_id=row["project_id"],
-            node_id=node_id,
-            actor="agent",
-            actor_evidence=actor_evidence,
-            type_="review.awaiting",
-            payload={"tier": tier, "flagged": flagged},
-            request_id=request_id,
-        )
-        return {"noop": False, "node": dict(row), "auto_approved": False}
+            return {"noop": False, "node": dict(row), "auto_approved": False}
 
 
 def approve_review(
@@ -588,39 +590,40 @@ def fail(
     `core.daemon.reconcile_leases` instead, which increments the
     separate `lease_expiries` counter and never routes to `failed` (see
     that function's docstring)."""
-    dup = events.find_recent_by_request_id(conn, request_id, "node.fail") if request_id else None
-    if dup is not None:
-        return {"noop": True, "node": dict(get_node(conn, node_id))}
-
-    node = get_node(conn, node_id)
-    if expected_version is not None and node["version"] != expected_version:
-        raise VersionMismatch(
-            f"cannot fail node {node_id}: version is {node['version']}, "
-            f"expected {expected_version} (edited since start)"
-        )
-    attempts = node["attempts"] + 1
-    to_status = "failed" if attempts >= node["max_attempts"] else "ready"
     with db_mod.write_txn(conn):
-        row = _apply_transition(
-            conn,
-            node,
-            to_status=to_status,
-            lease_actor=owner,
-            event_actor_role="agent",
-            event_type="node.fail",
-            request_id=request_id,
-            extra_columns={
-                "attempts": attempts,
-                "owner": None if to_status != "in_progress" else owner,
-                "lease_until": None,
-            },
-            actor_evidence=actor_evidence,
-        )
-        lesson_text = json.dumps(
-            {"trigger": trigger, "failure": lesson, "do_instead": do_instead, "scope": scope}
-        )
-        add_note(conn, node_id, kind="lesson", text=lesson_text, actor="agent", actor_evidence=actor_evidence)
-        return {"noop": False, "node": dict(row)}
+        dup = events.find_recent_by_request_id(conn, request_id, "node.fail") if request_id else None
+        if dup is not None:
+            return {"noop": True, "node": dict(get_node(conn, node_id))}
+
+        node = get_node(conn, node_id)
+        if expected_version is not None and node["version"] != expected_version:
+            raise VersionMismatch(
+                f"cannot fail node {node_id}: version is {node['version']}, "
+                f"expected {expected_version} (edited since start)"
+            )
+        attempts = node["attempts"] + 1
+        to_status = "failed" if attempts >= node["max_attempts"] else "ready"
+        with db_mod.write_txn(conn):
+            row = _apply_transition(
+                conn,
+                node,
+                to_status=to_status,
+                lease_actor=owner,
+                event_actor_role="agent",
+                event_type="node.fail",
+                request_id=request_id,
+                extra_columns={
+                    "attempts": attempts,
+                    "owner": None if to_status != "in_progress" else owner,
+                    "lease_until": None,
+                },
+                actor_evidence=actor_evidence,
+            )
+            lesson_text = json.dumps(
+                {"trigger": trigger, "failure": lesson, "do_instead": do_instead, "scope": scope}
+            )
+            add_note(conn, node_id, kind="lesson", text=lesson_text, actor="agent", actor_evidence=actor_evidence)
+            return {"noop": False, "node": dict(row)}
 
 
 def block(

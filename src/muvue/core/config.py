@@ -37,6 +37,19 @@ class PlanningConfig(StrictModel):
     max_subtasks: int = 6
     ask_timeout_minutes: int = 60
     lease_minutes: int = 60
+    # v4 section 5: tasks tiered strictly above this need >= 1 auto
+    # criterion at Gate 2 (hard block, `core.gates.approve_node`).
+    require_auto_criterion_above_tier: Literal["low", "medium", "high"] = "low"
+
+
+class DaemonConfig(StrictModel):
+    """`[daemon]` (v4 section 2/8a). `bind` is the default `serve` host;
+    anything other than loopback still needs `--i-know-this-is-exposed`.
+    `allowed_origins` extends the same-origin-only default with exact
+    `scheme://host:port` origins (empty = same-origin only)."""
+
+    bind: str = "127.0.0.1"
+    allowed_origins: list[str] = Field(default_factory=list)
 
 
 class NotifyConfig(StrictModel):
@@ -70,7 +83,7 @@ class AgentConfig(StrictModel):
     command: str
     auth_check: str = ""
     usage_parser: str = ""
-    cost_model: Literal["usd", "tokens", "quota"]
+    cost_model: Literal["usd", "tokens", "requests", "quota"]
     max_concurrency: int = 1
     on_rate_limit: str = "wait"
     pinned_version: str = ""
@@ -121,6 +134,7 @@ class MuvueConfig(StrictModel):
     checks: ChecksConfig = Field(default_factory=ChecksConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
+    daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
@@ -165,6 +179,11 @@ max_files_per_task = 8
 max_subtasks = 6
 ask_timeout_minutes = 60
 lease_minutes = 60
+require_auto_criterion_above_tier = "low"
+
+[daemon]
+bind = "127.0.0.1"
+allowed_origins = []
 
 [notify]
 url = ""

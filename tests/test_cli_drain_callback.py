@@ -53,7 +53,7 @@ def test_drain_callback_is_bounded_at_200(tmp_path: Path):
     result = _run(tmp_path, "doctor", "--skip-security-probes")
 
     assert result.returncode == 0, result.stderr
-    queue_path = tmp_path / ".muvue" / "queue.jsonl"
+    queue_path = tmp_path / ".muvue" / "queue.draining"  # bounded-drain leftover
     remaining = [ln for ln in queue_path.read_text().splitlines() if ln.strip()]
     assert len(remaining) == 50
 

@@ -1,5 +1,5 @@
-"""Daemon mechanics (plan section 8): reconcile-on-start (lease expiry),
-event-queue processing, and the in-memory session token that gates
+"""Daemon mechanics (plan section 8): reconcile-on-start (lease expiry,
+hook-spool drain), and the in-memory session token that gates
 mutating API endpoints (plan v4 section 8a, control 5).
 
 Holds no *reconstructible* state outside the DB (plan section 1,
@@ -25,9 +25,10 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import db as db_mod
-from . import events as events_mod
+from . import hooks as hooks_mod
 from . import nodes as nodes_mod
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -84,39 +85,24 @@ def reconcile_leases(conn: sqlite3.Connection, *, now: datetime | None = None) -
         return reverted
 
 
-# --------------------------------------------------------------------------
-# Event-queue processing (plan section 8). P2 scope: the mechanism is
-# real (drains unacked events into `acked_at`), its consumers are no-ops
-# -- anchor-hashing and staleness are P3+/structure-layer work (plan
-# section 9). See docs/decisions.md.
-# --------------------------------------------------------------------------
-
-
-def process_queue(conn: sqlite3.Connection, *, batch_size: int = 100) -> int:
-    """Drain up to `batch_size` unacked events by marking `acked_at`. No
-    consumer logic runs yet (documented no-op, see module docstring)."""
-    with db_mod.write_txn(conn):
-        rows = conn.execute(
-            "SELECT id FROM events WHERE acked_at IS NULL ORDER BY id ASC LIMIT ?",
-            (batch_size,),
-        ).fetchall()
-        if not rows:
-            return 0
-        now_s = _now().strftime(TS_FORMAT)
-        ids = [r["id"] for r in rows]
-        conn.executemany(
-            "UPDATE events SET acked_at = ? WHERE id = ?", [(now_s, i) for i in ids]
-        )
-        return len(ids)
-
-
-def reconcile_on_start(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict:
+def reconcile_on_start(
+    conn: sqlite3.Connection, *, repo_root: Path | None = None, now: datetime | None = None
+) -> dict:
     """Called once when the daemon (re)starts: reconcile expired leases,
-    then drain the queue. This is what makes `muvue serve` restartable
-    without losing anything (plan section 1, principle 1)."""
+    then drain the hook fast-path spool (`.muvue/queue.jsonl`, v4
+    section 4a) when `repo_root` is given. This is what makes `muvue
+    serve` restartable without losing anything (plan section 1,
+    principle 1).
+
+    It deliberately does *not* touch `events.acked_at`: the inbox reads
+    "unacked" as "still open", so only a human `ack` may set it. An
+    earlier version acked every unacked event here and silently cleared
+    the inbox on each restart (see docs/decisions.md)."""
     reverted = reconcile_leases(conn, now=now)
-    drained = process_queue(conn)
-    return {"reverted_nodes": reverted, "drained_events": drained}
+    drained = 0
+    if repo_root is not None:
+        drained = hooks_mod.drain_queue(conn, Path(repo_root))["drained"]
+    return {"reverted_nodes": reverted, "drained_spool": drained}
 
 
 # --------------------------------------------------------------------------

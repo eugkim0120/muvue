@@ -162,7 +162,7 @@ def approve_node(
         # to); low tier is unaffected (still only warned by lint_task).
         if (
             node["kind"] in ("task", "subtask")
-            and node["risk_tier"] in ("medium", "high")
+            and _tier_requires_auto(node["risk_tier"], config)
             and node["criteria_mode"] != "auto"
         ):
             raise GateError(
@@ -175,6 +175,16 @@ def approve_node(
         conn.execute("UPDATE nodes SET criteria_hash = ? WHERE id = ?", (frozen_hash, node_id))
         row = nodes_mod.ready(conn, node_id, actor=actor, actor_evidence=actor_evidence)
         return {"node": dict(row), "warnings": warnings}
+
+
+_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def _tier_requires_auto(tier: str | None, config: MuvueConfig | None) -> bool:
+    """`[planning] require_auto_criterion_above_tier` (v4 section 2/5):
+    tiers strictly above the configured one need an auto criterion."""
+    threshold = config.planning.require_auto_criterion_above_tier if config is not None else "low"
+    return _TIER_ORDER.get(tier or "low", 0) > _TIER_ORDER[threshold]
 
 
 def approve_gate2(

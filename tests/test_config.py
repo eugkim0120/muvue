@@ -77,3 +77,32 @@ def test_routing_referencing_unknown_agent_rejected(tmp_path: Path):
     )
     with pytest.raises(ConfigError, match="ghost"):
         load_config(p)
+
+
+SPEC_EXAMPLE = Path(__file__).parent / "fixtures" / "v4_spec_config.toml"
+
+
+def test_v4_spec_example_config_loads_verbatim():
+    """The plan's own section 2 example `config.toml` (copied verbatim into
+    the fixture) must load -- it used to fail on `[daemon]`,
+    `planning.require_auto_criterion_above_tier` and
+    `cost_model = "requests"`-style keys the model didn't know."""
+    cfg = load_config(SPEC_EXAMPLE)
+    assert cfg.daemon.bind == "127.0.0.1"
+    assert cfg.daemon.allowed_origins == []
+    assert cfg.planning.require_auto_criterion_above_tier == "low"
+    assert cfg.agents["claude"].budget.unit == "requests"
+
+
+def test_requests_cost_model_is_accepted(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('[agents.x]\ncommand = "x"\ncost_model = "requests"\n'
+                 '[routing]\nspec = "x"\ntask = "x"\nsubtask = "x"\n')
+    assert load_config(p).agents["x"].cost_model == "requests"
+
+
+def test_require_auto_criterion_tier_rejects_unknown_value(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('[planning]\nrequire_auto_criterion_above_tier = "extreme"\n')
+    with pytest.raises(ConfigError, match="require_auto_criterion_above_tier"):
+        load_config(p)

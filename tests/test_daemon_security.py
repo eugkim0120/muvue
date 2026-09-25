@@ -225,3 +225,31 @@ def test_serve_refuses_non_loopback_bind_without_the_escape_hatch(tmp_path: Path
     )
     assert proc.returncode != 0
     assert "i-know-this-is-exposed" in (proc.stdout + proc.stderr)
+
+
+def test_config_daemon_bind_is_subject_to_the_same_gate(tmp_path: Path):
+    """`[daemon] bind` in config.toml is the default host -- and a
+    non-loopback value still needs the explicit escape hatch."""
+    init_repo(tmp_path)
+    cfg = tmp_path / ".muvue" / "config.toml"
+    cfg.write_text(cfg.read_text().replace('bind = "127.0.0.1"', 'bind = "0.0.0.0"'))
+    proc = subprocess.run(
+        [sys.executable, "-m", "muvue", "serve", str(tmp_path), "--port", str(_free_port())],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode != 0
+    assert "'0.0.0.0'" in proc.stderr
+
+
+def test_allowed_origins_config_admits_an_extra_origin(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from muvue.api import create_app
+    from muvue.core.config import MuvueConfig
+
+    init_repo(tmp_path)
+    cfg = MuvueConfig()
+    cfg.daemon.allowed_origins = ["http://tools.local:9000"]
+    client = TestClient(create_app(tmp_path, config=cfg), base_url="http://127.0.0.1")
+    assert client.get("/healthz", headers={"Origin": "http://tools.local:9000"}).status_code == 200
+    assert client.get("/healthz", headers={"Origin": "http://tools.local:9001"}).status_code == 403

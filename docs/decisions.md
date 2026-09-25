@@ -1685,3 +1685,35 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `uninit` do or need to account for. Same category as the other
     git-managed exclusions: something git itself writes as a side effect
     of an ordinary git command, unrelated to what muvue touched.
+
+## v4 delta closure decisions
+
+111. **Daemon reconcile never acks events.** `events.acked_at` means
+    "a human acknowledged this" to the inbox. The P2-era `process_queue`
+    acked the oldest 100 unacked events on every `serve` start as a
+    stand-in for queue processing whose consumers were never built.
+    Removed rather than filtered by type: the only real queue is the hook
+    spool (`.muvue/queue.jsonl`), and `reconcile_on_start` now drains that
+    instead. Only `POST /events/{id}/ack` (and the CLI `ack`) set
+    `acked_at`.
+
+112. **Hook spool drain uses a rename hand-off plus a drainer lock.**
+    Hooks keep doing a plain `open(..., "a")` append (no locking on the
+    hot path, so the section 4a latency budget is unaffected). A drainer
+    takes a non-blocking `flock` on `.muvue/queue.lock`, renames
+    `queue.jsonl` to `queue.draining`, and processes that. A bounded
+    drain leaves its remainder in `queue.draining`, which the next drain
+    processes before renaming the live spool again, so order is FIFO.
+    Bytes a hook wrote to the old inode after the read are appended to
+    the remainder. `fcntl` is POSIX-only, as is the rest of muvue's hook
+    and git plumbing.
+
+113. **The airlock tracks the checkout on a side ref.** `ensure_airlock`
+    fetches the checkout's `HEAD` into `refs/muvue/upstream`. `main` is
+    set from it only when `main` is missing or is an ancestor of it
+    (fast-forward). When `main` is ahead (merges) or has diverged, it is
+    left alone, because merge commits live only in the airlock until the
+    user pulls them. This replaces the forced `+HEAD:refs/heads/main`
+    fetch that #49 flagged as a stomping risk but only guarded in the
+    merge path.
+

@@ -189,3 +189,43 @@ def test_attempt_merge_refuses_a_non_done_node(conn, project, strict_config, rep
     nodes.start(conn, task["id"], owner="a", config=strict_config, repo_root=repo)
     with pytest.raises(merge_mod.MergeError):
         merge_mod.attempt_merge(conn, task["id"], repo)
+
+
+def _airlock_main_tree(repo: Path) -> str:
+    from muvue.core import strict as strict_mod
+
+    airlock = strict_mod.airlock_path(repo)
+    return subprocess.run(
+        ["git", "--git-dir", str(airlock), "ls-tree", "--name-only", "main"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+
+def test_later_strict_start_does_not_discard_earlier_merges(conn, project, strict_config, repo):
+    """Regression: every strict `start` force-fetched `+HEAD:refs/heads/main`
+    from the user's checkout into the airlock, rewinding `main` past any
+    merge commits `attempt_merge` had already made -- while
+    `merge.completed` stopped them from ever being re-merged."""
+    first = _done_strict_task(
+        conn, project, strict_config, repo, title="t1", filename="first.txt", content="1\n",
+    )
+    assert merge_mod.attempt_merge(conn, first["id"], repo)["status"] == "merged"
+    assert "first.txt" in _airlock_main_tree(repo)
+
+    _done_strict_task(
+        conn, project, strict_config, repo, title="t2", filename="second.txt", content="2\n",
+    )
+    assert "first.txt" in _airlock_main_tree(repo)
+
+
+def test_airlock_main_fast_forwards_when_the_checkout_advances(conn, project, strict_config, repo):
+    _done_strict_task(
+        conn, project, strict_config, repo, title="t1", filename="a.txt", content="1\n",
+    )
+    (repo / "upstream.txt").write_text("u\n")
+    _git(repo, "add", "upstream.txt")
+    _git(repo, "commit", "-q", "-m", "user commit")
+    _done_strict_task(
+        conn, project, strict_config, repo, title="t2", filename="b.txt", content="2\n",
+    )
+    assert "upstream.txt" in _airlock_main_tree(repo)

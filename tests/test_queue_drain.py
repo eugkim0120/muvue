@@ -41,10 +41,14 @@ def _spool(repo: Path, n: int, event: str = "stop") -> None:
 
 
 def _queue_line_count(repo: Path) -> int:
-    path = repo / ".muvue" / "queue.jsonl"
-    if not path.exists():
-        return 0
-    return sum(1 for line in path.read_text().splitlines() if line.strip())
+    """Pending lines across the live spool and a bounded drain's
+    leftover `queue.draining` hand-off file."""
+    total = 0
+    for name in ("queue.jsonl", "queue.draining"):
+        path = repo / ".muvue" / name
+        if path.exists():
+            total += sum(1 for line in path.read_text().splitlines() if line.strip())
+    return total
 
 
 def test_drain_stops_at_item_bound_leaving_the_rest_queued(repo, conn):
@@ -156,3 +160,48 @@ def test_drain_processes_post_commit_through_the_existing_full_handler(repo, con
     ).fetchone()
     assert row is not None
     assert "a.py" in json.loads(row["files"])
+
+
+def test_lines_appended_during_a_drain_are_not_lost(repo, conn, monkeypatch):
+    """Regression: drain used to read the whole file, process, then
+    overwrite it with the unprocessed remainder -- any line a hook
+    appended while processing ran was silently dropped."""
+    _spool(repo, 5)
+    real = hooks._process_queue_event
+    appended = {"done": False}
+
+    def process_and_race(c, root, event):
+        if not appended["done"]:
+            appended["done"] = True
+            _spool(repo, 1, event="pre-push")
+        real(c, root, event)
+
+    monkeypatch.setattr(hooks, "_process_queue_event", process_and_race)
+    result = hooks.drain_queue(conn, repo, max_items=200, max_seconds=10)
+    # The racing line landed in a fresh spool file and is drained too.
+    assert result["drained"] == 6
+    assert result["remaining"] == 0
+    types = [r["type"] for r in conn.execute("SELECT type FROM events")]
+    assert "hook.pre-push" in types
+
+
+def test_bounded_drain_keeps_fifo_order_across_calls(repo, conn, monkeypatch):
+    _spool(repo, 3, event="stop")
+    seen = []
+    monkeypatch.setattr(hooks, "_process_queue_event", lambda c, r, e: seen.append(e["ts"]))
+    hooks.drain_queue(conn, repo, max_items=2, max_seconds=10)
+    _spool(repo, 1, event="stop")  # new line lands in a fresh queue file
+    hooks.drain_queue(conn, repo, max_items=200, max_seconds=10)
+    assert seen == ["t0", "t1", "t2", "t0"]
+
+
+def test_a_second_concurrent_drainer_backs_off(repo, conn):
+    import fcntl
+
+    _spool(repo, 3)
+    lock_path = repo / ".muvue" / "queue.lock"
+    with lock_path.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        result = hooks.drain_queue(conn, repo, max_items=200, max_seconds=10)
+    assert result["drained"] == 0
+    assert _queue_line_count(repo) == 3

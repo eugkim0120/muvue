@@ -218,7 +218,9 @@ def export(
 @app.command()
 def serve(
     path: Path = typer.Argument(Path("."), help="Repo root to serve"),
-    host: str = typer.Option("127.0.0.1", "--host"),
+    host: str | None = typer.Option(
+        None, "--host", help="bind address (default: [daemon] bind in config.toml, 127.0.0.1)",
+    ),
     port: int = typer.Option(8765, "--port"),
     i_know_this_is_exposed: bool = typer.Option(
         False, "--i-know-this-is-exposed",
@@ -248,6 +250,10 @@ def serve(
     from muvue.api import create_app
     from muvue.core import daemon as daemon_mod
 
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    if host is None:
+        host = config.daemon.bind
     hostname = host.split("%", 1)[0].strip().lower()
     if hostname not in ("127.0.0.1", "localhost") and not i_know_this_is_exposed:
         typer.echo(
@@ -266,11 +272,9 @@ def serve(
             err=True,
         )
 
-    repo_root = _find_repo_root(path)
-    config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
-        result = daemon_mod.reconcile_on_start(conn)
+        result = daemon_mod.reconcile_on_start(conn, repo_root=repo_root)
     finally:
         conn.close()
     for reverted in result["reverted_nodes"]:

@@ -331,3 +331,28 @@ def test_cookie_from_exchange_authorizes_mutating_requests(client, token, ready_
     # authorizes this mutating request.
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"})
     assert r.status_code == 200
+
+
+def test_events_without_cursor_returns_the_newest_window(client, conn):
+    """Regression: `/events?limit=N` ran `ORDER BY id ASC LIMIT`, so once a
+    repo had more than N events the timeline showed the oldest N forever."""
+    from muvue.core import events as events_mod
+
+    for i in range(5):
+        events_mod.record_event(conn, project_id=None, node_id=None, actor="human",
+                                type_="test.tick", payload={"i": i})
+    newest = conn.execute("SELECT MAX(id) m FROM events").fetchone()["m"]
+    rows = client.get("/events?limit=3").json()
+    assert [r["id"] for r in rows] == [newest - 2, newest - 1, newest]
+
+
+def test_events_with_cursor_pages_forward_oldest_first(client, conn):
+    from muvue.core import events as events_mod
+
+    first = events_mod.record_event(conn, project_id=None, node_id=None, actor="human",
+                                    type_="test.tick", payload={})
+    for _ in range(3):
+        events_mod.record_event(conn, project_id=None, node_id=None, actor="human",
+                                type_="test.tick", payload={})
+    rows = client.get(f"/events?since_id={first}&limit=2").json()
+    assert [r["id"] for r in rows] == [first + 1, first + 2]

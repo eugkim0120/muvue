@@ -29,7 +29,9 @@ importing `muvue.core` anyway.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sqlite3
 import subprocess
 import time
@@ -176,6 +178,8 @@ def handle_post_commit_from_git_sha(
 # --------------------------------------------------------------------------
 
 QUEUE_RELPATH = ".muvue/queue.jsonl"
+DRAINING_RELPATH = ".muvue/queue.draining"
+LOCK_RELPATH = ".muvue/queue.lock"
 DEFAULT_DRAIN_MAX_ITEMS = 200
 DEFAULT_DRAIN_MAX_SECONDS = 0.2
 
@@ -237,37 +241,74 @@ def drain_queue(
     max_items: int = DEFAULT_DRAIN_MAX_ITEMS,
     max_seconds: float = DEFAULT_DRAIN_MAX_SECONDS,
 ) -> dict:
-    """Process at most `max_items` lines from `.muvue/queue.jsonl`, or
-    stop early once `max_seconds` of wall-clock time has elapsed,
-    whichever comes first (v4 section 4a) -- then rewrite the file with
-    whatever's left, so the next call (or the daemon's continuous loop)
-    picks up where this one stopped. A malformed line (not valid JSON)
+    """Process at most `max_items` spooled lines, or stop early once
+    `max_seconds` of wall-clock time has elapsed, whichever comes first
+    (v4 section 4a) -- leaving the rest for the next call (or the
+    daemon's continuous loop), oldest first. A second drainer that finds
+    the lock held backs off and drains nothing. A malformed line (not valid JSON)
     still counts against `max_items` and is dropped rather than
     retried forever. Returns `{"drained": n, "remaining": n}`."""
     repo_root = Path(repo_root)
     queue_path = repo_root / QUEUE_RELPATH
-    if not queue_path.exists():
+    draining_path = repo_root / DRAINING_RELPATH
+    if not queue_path.exists() and not draining_path.exists():
         return {"drained": 0, "remaining": 0}
 
-    lines = queue_path.read_text().splitlines()
-    start = _drain_clock()
-    processed = 0
-    cursor = 0
-    for cursor, line in enumerate(lines):
-        if processed >= max_items or (_drain_clock() - start) > max_seconds:
-            break
-        processed += 1
-        line = line.strip()
-        if not line:
-            continue
+    # Hand-off protocol: hooks only ever append to `queue.jsonl`. The
+    # drainer atomically renames it to `queue.draining` (a hook append
+    # that starts after the rename creates a fresh `queue.jsonl`), and
+    # only the lock holder ever reads or rewrites `queue.draining`. The
+    # old read-process-overwrite of `queue.jsonl` itself dropped any line
+    # appended while processing ran.
+    lock_path = repo_root / LOCK_RELPATH
+    with lock_path.open("a") as lock_file:
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        _process_queue_event(conn, repo_root, event)
-    else:
-        cursor = len(lines)
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"drained": 0, "remaining": _pending_line_count(repo_root)}
+        try:
+            start = _drain_clock()
+            processed = 0
+            while True:
+                if not draining_path.exists():
+                    if not queue_path.exists():
+                        break
+                    os.replace(queue_path, draining_path)
+                raw = draining_path.read_bytes()
+                lines = raw.decode().splitlines()
+                cursor = len(lines)
+                for i, line in enumerate(lines):
+                    if processed >= max_items or (_drain_clock() - start) > max_seconds:
+                        cursor = i
+                        break
+                    processed += 1
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    _process_queue_event(conn, repo_root, event)
 
-    remainder = lines[cursor:]
-    queue_path.write_text("".join(f"{ln}\n" for ln in remainder))
-    return {"drained": processed, "remaining": len(remainder)}
+                remainder = lines[cursor:]
+                # A hook that opened `queue.jsonl` just before the rename
+                # may still have landed its line in the renamed file after
+                # we read it -- carry those bytes over, never discard them.
+                remainder += draining_path.read_bytes()[len(raw):].decode().splitlines()
+                if remainder:
+                    draining_path.write_text("".join(f"{ln}\n" for ln in remainder))
+                    break
+                draining_path.unlink()
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return {"drained": processed, "remaining": _pending_line_count(repo_root)}
+
+
+def _pending_line_count(repo_root: Path) -> int:
+    total = 0
+    for rel in (DRAINING_RELPATH, QUEUE_RELPATH):
+        path = repo_root / rel
+        if path.exists():
+            total += sum(1 for line in path.read_text().splitlines() if line.strip())
+    return total

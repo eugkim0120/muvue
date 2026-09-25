@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W1: confirmed bugs
+
+A full audit of the code against the v4 handoff plan found about 100
+deltas. This section covers the ones that were outright bugs.
+
+### Fixed
+- **Restarting `serve` cleared the inbox.** `reconcile_on_start` called
+  `process_queue`, which set `acked_at` on the oldest 100 unacked events
+  of any type. The inbox treats "unacked" as "open", so every restart
+  silently closed unattributed-commit, signal and audit items.
+  `process_queue` is gone; reconcile now reverts expired leases and
+  drains the hook spool, and never touches `acked_at`
+  (docs/decisions.md #111).
+- **Hook lines appended during a queue drain were lost.** `drain_queue`
+  read `queue.jsonl`, processed it, then overwrote it with the
+  remainder, so a line a hook appended mid-drain vanished, and two
+  drainers (CLI callback plus daemon) clobbered each other. Drains now
+  take an `flock` on `.muvue/queue.lock` (a second drainer backs off),
+  atomically rename the spool to `queue.draining`, and carry over any
+  bytes that land after the read (#112).
+- **Strict `start` discarded earlier merges.** `ensure_airlock`
+  force-fetched `+HEAD:refs/heads/main` from the checkout on every
+  `start`, rewinding the airlock's `main` past merge commits, which
+  `merge.completed` then stopped from ever being re-merged. The fetch
+  now lands on `refs/muvue/upstream`; `main` is seeded when missing and
+  otherwise only fast-forwarded (#113).
+- **`/events` returned the oldest events.** Without a `since_id`
+  cursor it now returns the newest `limit` events, oldest first; with a
+  cursor it still pages forward.
+- **The plan's own example `config.toml` failed to load.** Added
+  `[daemon] bind`/`allowed_origins` (wired into `serve`'s default host
+  and the Origin check), `planning.require_auto_criterion_above_tier`
+  (wired into the Gate 2 hard block) and `cost_model = "requests"`.
+  `tests/fixtures/v4_spec_config.toml` is the plan's block copied
+  exactly.
+- **Request-id dedupe ran outside the write transaction** in `start`,
+  `done`, `fail` and `ask`, so two concurrent calls with the same id
+  could both apply. The check now runs inside `BEGIN IMMEDIATE`.
+- **`muvue run` crashed on a paused project.** The runner now skips
+  paused projects' nodes, stops with `paused.reason = "project_paused"`
+  when its project is paused, and reports `project_paused` for a pause
+  that lands between scheduling and `start`.
+- **`is_test_touch` matched any path containing "test"** (`latest.py`,
+  `attestation.py`). It now matches test directory segments and
+  conventional test file names only.
+
 ## [Unreleased] - v4 §11 P0/gate re-verification + `uninit` acceptance tightening (changelog item 14, final v4-migration piece)
 
 Branch `feat/v4-uninit-and-gate-recheck`, built on every prior v4-delta

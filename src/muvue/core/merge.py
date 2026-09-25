@@ -144,15 +144,8 @@ def attempt_merge(
     if pending:
         return {"status": "deferred", "pending_deps": pending}
 
-    # Deliberately *not* `strict_mod.ensure_airlock` here: that always
-    # re-fetches `refs/heads/main` from `repo_root`'s current HEAD (so a
-    # node's `start` always branches off real content) -- calling it again
-    # after this module has advanced the airlock's `main` with a merge
-    # commit would immediately stomp that commit back to `repo_root`'s
-    # (unchanged) HEAD, since `repo_root` itself is never touched by a
-    # merge (see module docstring). The airlock must already exist by the
-    # time anything is `done` and mergeable (some node's `start` created
-    # it) -- see docs/decisions.md.
+    # The airlock must already exist by the time anything is `done` and
+    # mergeable (some node's `start` created it).
     airlock = strict_mod.airlock_path(repo_root)
     if not airlock.exists():
         raise MergeError(

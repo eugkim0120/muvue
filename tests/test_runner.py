@@ -523,3 +523,41 @@ def test_max_concurrency_caps_batch_per_agent(conn):
     ready_rows = conn.execute("SELECT * FROM nodes WHERE status = 'ready' ORDER BY id").fetchall()
     batch = runner_mod.select_batch(conn, ready_rows, cfg, parallel=5, agent_override=None)
     assert len(batch) == 1  # capped by max_concurrency=1 even though parallel=5
+
+
+def test_run_on_a_paused_project_stops_cleanly_without_starting(conn, project, config, db_path, repo_root):
+    """Regression: `run_node` called `nodes.start` unguarded, so a paused
+    project raised NodeError and crashed `muvue run`."""
+    tasks = _ready_tasks(conn, project, 2, predicted_touches=[])
+    projects.set_phase(conn, project["id"], "paused")
+    result = runner_mod.run(db_path, config, repo_root, project_id=project["id"])
+    assert result["paused"]["reason"] == "project_paused"
+    assert result["processed"] == []
+    for t in tasks:
+        assert nodes.get_node(conn, t["id"])["status"] == "ready"
+
+
+def test_run_without_project_filter_skips_paused_projects(conn, project, config, db_path, repo_root):
+    _ready_tasks(conn, project, 1, predicted_touches=[])
+    projects.set_phase(conn, project["id"], "paused")
+    other = projects.set_phase(conn, projects.create_project(conn, goal="other")["id"], "executing")
+    live = _ready_tasks(conn, other, 1, predicted_touches=[])
+    result = runner_mod.run(db_path, config, repo_root)
+    assert [r["node_id"] for r in result["processed"]] == [live[0]["id"]]
+
+
+def test_pause_between_selection_and_start_is_a_clean_stop(conn, project, config, db_path, repo_root, monkeypatch):
+    """A pause that lands after the batch was selected must not crash the
+    run: `run_node` reports `project_paused` and the run stops."""
+    tasks = _ready_tasks(conn, project, 1, predicted_touches=[])
+    real_start = nodes.start
+
+    def pause_then_start(c, node_id, **kw):
+        projects.set_phase(c, project["id"], "paused")
+        return real_start(c, node_id, **kw)
+
+    monkeypatch.setattr(runner_mod.nodes_mod, "start", pause_then_start)
+    result = runner_mod.run(db_path, config, repo_root, project_id=project["id"])
+    assert result["processed"][0]["outcome"] == "project_paused"
+    assert result["paused"]["reason"] == "node_blocked"
+    assert nodes.get_node(conn, tasks[0]["id"])["status"] == "ready"

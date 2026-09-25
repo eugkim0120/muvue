@@ -79,16 +79,21 @@ def touches_globs(touches: list[str], globs: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, glob) for path in touches for glob in globs)
 
 
+_TEST_DIRS = {"test", "tests", "__tests__", "spec", "specs"}
+_TEST_FILE_GLOBS = ("test_*", "*_test.*", "*.test.*", "*.spec.*", "*_spec.*", "conftest.py")
+
+
 def is_test_touch(path: str) -> bool:
     """Plan section 5, 'done -> review': "Diffs touching test files or
-    criteria are always flagged." A path is a test touch if it matches the
-    conventional `**/test_*` glob or otherwise looks test-shaped."""
-    lowered = path.lower()
-    return (
-        fnmatch.fnmatch(path, "**/test_*")
-        or fnmatch.fnmatch(path, "test_*")
-        or "test" in lowered
-    )
+    criteria are always flagged." Test-shaped means a test directory
+    segment (`tests/`, `__tests__/`, `spec/`, ...) or a conventional test
+    file name (`test_*`, `*_test.*`, `*.test.*`, `*.spec.*`, `conftest.py`).
+    Matched per path segment, never as a substring: `latest.py` and
+    `attestation.py` are not tests."""
+    parts = path.replace("\\", "/").lower().split("/")
+    if any(part in _TEST_DIRS for part in parts[:-1]):
+        return True
+    return any(fnmatch.fnmatch(parts[-1], g) for g in _TEST_FILE_GLOBS)
 
 
 def compute_tier(

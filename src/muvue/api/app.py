@@ -97,6 +97,8 @@ def create_app(
         return True
 
     def _origin_ok(origin: str) -> bool:
+        if origin in config.daemon.allowed_origins:
+            return True
         try:
             parts = urlsplit(origin)
         except ValueError:
@@ -462,10 +464,15 @@ def create_app(
                 clauses.append("ts <= ?")
                 params.append(until)
             params.append(limit)
+            # With a cursor, page forward from it; without one, return the
+            # newest `limit` events (still oldest-first in the response).
+            order = "ASC" if since_id > 0 else "DESC"
             rows = conn.execute(
-                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY id ASC LIMIT ?",
+                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY id {order} LIMIT ?",
                 params,
             ).fetchall()
+        if order == "DESC":
+            rows = list(reversed(rows))
         return _rows_to_list(rows)
 
     @app.get("/nodes")

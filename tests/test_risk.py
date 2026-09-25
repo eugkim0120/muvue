@@ -140,3 +140,19 @@ def test_compute_tier_isolates_touches_outside_predicted_from_other_signals(conn
     tier signals covered by the other tests above."""
     task = _task(conn, project, touches=["a.py"])
     assert risk.compute_tier(conn, task, config, touches_outside_predicted=False) == "low"
+
+
+@pytest.mark.parametrize("path", [
+    "tests/test_api.py", "test_api.py", "pkg/tests/helpers.py", "src/foo_test.go",
+    "web/app.test.ts", "web/app.spec.js", "conftest.py", "__tests__/x.js", "spec/models/user_spec.rb",
+])
+def test_is_test_touch_matches_test_shaped_paths(path):
+    assert risk.is_test_touch(path)
+
+
+@pytest.mark.parametrize("path", [
+    "src/latest.py", "contest/rules.md", "docs/testimonials.md", "attestation.py", "src/fastest_path.py",
+])
+def test_is_test_touch_ignores_paths_that_merely_contain_test(path):
+    """Regression: `"test" in path` flagged `latest.py`, `attestation.py`..."""
+    assert not risk.is_test_touch(path)

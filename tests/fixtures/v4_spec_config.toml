@@ -1,0 +1,66 @@
+schema_version = 1
+protocol_version = 1
+mode = "light"                 # light | strict
+worktree_mode = "branch"       # branch | per_node
+worktree_setup = "uv sync"     # run once per new worktree
+
+[checks]
+test = "pytest -q"
+lint = "ruff check ."
+
+[risk]
+globs = ["migrations/**", "auth/**", "*.sql", "**/test_*"]
+max_diff_lines = 300
+
+[planning]
+max_files_per_task = 8
+max_subtasks = 6
+ask_timeout_minutes = 60
+require_auto_criterion_above_tier = "low"   # medium/high tasks must have >=1 auto criterion
+
+[daemon]
+bind = "127.0.0.1"             # loopback only; any other value requires --i-know
+allowed_origins = []           # empty = same-origin only
+
+[notify]
+url = ""                       # ntfy topic or webhook
+
+[agents.claude]
+command = "claude -p --output-format stream-json"
+auth_check = "claude --version"
+usage_parser = "claude_stream_json"
+cost_model = "quota"           # usd | tokens | requests | quota
+max_concurrency = 1
+on_rate_limit = "wait"         # wait | fallback:<agent> | pause
+max_wait_minutes = 30          # then escalate per on_rate_limit_timeout
+on_rate_limit_timeout = "pause"
+pinned_version = ">=2.0"
+
+  [agents.claude.budget]
+  unit = "requests"            # must be expressible by this driver's cost_model
+  limit = 200
+
+[agents.codex]
+command = "codex exec --json"
+auth_check = "codex --version"
+usage_parser = "codex_json"
+cost_model = "usd"
+max_concurrency = 1
+on_rate_limit = "fallback:claude"
+
+  [agents.codex.budget]
+  unit = "usd"
+  limit = 25
+
+[agents.fake]
+command = "muvue-fake-agent"
+cost_model = "tokens"
+
+[budget]                       # global, unit-agnostic stop conditions only
+max_wall_clock_minutes = 240
+max_nodes_per_run = 20
+
+[routing]
+spec = "claude"
+task = "claude"
+subtask = "codex"

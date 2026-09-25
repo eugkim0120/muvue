@@ -234,3 +234,15 @@ def test_gate1_spec_requires_approval_before_ready(conn, project):
     assert spec["status"] == "pending"
     approved = gates.approve_spec(conn, spec["id"])
     assert approved["status"] == "ready"
+
+
+def test_raising_the_auto_criterion_threshold_lets_medium_through(conn, project, config):
+    """`[planning] require_auto_criterion_above_tier = "medium"`: only
+    high-tier tasks need an auto criterion; a medium one is approved."""
+    config.planning.require_auto_criterion_above_tier = "medium"
+    touches = [f"f{i}.py" for i in range(config.planning.max_files_per_task + 1)]
+    task = _decompose_one_task(conn, project, criteria_mode="external", touches=touches)
+    gates.approve_gate2(conn, project["id"], config=config)
+    row = nodes.get_node(conn, task["id"])
+    assert row["risk_tier"] == "medium"
+    assert row["status"] == "ready"

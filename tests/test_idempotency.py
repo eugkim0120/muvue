@@ -65,3 +65,31 @@ def test_done_by_non_owner_is_rejected(conn, node_row):
 
     with pytest.raises(NotLeaseOwner):
         nodes.done(conn, node_row["id"], owner="mallory")
+
+
+@pytest.mark.parametrize("verb", ["done", "fail", "ask", "start"])
+def test_request_id_dedupe_check_runs_inside_the_write_txn(conn, node_row, monkeypatch, verb):
+    """Regression: the dedupe lookup ran *before* `write_txn`, so two
+    concurrent calls with the same request id could both pass it and both
+    apply. Checking inside `BEGIN IMMEDIATE` serialises them."""
+    from muvue.core import asks, events
+
+    seen = []
+    real = events.find_recent_by_request_id
+
+    def spy(c, request_id, type_):
+        seen.append(c.in_transaction)
+        return real(c, request_id, type_)
+
+    monkeypatch.setattr(events, "find_recent_by_request_id", spy)
+    if verb == "done":
+        nodes.done(conn, node_row["id"], owner="alice", request_id="r")
+    elif verb == "fail":
+        nodes.fail(conn, node_row["id"], owner="alice", lesson="x", request_id="r")
+    elif verb == "ask":
+        asks.ask(conn, node_row["id"], question="q?", default="d", request_id="r")
+    else:
+        other = nodes.create_node(conn, project_id=node_row["project_id"], kind="task",
+                                  title="t2", status="ready")
+        nodes.start(conn, other["id"], owner="bob", request_id="r")
+    assert seen and all(seen)

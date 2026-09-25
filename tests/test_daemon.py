@@ -101,32 +101,39 @@ def test_reconcile_is_idempotent_and_does_not_double_touch(conn, project):
     assert second == []  # already ready, not in_progress anymore
 
 
-def test_reconcile_on_start_reverts_and_drains_queue(conn, project):
+def test_reconcile_on_start_reverts_expired_leases(conn, project):
     task = nodes.create_node(
         conn, project_id=project["id"], kind="task", title="t", status="ready",
     )
     nodes.start(conn, task["id"], owner="agent-1", lease_minutes=-1)
     result = daemon.reconcile_on_start(conn)
     assert len(result["reverted_nodes"]) == 1
-    assert result["drained_events"] > 0
-    # a second pass finds nothing left unacked / expired
     result2 = daemon.reconcile_on_start(conn)
     assert result2["reverted_nodes"] == []
-    assert result2["drained_events"] == 0
 
 
-def test_process_queue_marks_events_acked(conn, project):
-    nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    unacked_before = conn.execute(
-        "SELECT COUNT(*) c FROM events WHERE acked_at IS NULL"
-    ).fetchone()["c"]
-    assert unacked_before > 0
-    drained = daemon.process_queue(conn)
-    assert drained == unacked_before
-    unacked_after = conn.execute(
-        "SELECT COUNT(*) c FROM events WHERE acked_at IS NULL"
-    ).fetchone()["c"]
-    assert unacked_after == 0
+def test_reconcile_on_start_preserves_unacked_inbox_events(conn, project):
+    """Regression: reconcile used to mark the oldest 100 unacked events
+    of *any* type as acked, and the inbox treats "unacked" as "open" --
+    so every `serve` restart silently cleared unattributed-commit,
+    signal and audit items. A restart must leave them open."""
+    from muvue.core import events as events_mod
+
+    event_id = events_mod.record_event(
+        conn, project_id=project["id"], node_id=None, actor="hook",
+        type_="unattributed_commit", payload={"sha": "abc"},
+    )
+    daemon.reconcile_on_start(conn)
+    assert events_mod.get_event(conn, event_id)["acked_at"] is None
+
+
+def test_reconcile_on_start_drains_hook_spool(conn, project, tmp_path):
+    queue = tmp_path / ".muvue" / "queue.jsonl"
+    queue.parent.mkdir(parents=True, exist_ok=True)
+    queue.write_text('{"event": "session-start"}\n')
+    result = daemon.reconcile_on_start(conn, repo_root=tmp_path)
+    assert result["drained_spool"] == 1
+    assert not queue.exists() and not (tmp_path / ".muvue" / "queue.draining").exists()
 
 
 # -- session tokens (v4 section 8a controls 5/6: in-memory only) -----------
