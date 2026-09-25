@@ -272,6 +272,16 @@ def start(
     repo_root=None,
 ) -> dict:
     node = get_node(conn, node_id)
+    if node["status"] == "blocked":
+        # The state machine's (blocked, in_progress) edge exists for the
+        # unblock paths (an answer, a handoff), which check the reason is
+        # resolved. `start` doesn't, so without this an agent could lift
+        # its own block: resume before `retry_at`, or before its question
+        # is answered (v4 section 10, "ignores rate limit").
+        raise NodeError(
+            f"cannot start node {node_id}: it is blocked ({node['block_reason']}); "
+            "it resumes when the block is resolved"
+        )
     project = db_mod.query_one(
         conn,
         "SELECT phase, branch FROM projects WHERE id = ?",

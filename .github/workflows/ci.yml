@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Git identity for the tests' throwaway repos
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+          git config --global init.defaultBranch main
+      - run: uv sync --locked
+      - name: Tests with the 85% coverage gate on muvue.core (v4 section 10)
+        run: uv run pytest -q --cov=muvue.core --cov-report=term
+      - name: Hook latency on CI hardware (v4 section 4a budgets)
+        run: uv run pytest -q -s tests/test_hook_latency_benchmark.py
+
+  vscode-extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm test

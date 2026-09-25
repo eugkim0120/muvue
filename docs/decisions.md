@@ -2098,3 +2098,14 @@ reading here. Real `decisions` table entries start once dogfooding begins
     for existing clients. `/kpis` also gains `touch_drift` (the §8
     "prediction-vs-actual touch drift") and the rubber-stamp counts
     behind the rate.
+
+148. **`start` refuses a blocked node.** The `(blocked, in_progress)` edge
+    exists for the unblock paths (an answered question, a handoff), which
+    check that the block's reason is resolved. `start` also moved nodes
+    along it, with only the owner check, so the owning agent could lift
+    its own block: resume before a rate limit's `retry_at`, or before its
+    question was answered. Found by the "ignores rate limit" fake-agent
+    behaviour (v4 section 10). A rate-limited node goes back to `ready`
+    through `reconcile_rate_limits` once `retry_at` passes, and is
+    started from there; nothing legitimate called `start` on a blocked
+    node.

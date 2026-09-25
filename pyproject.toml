@@ -39,4 +39,13 @@ build-backend = "uv_build"
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
 ]
+
+[tool.coverage.run]
+source = ["muvue.core"]
+
+[tool.coverage.report]
+# v4 section 10: coverage target 85% on muvue.core. Enforced whenever
+# pytest runs with --cov (CI always does).
+fail_under = 85

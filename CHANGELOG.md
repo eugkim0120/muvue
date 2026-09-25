@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W10: tests, coverage, CI
+
+### Added
+- **CI** (`.github/workflows/ci.yml`): the test suite with the coverage
+  gate, the hook latency benchmark on GitHub's runners, and the VS Code
+  extension's tests.
+- **Coverage gate**: `pytest-cov` (dev only), with `fail_under = 85`
+  on `muvue.core` (v4 section 10). Currently 90%.
+- **A state-machine table written from the plan**
+  (`tests/test_state_machine_spec.py`), instead of one read back from
+  `state_machine.TRANSITIONS`.
+- **Fake-agent behaviours** that v4 section 10 lists: marking every
+  criterion `external`, obtaining a TTY through `script` under an agent
+  CLI, reading the daemon port file, and resuming during a rate limit.
+
+### Fixed
+- **`start` no longer lifts a block** (#148). The owning agent could
+  call `start` on its own blocked node and resume before a rate limit
+  expired or a question was answered.
+
 ## [Unreleased] - v4 delta closure, W9: dashboard, daemon security, VS Code
 
 ### Added

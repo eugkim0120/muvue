@@ -151,3 +151,24 @@ def test_rebuild_matches_live_after_fake_agent_scenarios(conn, project, config):
     nodes.block(conn, blocked["id"], reason="rate_limit", actor="fake-agent")
 
     assert rebuild.diff_state(conn) == {}
+
+
+# -- W10: the behaviours v4 section 10 lists that weren't scripted yet ---
+
+
+def test_lazy_all_external_lands_in_review_and_is_listed_unverified(conn, project, config):
+    from muvue.core import queries
+
+    result = fake_agent.lazy_all_external(conn, project["id"], config=config)
+    assert result["node"]["status"] == "review"
+    assert [u["node_id"] for u in queries.unverified_external(conn)] == [result["node"]["id"]]
+    assert queries.show_node(conn, result["node"]["id"])["verification"] == "unverified"
+
+
+def test_resuming_during_a_rate_limit_is_refused(conn, project, config):
+    task = _ready_task(conn, project, config)
+    nodes.start(conn, task["id"], owner="fake-agent")
+    nodes.block(conn, task["id"], reason="rate_limit", actor="fake-agent")
+    with pytest.raises((InvalidTransition, NotLeaseOwner, nodes.NodeError)):
+        fake_agent.adversarial_resume_during_rate_limit(conn, task["id"])
+    assert nodes.get_node(conn, task["id"])["status"] == "blocked"

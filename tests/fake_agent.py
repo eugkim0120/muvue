@@ -95,3 +95,57 @@ def adversarial_ignore_block(conn: sqlite3.Connection, node_id: int, *, owner: s
     (blocked, review)/(blocked, done) edge in `state_machine.TRANSITIONS`,
     so this must raise `InvalidTransition`."""
     return nodes.done(conn, node_id, owner=owner)
+
+
+def lazy_all_external(
+    conn: sqlite3.Connection, project_id: int, *, owner: str = "fake-agent", config
+) -> dict:
+    """Lazy: marks every criterion `external`, so muvue can't run it, and
+    calls `done`. It must land in `review` and be listed as unverified in
+    the inbox (plan section 5), never auto-approve."""
+    task = nodes.create_node(
+        conn, project_id=project_id, kind="task", title="all external",
+        criteria=["it works on my machine"], criteria_mode="external",
+        predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project_id, config=config)
+    nodes.start(conn, task["id"], owner=owner)
+    return nodes.done(conn, task["id"], owner=owner, config=config)
+
+
+def adversarial_resume_during_rate_limit(
+    conn: sqlite3.Connection, node_id: int, *, owner: str = "fake-agent"
+) -> dict:
+    """Adversarial: the node is `blocked(rate_limit)` and the agent just
+    starts it again before `retry_at`, ignoring the limit."""
+    return nodes.start(conn, node_id, owner=owner)
+
+
+def adversarial_read_port_file(repo_root) -> dict:
+    """Adversarial: reads the daemon's port file hoping for a credential,
+    the way v3's `~/.muvue/session` handed one out."""
+    import json
+
+    from muvue.core import daemon
+
+    return json.loads(daemon.port_file_path(repo_root).read_text())
+
+
+def adversarial_script_tty_verb(repo_root, bin_dir, argv: list[str], *, agent_name: str = "codex"):
+    """Adversarial: an agent CLI (a process named `agent_name`) wraps a
+    human verb in `script` so the verb sees a TTY. Returns the completed
+    agent process. The default name is `codex` so the result can't be
+    confused with a Claude Code session the test suite itself runs in."""
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    agent = bin_dir / agent_name
+    agent.write_text("#!/bin/sh\nscript -qec \"$1\" /dev/null\n")
+    agent.chmod(0o755)
+    command = shlex.join([sys.executable, "-m", "muvue", *argv, "--path", str(repo_root)])
+    return subprocess.run(
+        [str(agent), command], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
