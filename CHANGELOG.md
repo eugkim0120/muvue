@@ -25,6 +25,12 @@ All notable changes to this project are documented here.
 - This workstream was tracked through muvue itself, as project 4 in the
   repository's own `.muvue/`.
 
+### Fixed
+- **CLI agent verbs no longer claim a TTY they don't have** (#152).
+  `start`, `done`, `spec`, `decompose` and the rest now record the same
+  detected evidence (`agent_parent:<name>`, `tty` or `no_tty`) as human
+  verbs. Found while dogfooding this workstream.
+
 ## [Unreleased] - v4 delta closure, W11: live run against claude
 
 ### Verified

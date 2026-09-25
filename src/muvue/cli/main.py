@@ -56,6 +56,12 @@ def _invoker() -> tuple[str, str]:
     return core.actor.detect_invoker()
 
 
+def _evidence() -> str:
+    """How this CLI process's caller was identified, for any verb:
+    `agent_parent:<name>`, `tty` or `no_tty` (see `_invoker`)."""
+    return _invoker()[1]
+
+
 def _human_kwargs() -> dict:
     actor, evidence = _invoker()
     return {"actor": actor, "actor_evidence": evidence}
@@ -524,7 +530,7 @@ def project_create(
         def _apply():
             return core.projects.create_project(
                 conn, goal=goal, repo_root=repo_root, follows=list(follows),
-                supersedes=list(supersedes),
+                supersedes=list(supersedes), actor_evidence=_evidence(),
             )
         result = core.idempotency.once(
             conn, request_id, "project.create", _apply, actor=_invoker()[0],
@@ -554,7 +560,9 @@ def spec(
     conn = _db_connect(repo_root)
     try:
         def _apply():
-            return core.gates.submit_spec(conn, project_id=project_id, title=title, body_md=body)
+            return core.gates.submit_spec(
+                conn, project_id=project_id, title=title, body_md=body, actor_evidence=_evidence(),
+            )
         result = core.idempotency.once(
             conn, request_id, "spec", _apply, actor="agent",
         )
@@ -601,6 +609,7 @@ def decompose(
                 depends_on=list(depends_on),
                 status="pending",
                 actor="agent",
+                actor_evidence=_evidence(),
             )
             return result
         result = core.idempotency.once(
@@ -625,7 +634,7 @@ def start(
         result = core.nodes.start(
             conn, node_id, owner=owner, request_id=request_id,
             lease_minutes=config.planning.lease_minutes,
-            config=config, repo_root=repo_root,
+            config=config, repo_root=repo_root, actor_evidence=_evidence(),
         )
     finally:
         conn.close()
@@ -658,6 +667,7 @@ def done(
             conn, node_id, owner=owner, request_id=request_id, summary=summary,
             config=config, expected_version=version,
             run_checks=core.review.default_run_checks, cwd=str(repo_root),
+            actor_evidence=_evidence(),
         )
     finally:
         conn.close()
@@ -686,6 +696,7 @@ def fail(
         result = core.nodes.fail(
             conn, node_id, owner=owner, lesson=lesson, trigger=trigger, do_instead=do_instead,
             scope=scope, request_id=request_id, expected_version=version,
+            actor_evidence=_evidence(),
         )
     finally:
         conn.close()
@@ -747,7 +758,10 @@ def note(
     conn = _db_connect(repo_root)
     try:
         def _apply():
-            return core.nodes.add_note(conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned)
+            return core.nodes.add_note(
+                conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned,
+                actor_evidence=_evidence(),
+            )
         result = core.idempotency.once(
             conn, request_id, "note", _apply, actor="agent",
         )
@@ -772,7 +786,7 @@ def ask(
     try:
         result = core.asks.ask(
             conn, node_id, question=question, default=default, default_ok=default_ok,
-            request_id=request_id,
+            request_id=request_id, actor_evidence=_evidence(),
         )
     finally:
         conn.close()
@@ -805,6 +819,7 @@ def wait(
                 question_id,
                 timeout_minutes=config.planning.ask_timeout_minutes,
                 default_ok=default_ok,
+                actor_evidence=_evidence(),
             )
             if result["status"] != "pending":
                 break
@@ -842,7 +857,7 @@ def replan(
             return core.revisions.replan_add_subtask(
                 conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
                 depends_on=list(depends_on), predicted_touches=list(predicted_touches),
-                config=config,
+                config=config, actor_evidence=_evidence(),
             )
         result = core.idempotency.once(
             conn, request_id, "replan", _apply, actor="agent",
@@ -864,7 +879,7 @@ def propose_revision(
     try:
         def _apply():
             ids = [int(x) for x in node_ids.split(",") if x.strip()]
-            result = core.revisions.propose_revision(conn, project_id, ids)
+            result = core.revisions.propose_revision(conn, project_id, ids, actor_evidence=_evidence())
             return result
         result = core.idempotency.once(
             conn, request_id, "propose-revision", _apply, actor="agent",

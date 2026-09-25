@@ -2138,3 +2138,12 @@ reading here. Real `decisions` table entries start once dogfooding begins
     error result is a rate limit when the last `rate_limit_event`
     status isn't `allowed`, and `retry_after_seconds` comes from its
     `resetsAt`.
+
+152. **CLI agent verbs record how the caller was identified.** Human
+    verbs used invoker detection since #123, but the agent and planning
+    verbs (`project create`, `spec`, `decompose`, `start`, `done`,
+    `fail`, `note`, `ask`, `wait`, `replan`, `propose-revision`) passed
+    nothing, so core's default `tty` was recorded even from a
+    non-interactive shell. Found by dogfooding W12: 19 events from an
+    agent's shell said `tty`. They now record the same
+    `agent_parent:<name>`, `tty` or `no_tty` that human verbs do.
