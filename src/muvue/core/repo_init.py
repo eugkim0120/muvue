@@ -171,7 +171,56 @@ def _register_pre_commit(repo_root: Path, backups: dict[str, str | None]) -> boo
     return True
 
 
+GITIGNORE_ENTRIES = [
+    ".muvue/muvue.db",
+    ".muvue/muvue.db-wal",
+    ".muvue/muvue.db-shm",
+    ".muvue/session",
+    ".muvue/current_node",
+    # v4 section 2 file layout: "gitignored; hook fast-path spool
+    # (append-only)" -- muvue._hook's queue, see src/muvue/_hook.py.
+    ".muvue/queue.jsonl",
+    # Drain hand-off file and drainer lock (core/hooks.py drain_queue).
+    ".muvue/queue.draining",
+    ".muvue/queue.lock",
+    # `muvue rebuild --apply` backups.
+    ".muvue/muvue.db.bak-*",
+    # Runner registry (core/runners.py) and per-node driver logs.
+    ".muvue/runners/",
+    ".muvue/logs/",
+    # Not listed in plan section 2's committed-files table (only
+    # config.toml/components.json/decisions.json are meant to be
+    # committed) -- gitignored so an ordinary `git add -A` mid-project
+    # never sweeps it into a commit. It must stay recoverable purely
+    # from the live filesystem for `uninit_repo` to restore hook shims
+    # correctly; a later `git reset`/checkout that a commit containing
+    # it would be exposed to could otherwise delete or stale it. Found
+    # via the v4 P0 filesystem-snapshot round-trip test (see
+    # tests/test_init_uninit.py, docs/decisions.md).
+    ".muvue/.init_manifest.json",
+]
+
+
+def _gitignore_block_span(lines: list[str]) -> tuple[int, int] | None:
+    begin, end = _gitignore_marker()
+    if begin not in lines or end not in lines:
+        return None
+    first = lines.index(begin)
+    return first, lines.index(end, first)
+
+
+def gitignore_missing_entries(repo_root: Path) -> list[str]:
+    """Entries this muvue ignores that the repository's `.gitignore` doesn't:
+    a repository initialised by an older muvue lacks the ones added since."""
+    path = Path(repo_root) / ".gitignore"
+    lines = set(path.read_text().splitlines()) if path.exists() else set()
+    return [e for e in GITIGNORE_ENTRIES if e not in lines]
+
+
 def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
+    """Append muvue's marker block, or rewrite an existing one in place
+    with the current entries. `uninit` restores the pre-init content
+    recorded in `backups`, whichever of the two happened."""
     path = repo_root / ".gitignore"
     key = str(path)
     if key not in backups:
@@ -179,45 +228,47 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
 
     begin, end = _gitignore_marker()
     content = path.read_text() if path.exists() else ""
-    if begin in content:
-        return
-    entries = [
-        ".muvue/muvue.db",
-        ".muvue/muvue.db-wal",
-        ".muvue/muvue.db-shm",
-        ".muvue/session",
-        ".muvue/current_node",
-        # v4 section 2 file layout: "gitignored; hook fast-path spool
-        # (append-only)" -- muvue._hook's queue, see src/muvue/_hook.py.
-        ".muvue/queue.jsonl",
-        # Drain hand-off file and drainer lock (core/hooks.py drain_queue).
-        ".muvue/queue.draining",
-        ".muvue/queue.lock",
-        # `muvue rebuild --apply` backups.
-        ".muvue/muvue.db.bak-*",
-        # Runner registry (core/runners.py) and per-node driver logs.
-        ".muvue/runners/",
-        ".muvue/logs/",
-        # Not listed in plan section 2's committed-files table (only
-        # config.toml/components.json/decisions.json are meant to be
-        # committed) -- gitignored so an ordinary `git add -A` mid-project
-        # never sweeps it into a commit. It must stay recoverable purely
-        # from the live filesystem for `uninit_repo` to restore hook shims
-        # correctly; a later `git reset`/checkout that a commit containing
-        # it would be exposed to could otherwise delete or stale it. Found
-        # via the v4 P0 filesystem-snapshot round-trip test (see
-        # tests/test_init_uninit.py, docs/decisions.md).
-        ".muvue/.init_manifest.json",
-    ]
+    lines = content.split("\n")
+    span = _gitignore_block_span(lines)
+    outside = lines if span is None else lines[: span[0]] + lines[span[1] + 1 :]
     # A repo may already ignore one of these as a plain (unmarked) line --
     # don't duplicate it inside the marker block (dogfood-gate follow-up,
     # docs/decisions.md #40). Exact-line match only: substring matching
     # would also skip ".muvue/muvue.db" against ".muvue/muvue.db-wal".
-    existing_lines = set(content.splitlines())
-    entries = [e for e in entries if e not in existing_lines]
-    lines = [begin, *entries, end, ""]
+    existing_lines = set(outside)
+    block = [begin, *[e for e in GITIGNORE_ENTRIES if e not in existing_lines], end]
+    if span is not None:
+        path.write_text("\n".join(lines[: span[0]] + block + lines[span[1] + 1 :]))
+        return
     sep = "" if content == "" or content.endswith("\n") else "\n"
-    path.write_text(content + sep + "\n".join(lines))
+    path.write_text(content + sep + "\n".join([*block, ""]))
+
+
+def repair_install(repo_root: Path) -> list[str]:
+    """Bring an install from an older muvue up to date: install missing
+    hook shims and rewrite the `.gitignore` block. What this changes is
+    recorded in the init manifest like `init`'s own changes, so `uninit`
+    still restores the repository exactly. Returns what was repaired."""
+    repo_root = Path(repo_root)
+    manifest_path = repo_root / ".muvue" / MANIFEST_NAME
+    backups: dict[str, str | None] = (
+        json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    )
+    repaired = []
+    husky_dir = repo_root / ".husky"
+    for name in HOOK_NAMES:
+        path = husky_dir / name if husky_dir.is_dir() else repo_root / ".git" / "hooks" / name
+        begin, _ = _hook_marker(name)
+        if not path.exists() or begin not in path.read_text():
+            _install_hook_shim(path, name, backups)
+            repaired.append(f"reinstalled hook shim: {path}")
+    missing = gitignore_missing_entries(repo_root)
+    if missing:
+        _update_gitignore(repo_root, backups)
+        repaired.append(f"added to .gitignore: {', '.join(missing)}")
+    if repaired:
+        manifest_path.write_text(json.dumps(backups, indent=2))
+    return repaired
 
 
 def init_repo(repo_root: Path, *, sandbox: bool = False) -> Path:

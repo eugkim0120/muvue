@@ -22,7 +22,7 @@ from . import gitutil
 from . import hooks as hooks_mod
 from . import runner as runner_mod
 from .config import PROTOCOL_VERSION, ConfigError, load_config
-from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
+from .repo_init import HOOK_NAMES, _hook_marker, gitignore_missing_entries, init_repo, repair_install
 from .schema import SCHEMA_VERSION
 
 
@@ -467,16 +467,20 @@ def run_doctor(
             f"{muvue_dir}; drain is falling behind"
         )
 
+    if repair:
+        report.repaired.extend(repair_install(repo_root))
+    missing_ignores = gitignore_missing_entries(repo_root)
+    if missing_ignores:
+        report.fail(
+            f".gitignore does not ignore {', '.join(missing_ignores)} "
+            "(installed by an older muvue? --repair to fix)"
+        )
     husky_dir = repo_root / ".husky"
     for name in HOOK_NAMES:
         path = husky_dir / name if husky_dir.is_dir() else repo_root / ".git" / "hooks" / name
         begin, _ = _hook_marker(name)
         if not path.exists() or begin not in path.read_text():
-            if repair:
-                _install_hook_shim(path, name, {})
-                report.repaired.append(f"reinstalled hook shim: {path}")
-            else:
-                report.fail(f"hook shim missing or not installed: {path} (--repair to fix)")
+            report.fail(f"hook shim missing or not installed: {path} (--repair to fix)")
         else:
             content = path.read_text()
             # Verify the shim uses an absolute interpreter path (plan
