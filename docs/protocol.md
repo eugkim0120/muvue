@@ -465,6 +465,17 @@ from stdin and refuses the push (exit 1) when a pushed commit's
 `Muvue-Node:`/`Refs:` trailer names a node that isn't `done`
 (decision #142). Commits already on a remote are not re-checked.
 
+**`prepare-commit-msg`** (decision #154) runs synchronously, since it has
+to edit the message before the commit is made. When `.muvue/current_node`
+names a node that is `in_progress`, it appends `Muvue-Node: <id>` to the
+message file git passes. It changes nothing when the message already has
+a `Muvue-Node:` or `Refs:` trailer, for a merge or squash message, or on
+any error. The repository is found from the hook's working directory.
+
+Commits made in a node's worktree (`per_node`, or strict mode's airlock)
+spool nothing, because the worktree is outside the repository. `done`
+links them instead, to the node that owns the worktree (decision #153).
+
 **Claude Code decision hooks** (`muvue._hook.run`; `muvue hook NAME`
 runs the same code). Claude Code's contract: exit 2 blocks and feeds
 stderr back as the reason; on exit 0, SessionStart's stdout becomes

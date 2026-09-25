@@ -67,10 +67,13 @@ What the run showed:
   output appears in stream-json as `system/hook_*` events. That output
   lands in `.muvue/logs/<node>.log` (gitignored). Don't share those
   logs without reading them.
-- `claude auth status` prints JSON with no version, and it exited 0
-  while logged in. Chaining `claude --version` first lets `doctor`
-  check `pinned_version`. The logged-out exit code was not checked,
-  because logging out would have ended the run.
+- `claude auth status` prints JSON with no version. It exits 0 while
+  logged in, and 1 when logged out (checked 2026-09-25 by running it with
+  `HOME` pointed at an empty directory, which leaves the real login
+  alone; the JSON then says `"loggedIn": false`). `doctor` reports that
+  as `auth_check failed (exit 1) ... logged out or session expired?`.
+  Chaining `claude --version` first lets `doctor` check
+  `pinned_version`.
 - Every result reports `total_cost_usd` even under a subscription
   (`modelUsage.*.costBasis` is `"list"`). A `usd` budget is therefore a
   list-price budget. Six nodes cost $0.98 at list price.

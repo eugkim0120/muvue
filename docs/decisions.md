@@ -846,7 +846,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     the extension is a thin client of an independently-run daemon, same
     as a browser tab would be.
 
-67. **The extension's webview renders the dashboard via an `<iframe
+67. *(Amended by #156: the webview enables scripts so the iframe can run them.)* **The extension's webview renders the dashboard via an `<iframe
     src="<daemon-url>">`, not a fetch-and-inject of the HTML.** Fetching
     `index.html`'s markup and re-injecting it into the webview's own DOM
     would strip it of its own origin (the fetched JS's relative `fetch()`
@@ -2110,7 +2110,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     started from there; nothing legitimate called `start` on a blocked
     node.
 
-149. **`muvue run` drains the hook spool after each driver session.**
+149. *(Amended by #153: worktree commits are linked at `done`.)* **`muvue run` drains the hook spool after each driver session.**
     The live P5 run's agent committed with the node trailer, but the
     commit sat in `.muvue/queue.jsonl`: the post-commit hook only
     spools, and without a daemon the next CLI call is what drains it.
@@ -2147,3 +2147,66 @@ reading here. Real `decisions` table entries start once dogfooding begins
     non-interactive shell. Found by dogfooding W12: 19 events from an
     agent's shell said `tty`. They now record the same
     `agent_parent:<name>`, `tty` or `no_tty` that human verbs do.
+
+153. **`done` links a node worktree's commits, trusting the binding.**
+    #149 noted that in `per_node` and strict worktrees the post-commit
+    hook finds no `.muvue/` and fails open, and said those commits were
+    linked when their branch merged. They weren't: git runs no
+    post-commit hook for a merge, and a merge commit's own message
+    carries no trailer. The worktrees live under `~/.muvue/worktrees/`,
+    and airlock worktrees don't run the repository's hooks at all.
+    `done` now links the branch's own commits (those not reachable from
+    any non-node branch) before judging risk. It binds them to the node
+    whose worktree they were made in, with or without a trailer, because
+    v4 section 5 trusts the worktree binding and treats trailers as
+    labels.
+
+154. **A `prepare-commit-msg` shim adds the current node's trailer.**
+    The dogfood gate measured 2 of 63 commits carrying `Muvue-Node:`.
+    The gate's own remedy is "tighten adapters". The shim appends the
+    trailer when `.muvue/current_node` names a node that is
+    `in_progress`, so linking no longer depends on the agent
+    remembering. It leaves alone a message that already has a trailer,
+    a merge or squash message, and a stale `current_node` file. It
+    resolves the repository from its working directory, not from the
+    message-file argument, because for a linked worktree that file lives
+    in the main repository's `.git/`. This adds a third git hook to v4
+    section 7's "post-commit, pre-push (strict)"; it only adds a label,
+    so section 7's move of enforcement to post-hoc detection stands.
+
+155. **`doctor` fails on a database at another schema version.** It
+    only failed when no version was recorded. muvue's own database sat
+    at version 5 against the code's 7 and `doctor` said `ok`. An older
+    schema now fails with "run `muvue migrate`", and a newer one asks
+    for a newer muvue.
+
+156. **The extension's webview enables scripts.** The first run in a
+    real Extension Host (now on CI, `npm run test:host`) showed the
+    dashboard's `GET /` load but none of its JavaScript run. VS Code
+    sandboxes the webview without `allow-scripts` when
+    `enableScripts` is false, and a nested iframe inherits its parent's
+    sandbox. The wrapper page still runs no script of its own, because
+    its CSP is `default-src 'none'` with no `script-src`. The same run
+    found that `main` pointed at `out/extension.js` while `tsc` writes
+    `out/src/extension.js`, so the extension had never loaded; and that
+    "Approve Node" always sent `target = "node"`, which only approves a
+    `pending` node. It now reads the node's status first.
+
+157. **`doctor --repair` updates an older install and records it.** `init`
+    returned as soon as it saw its `.gitignore` marker, so repositories
+    initialised before `.muvue/logs/`, `runners/`, the drain files and
+    rebuild backups were added never ignored them. Driver logs can hold
+    the user's own hook output. `doctor` now fails on missing entries,
+    and `--repair` rewrites the marker block in place. `--repair` also
+    reinstalled shims without recording them in the init manifest, so
+    `uninit` left them behind. Both repairs now record what they change,
+    and `uninit` still restores the repository exactly.
+
+158. **A spec node stays `ready` after decomposition.** v4 gives a spec
+    no life after Gate 1: it has no work of its own to start, check or
+    review. `close`'s closeable check and the runner both consider only
+    tasks and subtasks, so a `ready` spec blocks nothing, and it
+    remains available to `replan` and to new `decompose` calls, as it
+    was for task 17 of muvue's own project 5. Adding a spec-only edge
+    to `done` would change the state machine for a display concern, so
+    it is kept as is.

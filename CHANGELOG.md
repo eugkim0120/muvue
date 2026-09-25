@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - open items after the v4 delta closure
+
+Tracked through muvue itself, as project 5 in the repository's own
+`.muvue/`.
+
+### Added
+- **`prepare-commit-msg` adds the current node's trailer** (#154).
+  While `.muvue/current_node` names an `in_progress` node, commits get
+  `Muvue-Node: <id>` without the agent having to remember it.
+- **The VS Code extension runs in a real Extension Host on CI**
+  (`npm run test:host`, under `xvfb-run`). It checks the three commands,
+  the 403 re-prompt, and that the dashboard webview loads `GET /`,
+  exchanges its nonce and opens the SSE stream, all against a live
+  `muvue serve`.
+
+### Fixed
+- **Worktree commits were never linked** (#153). In `per_node` and
+  strict worktrees the post-commit hook found no `.muvue/`, and merging
+  doesn't run post-commit either. `done` now links the branch's
+  commits to the node that owns the worktree.
+- **The VS Code extension never loaded** (#156). `main` pointed at
+  `out/extension.js`; `tsc` writes `out/src/extension.js`.
+- **The dashboard's JavaScript never ran inside VS Code** (#156). With
+  `enableScripts: false`, the webview's sandbox, which the nested
+  iframe inherits, blocked it.
+- **"Approve Node" could not approve a review** (#156). It always sent
+  `target = "node"`. It now reads the node's status first.
+- **`doctor` passed a database at an old schema version** (#155). It
+  now fails and says to run `muvue migrate`. muvue's own database was
+  migrated from version 5 to 7.
+- **Older installs never ignored `.muvue/logs/`** and the other entries
+  added since (#157). `doctor` fails on missing entries, and `--repair`
+  adds them. `--repair` now also records the shims it installs, so
+  `uninit` removes them.
+- **`project create` recorded `actor = human` from an agent**, next to
+  `actor_evidence = agent_parent:claude`, a slip in #152.
+
+### Verified
+- `claude auth status` exits 1 when logged out, and `doctor` reports
+  it (`docs/providers.md`).
+- Dogfood gate on projects 4 and 5: 10 of 11 commits carry their node's
+  trailer. See the README's known limitations for the caveats.
+
+### Kept
+- A spec node stays `ready` after decomposition (#158).
+
 ## [Unreleased] - v4 delta closure, W12: docs honesty pass, protocol 2
 
 ### Changed

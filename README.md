@@ -154,7 +154,10 @@ stale component. Hooks run through a stdlib-only fast path: on CI, p99 is
 
 Agents use `muvue brief <node> [--budget N] [--since EVENT]`, `start`,
 `note`, `ask --default ...`, `done` and
-`fail --lesson --trigger --do-instead --scope`.
+`fail --lesson --trigger --do-instead --scope`. While a node started
+with `muvue start` is `in_progress`, the `prepare-commit-msg` hook adds
+its `Muvue-Node:` trailer to every commit, so commits link to the node
+without the agent having to remember.
 
 ## Dashboard
 
@@ -189,7 +192,8 @@ valid session, and foreign `Host` or `Origin` headers are refused;
 
 The **VS Code extension** (`vscode-extension/`) opens the same dashboard
 in a webview, and maps `approve` and `pause` to commands. It asks for the
-api token once per VS Code session and keeps it in memory.
+api token once per VS Code session and keeps it in memory. CI runs it in
+a real VS Code Extension Host against a live daemon.
 
 ## Strict mode
 
@@ -233,9 +237,10 @@ fails with the exact key.
 
 ```bash
 uv sync
-uv run pytest -q                        # about 820 tests, about 70 s
+uv run pytest -q                        # about 840 tests, about 75 s
 uv run pytest -q --cov=muvue.core       # enforces the 85% coverage gate (currently 90%)
 cd vscode-extension && npm ci && npm test
+MUVUE_CMD="uv run --project .. muvue" xvfb-run -a npm run test:host   # real VS Code, downloads it once
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of this on every push, plus the
@@ -243,17 +248,18 @@ hook latency benchmark against the v4 budgets.
 
 ## Known limitations
 
-- **Dogfood gate not met.** The plan's gate asks for 80% of state
-  transitions to be logged without prompting. In muvue's own repository,
-  2 of 63 commits since dogfooding began carry a node trailer.
+- **Dogfood gate: met on the last two projects, with caveats.** The
+  plan's gate asks for 80% of state transitions to be logged without
+  prompting, across two projects. On muvue's own projects 4 and 5, 10
+  of 11 commits carry their node's trailer, and every node transition
+  was logged by the agent doing the work. The agent knew it was being
+  measured, and it also approved the gates, which muvue recorded as the
+  agent's (`agent_parent:claude`). Before the adapter was tightened,
+  only 2 of 63 commits carried a trailer.
 - **Codex and Gemini parsers are unverified.** Only the `claude` driver
   has been run end to end; see `docs/providers.md`.
-- **Worktree commits link late.** In `per_node` and strict worktrees, a
-  node's commits are linked when its branch merges, not when they're
-  made (decision #149).
-- **VS Code extension untested in a real host.** It compiles and its
-  logic is tested, but it hasn't run inside a real VS Code Extension
-  Host.
+- **Rate limits are tested on recorded output only.** No live run has
+  hit one.
 
 ## Docs
 
