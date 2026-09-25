@@ -253,8 +253,8 @@ hook latency benchmark against the v4 budgets.
 
 - **Dogfood gate: met on the last two projects, with caveats.** The
   plan's gate asks for 80% of state transitions to be logged without
-  prompting, across two projects. On muvue's own projects 4 and 5, 10
-  of 11 commits carry their node's trailer, and every node transition
+  prompting, across two projects. On muvue's own projects 4 and 5, 17
+  of 18 commits carry their node's trailer, and every node transition
   was logged by the agent doing the work. The agent knew it was being
   measured, and it also approved the gates, which muvue recorded as the
   agent's (`agent_parent:claude`). Before the adapter was tightened,

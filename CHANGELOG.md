@@ -57,7 +57,7 @@ Tracked through muvue itself, as project 5 in the repository's own
 ### Verified
 - `claude auth status` exits 1 when logged out, and `doctor` reports
   it (`docs/providers.md`).
-- Dogfood gate on projects 4 and 5: 10 of 11 commits carry their node's
+- Dogfood gate on projects 4 and 5: 17 of 18 commits carry their node's
   trailer. See the README's known limitations for the caveats.
 
 ### Kept
