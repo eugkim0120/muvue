@@ -226,3 +226,50 @@ def test_init_uninit_filesystem_snapshot_roundtrip(tmp_path: Path, fixture_name:
     )
     assert _git_status_porcelain(repo) == ""
     assert not (repo / ".git" / "refs" / "heads" / "muvue" / "structure").exists()
+
+
+# -- pre-commit framework registration (v4 section 5 "Shims"; supersedes
+# decision #34) ----------------------------------------------------------
+
+PRE_COMMIT_CONFIG = """\
+default_stages: [pre-commit]
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+"""
+
+
+def test_init_registers_a_local_post_commit_hook_and_uninit_restores(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    from muvue.core.repo_init import init_repo, uninit_repo
+
+    config = tmp_path / ".pre-commit-config.yaml"
+    config.write_text(PRE_COMMIT_CONFIG)
+    (tmp_path / ".git" / "hooks").mkdir(parents=True)
+    init_repo(tmp_path)
+
+    parsed = yaml.safe_load(config.read_text())
+    local = [r for r in parsed["repos"] if r["repo"] == "local"]
+    assert len(local) == 1
+    hook = local[0]["hooks"][0]
+    assert hook["id"] == "muvue-post-commit"
+    assert hook["stages"] == ["post-commit"]
+    assert hook["pass_filenames"] is False
+    assert hook["entry"].startswith("env PYTHONPATH=") and hook["entry"].endswith("-S -m muvue._hook post-commit")
+    assert parsed["repos"][0]["repo"].startswith("https://github.com/astral-sh")  # untouched
+
+    uninit_repo(tmp_path)
+    assert config.read_text() == PRE_COMMIT_CONFIG
+
+
+def test_init_leaves_a_pre_commit_config_it_cannot_safely_extend(tmp_path):
+    from muvue.core.repo_init import init_repo
+
+    odd = "repos:\n  - repo: local\n    hooks: []\nci:\n  autofix_prs: false\n"
+    config = tmp_path / ".pre-commit-config.yaml"
+    config.write_text(odd)
+    (tmp_path / ".git" / "hooks").mkdir(parents=True)
+    init_repo(tmp_path)
+    assert config.read_text() == odd  # `repos` isn't the last key: left alone

@@ -379,10 +379,18 @@ def create_app(
                 )
             )
             unverified = core.queries.unverified_external(conn)
+            structure_updates = _rows_to_list(
+                core.db.query_all(
+                    conn,
+                    "SELECT * FROM events WHERE type = 'inbox.structure_update_ready' "
+                    "AND acked_at IS NULL ORDER BY id",
+                )
+            )
         return {
             "questions": questions,
             "review": review,
             "unverified_external": unverified,
+            "structure_updates": structure_updates,
             "blocked": blocked,
             "signals": signals,
             "audit_items": audit_items,
@@ -860,7 +868,9 @@ def create_app(
             if target == "revision":
                 return core.revisions.approve_revision(conn, node_id, n, config=config, actor_evidence="dashboard_token")
             if target == "review":
-                return core.nodes.approve_review(conn, node_id, actor_evidence="dashboard_token")
+                return core.nodes.approve_review(
+                    conn, node_id, actor_evidence="dashboard_token", repo_root=repo_root,
+                )
             return core.gates.approve_node(conn, node_id, config=config, actor_evidence="dashboard_token")
 
         with _conn() as conn:
@@ -980,18 +990,20 @@ def create_app(
         return result
 
     @app.post("/projects/{project_id}/close")
-    def close_project(project_id: int, request: Request) -> dict:
-        """Plan section 9 (P6): commit the project's structure diff
-        (`.muvue/components.json`/`.muvue/decisions.json`, committed on
-        `main`), flip the project to `closed`, and export its event
-        history (`core.close.close_project`, `confirm=True`)."""
+    def close_project(
+        project_id: int, request: Request, pr: bool = Body(default=False, embed=True),
+    ) -> dict:
+        """Plan section 9: commit the project's structure diff onto
+        `muvue/structure`, fast-forward `main` when safe (else an inbox
+        item, or a PR with `{"pr": true}`), flip the project to `closed`,
+        and export its event history (`core.close.close_project`)."""
         _require_session(request)
         with _conn() as conn:
             try:
                 result = core.idempotency.once(
                     conn, _request_id(request), "close",
                     lambda: core.close.close_project(
-                    conn, project_id, repo_root, actor="human", confirm=True,
+                    conn, project_id, repo_root, actor="human", confirm=True, open_pr=pr,
                     actor_evidence="dashboard_token",
                 ), atomic=False,
                 )

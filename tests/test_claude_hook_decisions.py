@@ -192,3 +192,43 @@ def test_cli_hook_command_uses_the_same_decisions(repo, started):
     )
     assert proc.returncode == 2
     assert "muvue note" in proc.stderr
+
+
+# -- Stop: reconcile-on-touch (v4 section 9, drift loop 3) ------------------
+
+
+def _stale_component(conn, path: str) -> int:
+    import json
+
+    with core_db.write_txn(conn):
+        cur = conn.execute(
+            "INSERT INTO components (name, anchors_json, status) VALUES (?, ?, 'stale')",
+            ("pricing", json.dumps({path: "oldhash"})),
+        )
+    return cur.lastrowid
+
+
+def test_stop_blocks_while_a_touched_component_is_stale_and_unreconciled(repo, conn, project):
+    from muvue.core import hooks
+
+    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t",
+                             status="ready", predicted_touches=["src/other.py"])
+    nodes.start(conn, task["id"], owner="claude")
+    cid = _stale_component(conn, "pricing/loader.py")
+    # Only the actual commit touches the component (predicted doesn't).
+    hooks.handle_post_commit(conn, commit_sha="abc", message=f"x\n\nMuvue-Node: {task['id']}",
+                             files=["pricing/loader.py"])
+    nodes.add_note(conn, task["id"], kind="discovery", text="did some work", actor="agent")
+    out = run(repo, "stop", {"node_id": task["id"]})
+    assert out.exit_code == 2
+    assert f"C{cid}" in out.stderr and "stale" in out.stderr
+
+    nodes.add_note(conn, task["id"], kind="discovery", actor="agent",
+                   text=f"C{cid}: loader now reads v2 files; purpose unchanged")
+    assert run(repo, "stop", {"node_id": task["id"]}).exit_code == 0
+
+
+def test_stop_ignores_stale_components_the_node_does_not_touch(repo, conn, started):
+    _stale_component(conn, "elsewhere.py")
+    nodes.add_note(conn, started["id"], kind="discovery", text="progress", actor="agent")
+    assert run(repo, "stop", {"node_id": started["id"]}).exit_code == 0

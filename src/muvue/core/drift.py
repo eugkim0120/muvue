@@ -89,6 +89,8 @@ def create_anchored_component(
     kind: str | None = None,
     purpose: str | None = None,
     actor: str = "human",
+    actor_evidence: str = "tty",
+    project_id: int | None = None,
 ) -> dict:
     """Create a component anchored to a real file at HEAD, hashing its
     current content into `anchors_json`. This is the concrete-path
@@ -108,10 +110,93 @@ def create_anchored_component(
         )
         row = conn.execute("SELECT * FROM components WHERE id = ?", (cur.lastrowid,)).fetchone()
         events_mod.record_event(
-            conn, project_id=None, node_id=None, actor=actor, actor_evidence="tty",
+            conn, project_id=project_id, node_id=None, actor=actor, actor_evidence=actor_evidence,
             type_="component.created", payload=dict(row),
         )
         return dict(row)
+
+
+def touches_component(anchor_paths: list[str], touches: list[str]) -> bool:
+    """A predicted glob or committed path covers an anchor path (either
+    glob direction, as `core.risk.touches_globs` reads touches)."""
+    import fnmatch
+
+    return any(
+        fnmatch.fnmatch(p, t) or fnmatch.fnmatch(t, p) for p in anchor_paths for t in touches
+    )
+
+
+def reverify_component(
+    conn: sqlite3.Connection,
+    component_id: int,
+    repo: str | Path,
+    sha: str,
+    *,
+    actor: str,
+    actor_evidence: str,
+    project_id: int | None = None,
+    node_id: int | None = None,
+) -> dict:
+    """Mark a component verified at `sha`: re-hash its anchors there,
+    status back to `current`, `verified_sha = sha`."""
+    row = db_mod.query_one(conn, "SELECT * FROM components WHERE id = ?", (component_id,))
+    anchors = {path: blob_hash(repo, sha, path) for path in _load_anchors(row)}
+    with db_mod.write_txn(conn):
+        conn.execute(
+            "UPDATE components SET anchors_json = ?, status = 'current', verified_sha = ? "
+            "WHERE id = ?",
+            (json.dumps(anchors), sha, component_id),
+        )
+        updated = conn.execute("SELECT * FROM components WHERE id = ?", (component_id,)).fetchone()
+        events_mod.record_event(
+            conn, project_id=project_id, node_id=node_id, actor=actor,
+            actor_evidence=actor_evidence, type_="component.updated", payload=dict(updated),
+        )
+        return dict(updated)
+
+
+def _node_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
+    return [
+        r[0] for r in db_mod.query_all(
+            conn,
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ? "
+            "UNION SELECT path FROM actual_touches WHERE node_id = ?",
+            (node_id, node_id),
+        )
+    ]
+
+
+def reverify_touched(
+    conn: sqlite3.Connection,
+    node_id: int,
+    repo_root: str | Path,
+    *,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+) -> list[int]:
+    """Drift loop 3's other half: once a human approves a node that
+    touched stale components (review stopped it there, see
+    `core.review`), those components count as verified at the node's
+    last commit. Hashes are read in the node's worktree when it still
+    exists (strict-mode commits live in the airlock), else `repo_root`."""
+    node = db_mod.query_one(conn, "SELECT * FROM nodes WHERE id = ?", (node_id,))
+    last = db_mod.query_one(
+        conn, "SELECT sha FROM node_commits WHERE node_id = ? ORDER BY rowid DESC LIMIT 1",
+        (node_id,),
+    )
+    if last is None:
+        return []
+    where = node["worktree"] if node["worktree"] and Path(node["worktree"]).exists() else repo_root
+    touches = _node_touches(conn, node_id)
+    done = []
+    for row in db_mod.query_all(conn, "SELECT * FROM components WHERE status = 'stale'"):
+        if touches_component(list(_load_anchors(row)), touches):
+            reverify_component(
+                conn, row["id"], where, last["sha"], actor=actor, actor_evidence=actor_evidence,
+                project_id=node["project_id"], node_id=node_id,
+            )
+            done.append(row["id"])
+    return done
 
 
 def _rename_map(repo_root: str | Path, sha: str) -> dict[str, str]:
@@ -273,12 +358,37 @@ def flag_general_unattributed_commit(
     )
 
 
+AUDIT_DIFF_MAX_LINES = 200
+
+
+def _draft(repo_root: str | Path, row: sqlite3.Row) -> dict:
+    """The drafted update for one sampled component: the diff of its
+    anchor files since `verified_sha`, and the anchors/verified_sha it
+    would get if a human accepts it."""
+    paths = list(_load_anchors(row))
+    head = _git(repo_root, "rev-parse", "HEAD").stdout.strip()
+    if not head or not paths:
+        return {"diff": "", "proposed": None}
+    diff = ""
+    if row["verified_sha"]:
+        result = _git(repo_root, "diff", row["verified_sha"], head, "--", *paths)
+        lines = result.stdout.splitlines() if result.returncode == 0 else []
+        if len(lines) > AUDIT_DIFF_MAX_LINES:
+            lines = lines[:AUDIT_DIFF_MAX_LINES] + [f"... ({len(lines) - AUDIT_DIFF_MAX_LINES} more lines)"]
+        diff = "\n".join(lines)
+    return {
+        "diff": diff,
+        "proposed": {"anchors": {p: blob_hash(repo_root, head, p) for p in paths}, "verified_sha": head},
+    }
+
+
 def run_audit(
     conn: sqlite3.Connection,
     *,
     n: int = DEFAULT_AUDIT_SAMPLE,
     lesson_decay_k: int = DEFAULT_LESSON_DECAY_K,
     actor: str = "agent",
+    repo_root: str | Path | None = None,
 ) -> dict:
     """Drift loop item 4 (plan section 9): sample the `n` oldest-verified
     (or never-verified) non-deprecated components and draft a proposed
@@ -293,17 +403,23 @@ def run_audit(
     lesson not retrieved by `lesson_decay_k` distinct projects, unless
     pinned.
     """
+    rows = db_mod.query_all(
+        conn,
+        "SELECT * FROM components WHERE status != 'deprecated' "
+        "ORDER BY (verified_sha IS NULL) DESC, id ASC LIMIT ?",
+        (n,),
+    )
+    # git runs before the write transaction opens.
+    drafts = {row["id"]: _draft(repo_root, row) if repo_root else {"diff": "", "proposed": None}
+              for row in rows}
     with db_mod.write_txn(conn):
-        rows = conn.execute(
-            "SELECT * FROM components WHERE status != 'deprecated' "
-            "ORDER BY (verified_sha IS NULL) DESC, id ASC LIMIT ?",
-            (n,),
-        ).fetchall()
         drafted = []
         for row in rows:
+            draft = drafts[row["id"]]
             message = (
                 f"component {row['id']} ({row['name']}) last verified at "
                 f"{row['verified_sha'] or 'never'}; sampled by audit for review."
+                + (" Its anchor files changed since then; see the diff." if draft["diff"] else "")
             )
             event_id = events_mod.record_event(
                 conn, project_id=None, node_id=None, actor=actor, actor_evidence="subprocess",
@@ -314,6 +430,8 @@ def run_audit(
                     "status": row["status"],
                     "verified_sha": row["verified_sha"],
                     "message": message,
+                    "diff": draft["diff"],
+                    "proposed": draft["proposed"],
                 },
             )
             drafted.append({"event_id": event_id, "component_id": row["id"], "message": message})
@@ -368,26 +486,36 @@ def decay_lessons(
     conn: sqlite3.Connection, *, k: int = DEFAULT_LESSON_DECAY_K, actor: str = "agent"
 ) -> list[int]:
     """"Lesson decay: not retrieved in K projects -> archived unless
-    pinned" (plan section 9). A lesson note (`kind='lesson'`, not
-    `pinned`, not already `archived_at`) whose `note.retrieved` events
-    (see `record_lesson_retrieval`) span fewer than `k` distinct
-    `project_id`s is archived (`archived_at` set, soft-delete convention
-    -- `notes` has no `deleted_at`, so a dedicated column is added
-    instead of overloading one, see docs/decisions.md), recorded as a
-    `note.archived` event. Returns the archived note ids."""
+    pinned" (plan section 9), read as: the `k` most recent projects
+    started after the lesson's own project all passed without a brief
+    retrieving it (`note.retrieved`, see `record_lesson_retrieval`). A
+    lesson that hasn't yet seen `k` later projects is kept; it hasn't
+    had the chance to be used (decision #137). Archiving sets
+    `archived_at` and records `note.archived`. Returns archived ids."""
     with db_mod.write_txn(conn):
         candidates = conn.execute(
-            "SELECT * FROM notes WHERE kind = 'lesson' AND pinned = 0 AND archived_at IS NULL"
+            "SELECT n.*, nd.project_id AS lesson_project FROM notes n "
+            "JOIN nodes nd ON nd.id = n.node_id "
+            "WHERE n.kind = 'lesson' AND n.pinned = 0 AND n.archived_at IS NULL"
         ).fetchall()
         archived: list[int] = []
         for note in candidates:
-            distinct_projects = conn.execute(
-                "SELECT COUNT(DISTINCT json_extract(payload, '$.project_id')) c "
-                "FROM events WHERE type = 'note.retrieved' "
-                "AND json_extract(payload, '$.note_id') = ?",
-                (note["id"],),
-            ).fetchone()["c"]
-            if distinct_projects >= k:
+            window = [
+                r["id"] for r in conn.execute(
+                    "SELECT id FROM projects WHERE id > ? ORDER BY id DESC LIMIT ?",
+                    (note["lesson_project"], k),
+                )
+            ]
+            if len(window) < k:
+                continue
+            placeholders = ", ".join("?" for _ in window)
+            used = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'note.retrieved' "
+                "AND json_extract(payload, '$.note_id') = ? "
+                f"AND json_extract(payload, '$.project_id') IN ({placeholders}) LIMIT 1",
+                (note["id"], *window),
+            ).fetchone()
+            if used is not None:
                 continue
             conn.execute(
                 "UPDATE notes SET archived_at = ? WHERE id = ?", (_now(conn), note["id"])

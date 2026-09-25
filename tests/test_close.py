@@ -306,3 +306,41 @@ def test_close_project_dirty_main_leaves_inbox_item_and_working_tree_untouched(c
 
     assert _ref_exists(repo, close_mod.STRUCTURE_REF)
     assert _rev_parse(repo, close_mod.STRUCTURE_REF) == result["structure_sha"]
+
+
+def test_close_with_pr_opens_one_when_main_cannot_fast_forward(conn, project, repo):
+    _git(repo, "checkout", "-q", "-b", "feature/other")
+    task_row = _done_task(conn, project, title="t1")
+    nodes.add_note(conn, task_row["id"], kind="decision", text="use sqlite WAL mode")
+    calls = []
+
+    def fake_opener(repo_root, sha, project_id):
+        calls.append((repo_root, sha, project_id))
+        return "https://github.com/o/r/pull/7"
+
+    result = close_mod.close_project(conn, project["id"], repo, confirm=True, open_pr=True,
+                                     pr_opener=fake_opener)
+    assert calls == [(repo, result["structure_sha"], project["id"])]
+    assert result["pr_url"] == "https://github.com/o/r/pull/7"
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE type = 'inbox.structure_update_ready'").fetchone()[0])
+    assert payload["pr_url"] == "https://github.com/o/r/pull/7"
+
+
+def test_close_pr_failure_is_reported_not_raised(conn, project, repo):
+    _git(repo, "checkout", "-q", "-b", "feature/other")
+    _done_task(conn, project, title="t1")
+    # The fixture repo has no GitHub origin: the real opener refuses.
+    result = close_mod.close_project(conn, project["id"], repo, confirm=True, open_pr=True)
+    assert result["pr_url"] is None
+    assert "not a GitHub remote" in result["pr_error"]
+    assert result["inbox_event_id"] is not None
+
+
+def test_github_slug_parses_ssh_and_https_origins(repo):
+    _git(repo, "remote", "add", "origin", "git@github.com:acme/widgets.git")
+    assert close_mod._github_slug(repo) == "acme/widgets"
+    _git(repo, "remote", "set-url", "origin", "https://github.com/acme/widgets")
+    assert close_mod._github_slug(repo) == "acme/widgets"
+    _git(repo, "remote", "set-url", "origin", "https://gitlab.com/acme/widgets.git")
+    assert close_mod._github_slug(repo) is None

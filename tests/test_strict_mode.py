@@ -124,7 +124,7 @@ def test_ensure_airlock_installs_pre_receive_shim(repo, home):
     assert hook_path.exists()
     content = hook_path.read_text()
     assert sys.executable in content
-    assert "hook pre-receive" in content
+    assert "-S -m muvue._hook pre-receive" in content
 
 
 # -- worktree binding at start -------------------------------------------
@@ -324,3 +324,42 @@ def test_init_without_sandbox_flag_emits_no_compose_file(tmp_path, home):
     root = _init_git_repo(tmp_path / "nosandboxrepo")
     muvue_dir = init_repo(root, sandbox=False)
     assert not (muvue_dir / "sandbox-compose.yml").exists()
+
+
+# -- pre-push (strict): node work reaches a remote through review ----------
+
+
+def test_strict_pre_push_refuses_commits_of_unfinished_nodes(conn, project, strict_config, repo, tmp_path):
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    config = repo / ".muvue" / "config.toml"
+    config.write_text(config.read_text().replace('mode = "light"', 'mode = "strict"'))
+    task = _ready_task(conn, project, strict_config, criteria_mode="auto")
+    (repo / "work.py").write_text("w = 1\n")
+    _git(repo, "add", "work.py")
+    _git(repo, "commit", "-q", "-m", f"sneak node work\n\nMuvue-Node: {task['id']}")
+
+    push = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"],
+                          cwd=repo, capture_output=True, text=True)
+    assert push.returncode != 0
+    assert f"Muvue-Node: {task['id']}" in push.stderr and "ready" in push.stderr
+
+    conn.execute("UPDATE nodes SET status = 'done' WHERE id = ?", (task["id"],))
+    conn.commit()
+    ok = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"],
+                        cwd=repo, capture_output=True, text=True)
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_light_pre_push_never_blocks(conn, project, strict_config, repo, tmp_path):
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    task = _ready_task(conn, project, strict_config, criteria_mode="auto")
+    (repo / "work.py").write_text("w = 1\n")
+    _git(repo, "add", "work.py")
+    _git(repo, "commit", "-q", "-m", f"work\n\nMuvue-Node: {task['id']}")
+    push = subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"],
+                          cwd=repo, capture_output=True, text=True)
+    assert push.returncode == 0, push.stderr

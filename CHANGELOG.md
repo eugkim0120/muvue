@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W8: structure and drift
+
+### Added
+- **`close --pr`** (#140, supersedes #105). When `main` can't be
+  fast-forwarded, muvue pushes `muvue/structure` and runs `gh pr
+  create`. This happens only on request and only for a GitHub origin. A
+  failure is recorded as `pr_error`, and the inbox item is still
+  created. The API takes `{"pr": true}` on `POST /projects/{id}/close`.
+- **Strict-mode `pre-push` check** (#142). A push is refused when its
+  commits name a node that isn't `done` in a `Muvue-Node:`/`Refs:`
+  trailer.
+- **`.pre-commit-config.yaml` registration** (#141, supersedes #34).
+  `init` appends a `repo: local` post-commit hook when the file's
+  layout allows a plain-text append, and `uninit` restores the original
+  file.
+- `GET /inbox` lists `structure_updates` (unacked
+  `inbox.structure_update_ready` items, including any PR URL or error).
+
+### Changed
+- **`close` proposes anchored components** from the files the project
+  actually committed, and lists changed components, which are
+  re-verified when you confirm (#136, supersedes #55).
+- **Reconcile-on-touch uses actual touches as well as predicted ones.**
+  Approving a review re-verifies the stale components the node touched
+  (#138, supersedes #61). The Claude Code `Stop` hook blocks ending a
+  turn while an `in_progress` node touches a stale component that no
+  note since `start` mentions.
+- **`audit` items carry a draft**: the anchor files' diff since
+  `verified_sha`, and the proposed anchors (#139).
+- **Lesson decay** archives a lesson only once K later projects have
+  passed without retrieving it. New lessons are no longer archived by
+  the first `audit` (#137).
+- The airlock `pre-receive` shim runs the stdlib fast path
+  (`-S -m muvue._hook pre-receive`) and fails closed (#142).
+
+### Fixed
+- The docs said `approve task:ID`; the verb is `approve node:ID`.
+
 ## [Unreleased] - v4 delta closure, W7: runner, merge, notify, doctor
 
 ### Added
@@ -81,7 +119,7 @@ All notable changes to this project are documented here.
 - **`replan` is scope-checked** (#130). A subtask whose
   `--predicted-touches` fall outside the parent's, or that would
   exceed `max_subtasks`, is created `pending` with a `replan.gated`
-  event, and needs `approve task:ID`.
+  event, and needs `approve node:ID`.
 
 ### Added
 - `GET /nodes/{id}` reports `verification`: `checked_by_muvue`,
@@ -127,7 +165,7 @@ All notable changes to this project are documented here.
 ### Changed
 - **Editing criteria on an `in_progress` node** parks the node in
   `awaiting_approval` with its lease intact, and sets its tier to
-  `high`. PreToolUse blocks edits until a human runs `approve task:ID`,
+  `high`. PreToolUse blocks edits until a human runs `approve node:ID`,
   which hands the node back to the same owner in `in_progress` (#126).
   Until now nothing ever set `awaiting_approval`.
 - `POST /projects/{id}/pause` now returns `{"project",

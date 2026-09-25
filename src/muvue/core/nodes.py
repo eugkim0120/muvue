@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import actor as actor_mod
 from . import db as db_mod
-from . import events, gitutil, review, risk, state_machine
+from . import drift, events, gitutil, review, risk, state_machine
 
 DEFAULT_LEASE_MINUTES = 60
 
@@ -628,7 +628,12 @@ def log_approval_timing(
 
 
 def approve_review(
-    conn: sqlite3.Connection, node_id: int, *, actor: str = "human", actor_evidence: str = "tty"
+    conn: sqlite3.Connection,
+    node_id: int,
+    *,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+    repo_root=None,
 ) -> dict:
     """Human approval of a node sitting in `review` (plan section 5,
     "done -> review... manual waits for a human"). Transitions
@@ -664,7 +669,13 @@ def approve_review(
             conn, row, approval="review", since_types=("node.review",),
             actor=actor, actor_evidence=actor_evidence,
         )
-        return {"node": dict(row)}
+    # Drift loop 3: approving work that touched stale components verifies
+    # them at the node's commit (git runs outside the write lock).
+    reverified = (
+        drift.reverify_touched(conn, node_id, repo_root, actor=actor, actor_evidence=actor_evidence)
+        if repo_root is not None else []
+    )
+    return {"node": dict(row), "reverified_components": reverified}
 
 
 def reject_review(

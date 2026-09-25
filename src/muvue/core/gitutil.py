@@ -34,3 +34,15 @@ def current_branch(repo_root: Path) -> str | None:
         return None
     branch = result.stdout.strip()
     return branch or None
+
+
+def head_sha(repo_root: Path) -> str | None:
+    """`HEAD`'s commit sha in `repo_root`, or None (not a repo, no commit)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", "HEAD"],
+            cwd=Path(repo_root), capture_output=True, text=True,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None

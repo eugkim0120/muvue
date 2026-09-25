@@ -45,7 +45,7 @@ def replan_add_subtask(
     of the parent's `predicted_touches` globs, and the parent has fewer
     than `planning.max_subtasks` subtasks. Such a subtask is created
     `ready`. Anything else is created `pending`, which needs `approve
-    task:ID`, and a `replan.gated` event records why."""
+    node:ID`, and a `replan.gated` event records why."""
     max_subtasks = (config or MuvueConfig()).planning.max_subtasks
     with db_mod.write_txn(conn):
         parent = nodes_mod.get_node(conn, parent_task_id)

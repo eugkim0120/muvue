@@ -428,15 +428,15 @@ def audit(
         help="How many oldest-verified components to sample per run.",
     ),
 ) -> None:
-    """Structure-graph drift audit (plan section 9, P7): samples the `n`
-    oldest-verified (or never-verified) components and drafts a proposed
-    diff for each into the inbox (`core.drift.run_audit`), then runs a
-    lesson-decay pass that may archive lessons not retrieved by enough
-    distinct projects."""
+    """Structure-graph drift audit (plan section 9): samples the `n`
+    oldest-verified (or never-verified) components and puts a draft
+    update for each in the inbox: the diff of its anchor files since it
+    was verified, and the anchors it would get. Then archives lessons
+    unused in the last K projects."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.drift.run_audit(conn, n=n)
+        result = core.drift.run_audit(conn, n=n, repo_root=repo_root)
     finally:
         conn.close()
     _echo_json(result)
@@ -825,7 +825,7 @@ def replan(
 ) -> None:
     """Add a subtask within an already-approved task's stated scope. A
     subtask outside the parent's touches, or past `max_subtasks`, is
-    created `pending` and needs `approve task:ID`. New tasks, deletions,
+    created `pending` and needs `approve node:ID`. New tasks, deletions,
     or criteria changes need a plan revision instead."""
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
@@ -918,7 +918,7 @@ def approve(
                     conn, int(project_id_s), int(n_s), config=config, **who
                 )
             elif kind == "review":
-                result = core.nodes.approve_review(conn, int(rest), **who)
+                result = core.nodes.approve_review(conn, int(rest), repo_root=repo_root, **who)
             else:
                 typer.echo(f"unknown approve target: {target!r}", err=True)
                 raise typer.Exit(1)
@@ -1109,21 +1109,26 @@ def close(
         False, "--yes", help="commit the proposed structure diff and close the project "
         "(default: dry-run preview only)",
     ),
+    pr: bool = typer.Option(
+        False, "--pr", help="if main can't be fast-forwarded, push muvue/structure to a GitHub "
+        "origin and open a PR with gh",
+    ),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Human verb (plan section 9): with `--yes`, commit the project's
     proposed structure diff (new/changed components, decisions, promoted
-    lessons) to `.muvue/components.json`/`.muvue/decisions.json` (committed
-    on `main`), flip the project to `closed`, and export its event
-    history to `.muvue/history/<id>.jsonl.gz`. Without `--yes`: a
-    dry-run preview of that same diff, no mutation (see core/close.py)."""
+    lessons) onto the `muvue/structure` branch, fast-forward `main` to it
+    when `main` is checked out and clean (otherwise leave an inbox item,
+    or open a PR with `--pr`), flip the project to `closed`, and export
+    its event history to `.muvue/history/<id>.jsonl.gz`. Without
+    `--yes`: a dry-run preview of that same diff, no mutation."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         def _apply():
             return core.close.close_project(
-                conn, project_id, repo_root, confirm=yes, **_human_kwargs()
+                conn, project_id, repo_root, confirm=yes, open_pr=pr, **_human_kwargs()
             )
         result = core.idempotency.once(
             conn, request_id, "close", _apply, actor=_invoker()[0], atomic=False,

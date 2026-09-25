@@ -24,11 +24,11 @@ docs/decisions.md).
 from __future__ import annotations
 
 import hashlib
-import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+from muvue import _hook
 
 REPO_ROOT_MARKER = "muvue-repo-root"
 UPSTREAM_REF = "refs/muvue/upstream"
@@ -67,8 +67,9 @@ def _install_pre_receive_shim(airlock: Path) -> None:
     hooks_dir = airlock / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     hook_path = hooks_dir / "pre-receive"
-    py = shlex.quote(sys.executable)
-    hook_path.write_text(f"#!/bin/sh\n{py} -m muvue hook pre-receive\n")
+    from .repo_init import hook_fast_path_command
+
+    hook_path.write_text(f"#!/bin/sh\n{hook_fast_path_command('pre-receive')}\n")
     hook_path.chmod(hook_path.stat().st_mode | 0o111)
 
 
@@ -249,90 +250,20 @@ def worktree_diff_files(worktree: str | Path, *, base: str = "main") -> list[str
 # -- pre-receive (plan section 5: the load-bearing enforcement for P4
 # acceptance criterion 1) --------------------------------------------------
 
-_NODE_BRANCH_RE = re.compile(r"^refs/heads/node-(\d+)$")
-_ACTIVE_STATUSES = ("in_progress", "review")
-
-
 def evaluate_ref_update(conn, ref_name: str) -> tuple[bool, str]:
-    """Return (accepted, reason). `main` is never a valid direct push
-    target in strict mode -- work always lands through a node branch, kept
-    or merged onward by muvue/a human outside this hook's scope (P4 is the
-    enforcement primitive, not the merge flow, which is P5+/`close`). A
-    `node-<id>` branch is only accepted while that node's binding is
-    live: the node exists, has a bound worktree, and is `in_progress` or
-    `review`."""
-    from . import nodes as nodes_mod  # local import: avoid a strict<->nodes cycle
-
-    if ref_name == "refs/heads/main":
-        return False, (
-            "refs/heads/main is protected in strict mode; push must target a "
-            "node worktree branch (node-<id>), never main directly"
-        )
-    m = _NODE_BRANCH_RE.match(ref_name)
-    if not m:
-        return False, f"{ref_name}: not a recognized muvue node-worktree branch"
-    node_id = int(m.group(1))
-    try:
-        node = nodes_mod.get_node(conn, node_id)
-    except LookupError:
-        return False, f"{ref_name}: no such node {node_id}"
-    if node["worktree"] is None:
-        return False, f"{ref_name}: node {node_id} has no bound worktree"
-    if node["status"] not in _ACTIVE_STATUSES:
-        return False, (
-            f"{ref_name}: node {node_id} is status={node['status']!r}, "
-            f"not in {_ACTIVE_STATUSES}"
-        )
-    return True, ""
+    """Return (accepted, reason) for one pushed ref. The rule lives in
+    the stdlib-only `muvue._hook`, which the airlock's shim runs."""
+    return _hook.evaluate_ref_update(conn, ref_name)
 
 
 def handle_pre_receive(conn, lines: list[str]) -> tuple[bool, list[str]]:
-    """Pure-data entry point: `lines` are raw `<old> <new> <ref>` pre-
-    receive protocol lines (one per updated ref). Returns
-    (accept_all, messages) -- git pre-receive is all-or-nothing per push
-    (there is no partial-accept), so any rejected ref rejects the whole
-    push; messages explain every rejection so they reach the pusher's
-    terminal."""
-    messages: list[str] = []
-    accept = True
-    for line in lines:
-        parts = line.split()
-        if len(parts) != 3:
-            continue
-        _old, _new, ref = parts
-        ok, reason = evaluate_ref_update(conn, ref)
-        if not ok:
-            accept = False
-            messages.append(reason)
-    return accept, messages
+    """`lines` are raw `<old> <new> <ref>` pre-receive lines. Returns
+    (accept_all, messages): git pre-receive is all-or-nothing per push."""
+    return _hook.evaluate_ref_updates(conn, lines)
 
 
 def handle_pre_receive_cli(cwd: Path) -> int:
-    """Real entry point for the installed airlock shim. Git runs
-    `pre-receive` with the receiving repo as the current directory (a
-    bare repo, here the airlock itself) and the ref updates on stdin. The
-    airlock has no `.muvue/` of its own -- `REPO_ROOT_MARKER`, written by
-    `ensure_airlock`, points back at the real repo whose `.muvue/muvue.db`
-    holds the node states being checked."""
-    from . import db as core_db
-
-    marker = cwd / REPO_ROOT_MARKER
-    if not marker.exists():
-        sys.stderr.write(f"muvue: {cwd} is not a muvue airlock (missing {REPO_ROOT_MARKER})\n")
-        return 1
-    repo_root = Path(marker.read_text().strip())
-    db_path = repo_root / ".muvue" / "muvue.db"
-    if not db_path.exists():
-        sys.stderr.write(f"muvue: {db_path} not found; is {repo_root} still muvue-initialized?\n")
-        return 1
-
-    lines = sys.stdin.read().splitlines()
-    conn = core_db.connect(db_path)
-    try:
-        accept, messages = handle_pre_receive(conn, lines)
-    finally:
-        conn.close()
-
-    for msg in messages:
-        sys.stderr.write(f"muvue: rejected: {msg}\n")
-    return 0 if accept else 1
+    """`muvue hook pre-receive`, the full-CLI twin of the airlock shim."""
+    outcome = _hook.pre_receive(str(cwd), sys.stdin.read().splitlines())
+    sys.stderr.write(outcome.stderr)
+    return outcome.exit_code

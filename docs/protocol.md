@@ -58,7 +58,8 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
 - `export [PATH] [--project-id N]` — event export to `.muvue/history/<project-id>.jsonl.gz` (every project, plus `unscoped.jsonl.gz` for project-less events, when no id is given).
   `export --project-id ID [PATH]` (P6, see below) writes the real
   per-project `.muvue/history/<id>.jsonl.gz` archive instead.
-- `audit` — stub, ships P7.
+- `audit [--n N]` — samples components and drafts updates into the inbox
+  (see the drift loop section).
 - `hook NAME` — shim entry point installed by `init`; no business logic
   yet (ships P3/P4). Must stay cheap (<50ms) per plan section 1.
 
@@ -175,7 +176,7 @@ diff-only against the previous revision:
   straight to `ready` when it stays in scope: every predicted touch
   falls under one of the parent's globs, and the parent has fewer than
   `planning.max_subtasks` subtasks. Otherwise it is created `pending`,
-  a `replan.gated` event records why, and it needs `approve task:ID`. Raises `GateError` if the parent
+  a `replan.gated` event records why, and it needs `approve node:ID`. Raises `GateError` if the parent
   hasn't been Gate 2 approved yet. New tasks, deletions, and criteria
   changes always go through a plan revision instead.
 
@@ -184,7 +185,7 @@ diff-only against the previous revision:
 All real, and never exposed over MCP:
 
 - `approve TARGET:ID` (spec, node, gate2, revision, review). `approve
-  task:ID` also re-approves a node in `awaiting_approval`, which puts it
+  node:ID` also re-approves a node in `awaiting_approval`, which puts it
   back in `in_progress` under the same owner.
 - `reject review:ID --feedback TEXT`: `review -> in_progress`, with the
   feedback stored as a `feedback` note.
@@ -213,7 +214,7 @@ Every human verb records how it was invoked in `actor_evidence`:
 Changing the criteria of an `in_progress` node moves it to
 `awaiting_approval`, keeping its owner and lease, and forces its tier to
 `high`. The PreToolUse hook blocks Edit/Write on it until `approve
-task:ID`.
+node:ID`.
 
 ### Risk tiers (P2)
 
@@ -412,7 +413,11 @@ config writer call). `PYTHONPATH` is applied by the interpreter before
 line to `.muvue/queue.jsonl` (gitignored, append-only) and exit, with
 no DB open. Line shapes: `{"event": "post-commit", "ts": ..., "sha":
 <HEAD sha, read from `.git/HEAD` + refs, no `git` subprocess>}` and
-`{"event": "pre-push", "ts": ...}`.
+`{"event": "pre-push", "ts": ...}`. In strict mode `pre-push` also
+reads git's `<local ref> <local sha> <remote ref> <remote sha>` lines
+from stdin and refuses the push (exit 1) when a pushed commit's
+`Muvue-Node:`/`Refs:` trailer names a node that isn't `done`
+(decision #142). Commits already on a remote are not re-checked.
 
 **Claude Code decision hooks** (`muvue._hook.run`; `muvue hook NAME`
 runs the same code). Claude Code's contract: exit 2 blocks and feeds
@@ -494,10 +499,13 @@ node id (exists, not soft-deleted) gets linked into `node_commits`
 ("trailers are labels, not trusted for binding" -- plan section 5).
 Linked commits also enqueue `anchor.hash_requested`/`staleness.flagged`
 no-op events (P2's documented no-op-queue-consumer pattern; real anchor
-hashing/staleness is structure-layer, P6+). Husky/pre-commit-framework-
-aware YAML rewriting is out of scope for P3 (see `docs/decisions.md`);
-the shim still installs straight into `.git/hooks/post-commit` (or
-`.husky/post-commit`) either way, so the hook runs regardless.
+hashing/staleness is structure-layer, P6+). The shim installs straight
+into `.git/hooks/post-commit` (or `.husky/post-commit`). When
+`.pre-commit-config.yaml` exists and `repos:` is its last top-level key,
+`init` also appends a marker-delimited `repo: local` entry running the
+same fast path at `stages: [post-commit]`, so `pre-commit install -t
+post-commit` keeps it. Other layouts are left untouched, and `uninit`
+restores the original bytes (decision #141).
 
 ## Human-verb enforcement in core (P3)
 
@@ -643,15 +651,19 @@ is unchanged from P0-P3, so `protocol_version` is **not** bumped (see
   stdout/stderr attached -- `start` fails, the node stays `ready`, and
   `worktree` stays `NULL` (no half-initialized binding, no orphan
   worktree on disk).
-- **`pre-receive` enforcement (P4 acceptance criterion 1).** `muvue hook
-  pre-receive`, installed on the airlock, reads git's `<old> <new> <ref>`
-  pre-receive protocol lines from stdin (`core.strict.handle_pre_receive`)
-  and rejects the whole push (git pre-receive is all-or-nothing) if any
+- **`pre-receive` enforcement (P4 acceptance criterion 1).** The
+  airlock's shim runs the stdlib fast path (`<python> -S -m muvue._hook
+  pre-receive`, decision #142); `muvue hook pre-receive` runs the same
+  code. It reads git's `<old> <new> <ref>` pre-receive protocol lines
+  from stdin (`muvue._hook.pre_receive`), finds the real repo through
+  the airlock's `muvue-repo-root` marker, and rejects the whole push (git pre-receive is all-or-nothing) if any
   updated ref is invalid:
   - `refs/heads/main` is always rejected -- main is never a direct push
     target in strict mode.
   - `refs/heads/node-<id>` is rejected unless node `<id>` exists, has a
     non-`NULL` `worktree`, and is `in_progress` or `review`.
+  Unlike every other hook it fails closed: a missing marker or DB
+  refuses the push.
   Trailers (`Muvue-Node:`) remain labels, same as light mode
   (`core/trailers.py`) -- this hook never reads them; it trusts only the
   `worktree` binding recorded by `start`, per plan section 5. **This
@@ -1004,14 +1016,18 @@ category**:
   (trigger/failure/do_instead/scope) into the same title/context/choice
   shape as a decision. Promoted lessons land in the `decisions` table
   too (no separate structure-layer table for them).
-- `components` — one candidate per distinct `predicted_touches.path_glob`
-  the project's nodes declared, not already tracked as a component
-  (there is no static-analysis/anchor-hashing scan yet — that ships with
-  P7's `audit`).
+- `components` — one candidate per file the project's commits actually
+  touched (`actual_touches`) that no component anchors yet, with
+  `file_path` set. A project with no recorded commits falls back to one
+  unanchored candidate per `predicted_touches.path_glob` (decision #136).
+- `changed_components` — existing components whose anchor files the
+  project touched.
 
 On `--yes`/`confirm=True`: inserts the diff's rows into `components`/
 `decisions` (each recording a `component.created`/`decision.created`
-event), then builds a commit updating the **full current**
+event). Candidates with a `file_path` are created through
+`core.drift.create_anchored_component`, anchored at HEAD, and each
+`changed_components` entry is re-verified at HEAD. It then builds a commit updating the **full current**
 `components`/`decisions` tables as `.muvue/components.json`/
 `.muvue/decisions.json`. **v4 §9 (changelog item 7): this commit never
 touches `repo_root`'s checked-out branch directly** — it lands on a
@@ -1029,8 +1045,12 @@ doubles as the ancestry check, decision #102) **only when** `main` is
 empty. Otherwise `main` and the working tree are left completely
 untouched and an unacked `inbox.structure_update_ready` event is
 recorded (`ref`, `sha`, `reason`, `message`) pointing at
-`refs/heads/muvue/structure` for the user to merge or PR by hand — no
-`gh pr create` wiring was added in this session (decision #105). Sets
+`refs/heads/muvue/structure` for the user to merge or PR by hand. `GET
+/inbox` lists these under `"structure_updates"`. With `close --pr` (API
+body `{"pr": true}`, decision #140) muvue also pushes the branch to a
+GitHub `origin` and runs `gh pr create`; the PR URL, or the error if
+that failed, is in the result (`pr_url`/`pr_error`) and the inbox
+payload. Sets
 `projects.phase = 'closed'`, and exports the project's event history
 (below). Also `POST /projects/{id}/close` (session-token-gated).
 
@@ -1209,14 +1229,23 @@ detection, plus strict mode's unaffected `pre-receive` barrier
 
 ### 3. Reconcile-on-touch
 
-`core.review.dispatch` now checks, before its existing light/strict-mode
-branching, whether the node's `predicted_touches` globs overlap any
-`stale` component's anchor paths (`node_touches`, the real per-node
-structure-graph join table, has no populated writer yet anywhere in the
-codebase, so `predicted_touches` is the overlap signal used, as the P7
-scope itself allows). A hit always flags to `review`
+`core.review.dispatch` checks, before its light/strict-mode branching,
+whether the node's touches overlap any `stale` component's anchor
+paths. Touches are the union of the `predicted_touches` globs and the
+paths in `actual_touches`, the files the node's commits changed
+(decision #138). A hit always flags to `review`
 (`review.stale_component_touched`), overriding whatever
 tier/criteria-mode would otherwise have auto-approved `done`.
+
+`approve review:ID` then re-verifies those components
+(`core.drift.reverify_touched`): anchors are re-hashed at HEAD,
+`status` goes back to `current`, `verified_sha` becomes HEAD, and each
+change records `component.updated`. The approve result lists them as
+`reverified_components`.
+
+The Claude Code `Stop` hook blocks ending a turn while an `in_progress`
+node touches a stale component, unless a note recorded since `start`
+mentions it as `C<id>`.
 
 ### 4. `muvue audit [--n N]` (real, replacing the P0 stub)
 
@@ -1225,8 +1254,11 @@ tier/criteria-mode would otherwise have auto-approved `done`.
 never-verified) non-deprecated components -- `components` carries no
 creation timestamp, so "oldest" is read as never-verified first, then
 ascending `id` as a proxy for insertion order -- and drafts a proposed
-diff for each into the inbox as an unacked `inbox.audit_drift_signal`
-event (`GET /inbox`'s `"audit_items"`). Also runs a lesson-decay pass
+update for each into the inbox as an unacked `inbox.audit_drift_signal`
+event (`GET /inbox`'s `"audit_items"`). The payload's `draft.diff` is
+`git diff <verified_sha> HEAD` over the anchor files (at most
+`AUDIT_DIFF_MAX_LINES`, 200, lines) and `draft.proposed` holds the
+anchors and `verified_sha` the component would get (decision #139). Also runs a lesson-decay pass
 (below) as part of the same run -- "`audit` may prune" (plan section 9).
 
 ### 5. `drift_pct` KPI (real, replacing the P2/P6 0.0 stub)
@@ -1244,9 +1276,11 @@ Wired into `GET /kpis`.
 `core.queries.brief_node` every time a lesson note is surfaced,
 recording a `note.retrieved` event (`{note_id, project_id}`) and
 bumping `notes.last_retrieved_at`. `core.drift.decay_lessons(k=
-DEFAULT_LESSON_DECAY_K)` (default 3) archives any `kind='lesson'`,
-unpinned note whose `note.retrieved` events span fewer than `k`
-distinct `project_id`s: sets `notes.archived_at` (P7's `SCHEMA_VERSION
+DEFAULT_LESSON_DECAY_K)` (default 3) archives a `kind='lesson'`,
+unpinned note once the `k` most recent projects created after the
+lesson's own project have all passed without a `note.retrieved` event
+for it (decision #137). A lesson with fewer than `k` later projects is
+kept. Archiving sets `notes.archived_at` (P7's `SCHEMA_VERSION
 3` addition, a dedicated soft-delete column rather than overloading
 `pinned`/`last_retrieved_at`) and records a `note.archived` event.
 Archived, unpinned lessons are excluded from what `brief_node` surfaces.

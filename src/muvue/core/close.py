@@ -43,6 +43,7 @@ from pathlib import Path
 
 from . import actor as actor_mod
 from . import db as db_mod
+from . import drift as drift_mod
 from . import events as events_mod
 from . import gitutil as gitutil_mod
 from . import history as history_mod
@@ -171,13 +172,39 @@ def _promoted_lesson_candidates(conn: sqlite3.Connection, project_id: int) -> li
     return out
 
 
+def _anchored_paths(conn: sqlite3.Connection) -> set[str]:
+    paths: set[str] = set()
+    for row in db_mod.query_all(conn, "SELECT anchors_json FROM components WHERE status != 'deprecated'"):
+        paths.update(drift_mod._load_anchors(row))
+    return paths
+
+
 def _component_candidates(conn: sqlite3.Connection, project_id: int) -> list[dict]:
-    """No static-analysis/anchor-hashing scan exists yet (that's the
-    structure-drift machinery, P7's `audit`) -- the only structural
-    signal already on hand this early is each node's own
-    `predicted_touches` path globs (plan section 3), so a candidate
-    component is proposed per distinct glob this project touched, not
-    already tracked (see docs/decisions.md)."""
+    """New components (decision #136, supersedes #55): one per file the
+    project's commits actually touched that no component anchors yet,
+    anchored to that file's content at close. A project with no
+    recorded commits falls back to its predicted globs (unanchored)."""
+    actual = db_mod.query_all(
+        conn,
+        "SELECT at.path, nd.title FROM actual_touches at JOIN nodes nd ON nd.id = at.node_id "
+        "WHERE nd.project_id = ? AND nd.deleted_at IS NULL ORDER BY at.path",
+        (project_id,),
+    )
+    if actual:
+        anchored = _anchored_paths(conn)
+        names = {r["name"] for r in db_mod.query_all(conn, "SELECT name FROM components")}
+        by_path: dict[str, list[str]] = {}
+        for r in actual:
+            by_path.setdefault(r["path"], []).append(r["title"])
+        out = []
+        for path, titles in by_path.items():
+            if len(out) >= MAX_DIFF_ITEMS:
+                break
+            if path in anchored or path in names:
+                continue
+            purpose = "; ".join(dict.fromkeys(titles))[:200]
+            out.append({"name": path, "kind": "file", "purpose": purpose, "file_path": path})
+        return out
     rows = db_mod.query_all(
         conn,
         "SELECT DISTINCT pt.path_glob, nd.title FROM predicted_touches pt "
@@ -197,7 +224,31 @@ def _component_candidates(conn: sqlite3.Connection, project_id: int) -> list[dic
         if glob in existing:
             continue
         purpose = "; ".join(dict.fromkeys(titles))[:200]
-        out.append({"name": glob, "kind": "path", "purpose": purpose})
+        out.append({"name": glob, "kind": "path", "purpose": purpose, "file_path": None})
+    return out
+
+
+def _changed_component_candidates(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """"Changed components" (plan section 9): stale components whose
+    anchors this project's commits touched. Close re-verifies them at
+    HEAD."""
+    touched = [
+        r["path"] for r in db_mod.query_all(
+            conn,
+            "SELECT DISTINCT at.path FROM actual_touches at JOIN nodes nd ON nd.id = at.node_id "
+            "WHERE nd.project_id = ? AND nd.deleted_at IS NULL",
+            (project_id,),
+        )
+    ]
+    if not touched:
+        return []
+    out = []
+    for row in db_mod.query_all(conn, "SELECT * FROM components WHERE status = 'stale' ORDER BY id"):
+        paths = list(drift_mod._load_anchors(row))
+        if drift_mod.touches_component(paths, touched):
+            out.append({"id": row["id"], "name": row["name"], "files": paths})
+        if len(out) >= MAX_DIFF_ITEMS:
+            break
     return out
 
 
@@ -211,6 +262,7 @@ def preview_close(conn: sqlite3.Connection, project_id: int) -> dict:
         "decisions": _decision_candidates(conn, project_id),
         "promoted_lessons": _promoted_lesson_candidates(conn, project_id),
         "components": _component_candidates(conn, project_id),
+        "changed_components": _changed_component_candidates(conn, project_id),
     }
     return {
         "project": dict(project),
@@ -352,6 +404,40 @@ def _maybe_fast_forward_main(repo_root: Path, structure_sha: str) -> dict:
     return {"fast_forwarded": True, "sha": structure_sha}
 
 
+def _github_slug(repo_root: Path) -> str | None:
+    """`owner/name` when `origin` is a GitHub remote, else None."""
+    import re
+
+    url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo_root, capture_output=True, text=True,
+    ).stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url)
+    return match.group(1) if match else None
+
+
+def open_structure_pr(repo_root: Path, structure_sha: str, project_id: int) -> str:
+    """Push `muvue/structure` to a GitHub `origin` and open a PR into
+    `main` with the authenticated `gh` CLI (plan section 9, "opens a PR
+    / leaves an inbox item"). Returns the PR URL."""
+    from . import github as github_mod
+
+    slug = _github_slug(repo_root)
+    if slug is None:
+        raise CloseError("origin is not a GitHub remote; merge muvue/structure by hand")
+    branch = STRUCTURE_REF.removeprefix("refs/heads/")
+    push = _run_git_as_muvue("push", "origin", f"{STRUCTURE_REF}:{STRUCTURE_REF}", cwd=repo_root)
+    if push.returncode != 0:
+        raise CloseError(f"git push origin {branch} failed: {push.stderr.strip()}")
+    return github_mod.create_pr_via_gh(
+        head=branch, base="main", repo=slug,
+        title=f"muvue: structure update from project {project_id}",
+        body=(
+            f"Structure diff from closing muvue project {project_id} "
+            f"(`.muvue/components.json`, `.muvue/decisions.json`), commit {structure_sha[:12]}."
+        ),
+    )["url"]
+
+
 def close_project(
     conn: sqlite3.Connection,
     project_id: int,
@@ -360,12 +446,17 @@ def close_project(
     actor: str = "human",
     actor_evidence: str = "tty",
     confirm: bool = False,
+    open_pr: bool = False,
+    pr_opener=open_structure_pr,
 ) -> dict:
     """`confirm=False` (default): dry-run, same shape as `preview_close`
     plus `"confirmed": False`, no mutation at all. `confirm=True`: commits
-    the diff (raises `CloseError` if not closeable), writes and commits
-    `components.json`/`decisions.json` on `main`, flips the project to
-    `closed`, and exports its event history."""
+    the diff (raises `CloseError` if not closeable) onto
+    `muvue/structure`, fast-forwards `main` when that is safe, flips the
+    project to `closed`, and exports its event history. When `main`
+    can't be fast-forwarded, an inbox item says where the commit is, and
+    with `open_pr=True` muvue also pushes the branch and opens a PR
+    (`pr_opener`). A PR failure is reported in the item, not raised."""
     _require_human(actor, actor_evidence)
     preview = preview_close(conn, project_id)
     if not confirm:
@@ -378,8 +469,25 @@ def close_project(
 
     repo_root = Path(repo_root)
 
+    head = gitutil_mod.head_sha(repo_root)
+    for c in preview["diff"]["changed_components"]:
+        if head:
+            drift_mod.reverify_component(
+                conn, c["id"], repo_root, head, actor=actor, actor_evidence=actor_evidence,
+                project_id=project_id,
+            )
+    for c in preview["diff"]["components"]:
+        if c["file_path"]:
+            drift_mod.create_anchored_component(
+                conn, name=c["name"], file_path=c["file_path"], repo_root=repo_root,
+                kind=c["kind"], purpose=c["purpose"], actor=actor,
+                actor_evidence=actor_evidence, project_id=project_id,
+            )
+
     with db_mod.write_txn(conn):
         for c in preview["diff"]["components"]:
+            if c["file_path"]:
+                continue
             cur = conn.execute(
                 "INSERT INTO components (name, kind, purpose, anchors_json, status) "
                 "VALUES (?, ?, ?, '[]', 'current')",
@@ -414,6 +522,14 @@ def close_project(
     ff_result = _maybe_fast_forward_main(repo_root, structure_sha)
 
     inbox_event_id = None
+    pr_url = pr_error = None
+    if not ff_result["fast_forwarded"] and open_pr:
+        from . import github as github_mod
+
+        try:
+            pr_url = pr_opener(repo_root, structure_sha, project_id)
+        except (CloseError, github_mod.GithubError) as e:
+            pr_error = str(e)
     if not ff_result["fast_forwarded"]:
         with db_mod.write_txn(conn):
             inbox_event_id = events_mod.record_event(
@@ -423,11 +539,15 @@ def close_project(
                     "ref": STRUCTURE_REF,
                     "sha": structure_sha,
                     "reason": ff_result["reason"],
+                    "pr_url": pr_url,
+                    "pr_error": pr_error,
                     "message": (
                         f"structure update for project {project_id} committed on "
                         f"{STRUCTURE_REF} ({structure_sha[:12]}); not fast-forwarded onto "
-                        f"main ({ff_result['reason']}) -- merge it manually "
-                        f"(e.g. `git merge {STRUCTURE_REF}`) or open a PR"
+                        f"main ({ff_result['reason']}) -- "
+                        + (f"review PR {pr_url}" if pr_url else
+                           f"merge it manually (e.g. `git merge {STRUCTURE_REF}`) or rerun "
+                           "close with --pr to open a PR")
                     ),
                 },
             )
@@ -446,5 +566,7 @@ def close_project(
         "structure_sha": structure_sha,
         "fast_forwarded": ff_result["fast_forwarded"],
         "inbox_event_id": inbox_event_id,
+        "pr_url": pr_url,
+        "pr_error": pr_error,
         "history_path": str(history_path),
     }

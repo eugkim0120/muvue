@@ -119,6 +119,56 @@ def _install_hook_shim(path: Path, name: str, backups: dict[str, str | None]) ->
     path.chmod(path.stat().st_mode | 0o111)
 
 
+PRE_COMMIT_CONFIG = ".pre-commit-config.yaml"
+
+
+def _register_pre_commit(repo_root: Path, backups: dict[str, str | None]) -> bool:
+    """v4 section 5: "register with Husky or pre-commit when present". A
+    `repo: local` post-commit hook is appended to `.pre-commit-config.yaml`
+    so `pre-commit install -t post-commit` keeps muvue's shim running.
+
+    No YAML library is used (no new runtime dependency), so the file is
+    only extended when that is safe as plain text: `repos:` is a block
+    list and the last top-level key. Anything else is left untouched and
+    the `.git/hooks` shim still runs. `uninit` restores the original
+    bytes from the manifest. Returns whether the file was changed."""
+    path = repo_root / PRE_COMMIT_CONFIG
+    if not path.exists():
+        return False
+    content = path.read_text()
+    begin, end = _gitignore_marker()
+    if begin in content:
+        return False
+    lines = content.splitlines()
+    try:
+        start = lines.index("repos:")
+    except ValueError:
+        return False
+    rest = [line for line in lines[start + 1:] if line.strip() and not line.lstrip().startswith("#")]
+    if any(not (line[0].isspace() or line.startswith("-")) for line in rest):
+        return False  # another top-level key follows `repos:`
+    items = [line for line in rest if line.lstrip().startswith("- ")]
+    indent = items[0][: len(items[0]) - len(items[0].lstrip())] if items else "  "
+    entry = json.dumps("env " + hook_fast_path_command("post-commit"))
+    block = "\n".join(indent + line for line in (
+        begin,
+        "- repo: local",
+        "  hooks:",
+        "    - id: muvue-post-commit",
+        "      name: muvue post-commit",
+        f"      entry: {entry}",
+        "      language: system",
+        "      stages: [post-commit]",
+        "      always_run: true",
+        "      pass_filenames: false",
+        end,
+    )) + "\n"
+    backups.setdefault(str(path), content)
+    sep = "" if content.endswith("\n") else "\n"
+    path.write_text(content + sep + block)
+    return True
+
+
 def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
     path = repo_root / ".gitignore"
     key = str(path)
@@ -198,6 +248,7 @@ def init_repo(repo_root: Path, *, sandbox: bool = False) -> Path:
         else:
             path = repo_root / ".git" / "hooks" / name
         _install_hook_shim(path, name, backups)
+    _register_pre_commit(repo_root, backups)
     _update_gitignore(repo_root, backups)
 
     (muvue_dir / MANIFEST_NAME).write_text(json.dumps(backups, indent=2))

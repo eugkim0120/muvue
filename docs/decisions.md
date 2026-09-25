@@ -1965,3 +1965,79 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `pause` stops it like any other run. The agent name must be a
     configured `[agents.X]`: the endpoint never runs an arbitrary
     command, only what `config.toml` already allows.
+
+136. **`close` proposes anchored and changed components; supersedes
+    #55.** #55 used `predicted_touches` globs as the only candidate
+    source, because nothing recorded what a node actually changed and
+    nothing called `create_anchored_component`. Both reasons are gone:
+    `actual_touches` is filled from each node's commits, and anchoring
+    is cheap (`git show HEAD:<path>`). So `close` now proposes one new
+    component per actually-touched file that no component anchors yet,
+    and confirming creates it through `drift.create_anchored_component`
+    at HEAD. It also lists existing components whose anchors the project
+    touched (`changed_components`); confirming re-verifies them at HEAD.
+    A project with no recorded commits still falls back to its globs,
+    unanchored, so planning-only projects close as before.
+
+137. **Lesson decay counts later projects, not retrievals across all
+    projects.** The old rule archived any lesson retrieved in fewer than
+    K distinct projects, which archived every new lesson on the first
+    `audit`, before anyone could use it. v4 §9 says "not retrieved in K
+    projects". This is now read as: the K most recent projects started
+    after the lesson's own project all passed without a brief retrieving
+    it. A lesson younger than K projects is kept. Pinned lessons are
+    never archived.
+
+138. **Reconcile-on-touch uses actual touches, and `done` re-verifies;
+    supersedes #61.** #61 matched stale components against
+    `predicted_touches` only, because no real per-node touch data
+    existed. `actual_touches` now exists, so the check unions predicted
+    and actual paths: an agent that edits a stale component's file
+    without predicting it is still caught. The loop also closes now.
+    Approving a review re-verifies the stale components the node touched
+    (new anchors hashed at HEAD, `status='current'`, new
+    `verified_sha`), because the human just reviewed that code. The
+    Claude Code `Stop` hook blocks ending a turn on an `in_progress` node
+    that touches a stale component, unless a note since `start` mentions
+    it (`C<id>`). This uses the same bounded read path as #114.
+
+139. **`audit` items carry a real draft.** Each `inbox.audit_drift_signal`
+    payload now has `draft.diff` (the anchor files' `git diff` since
+    `verified_sha`, capped at 200 lines) and `draft.proposed` (the
+    anchors and `verified_sha` the component would get if accepted). The
+    CHANGELOG had claimed this since P7. Now it is true.
+
+140. **`close --pr` opens a pull request; supersedes #105.** #105 left PR
+    creation out because it needs a GitHub remote and an authenticated
+    `gh`, and the plan marks it optional. It stays opt-in: `close --pr`
+    (and `"pr": true` on the API) runs `gh pr create` against the
+    `muvue/structure` branch only when `main` could not be
+    fast-forwarded. The origin must be a GitHub URL. Any failure (no
+    GitHub origin, `gh` missing or logged out, push refused) is recorded
+    as `pr_error` on the result and the inbox item, which is still
+    created. A plain `close` never makes a network call.
+
+141. **`.pre-commit-config.yaml` registration, text-only; supersedes
+    #34.** #34 skipped this because safe YAML rewriting needs a parser.
+    It can be done without one in the common case. When `repos:` is a
+    block list and the last top-level key, appending a
+    marker-delimited `- repo: local` entry at the list's own indent
+    cannot change the meaning of anything above it. Any other layout
+    (flow list, a key after `repos:`, no `repos:`) is left untouched, as
+    before, and the `.git/hooks` shim still runs. `uninit` restores the
+    original bytes from the manifest, like every other file `init`
+    touches.
+
+142. **Strict `pre-push` check and a stdlib `pre-receive`; completes
+    #4.** #4 named `pre-push` as the strict-mode check, but it only
+    spooled an event. In strict mode, `pre-push` now refuses a push
+    whose commits carry a `Muvue-Node:`/`Refs:` trailer naming a node
+    that isn't `done`: that work skipped review and the airlock. Light
+    mode still only spools. Trailers are labels (plan §5), so this
+    catches accidents, not someone who drops the trailer; the airlock's
+    `pre-receive` is still the real barrier. The airlock shim is now the
+    one-line `-S -m muvue._hook pre-receive` fast path instead of the
+    full CLI, so each push no longer pays for importing Typer and
+    Pydantic. `strict.handle_pre_receive` delegates to the same code.
+    `pre-receive` fails closed: outside an airlock, or with an
+    unreadable DB, it refuses.

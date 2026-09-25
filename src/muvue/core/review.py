@@ -124,19 +124,16 @@ def precompute_checks(
 
 def _stale_touched_component_ids(conn: sqlite3.Connection, node: sqlite3.Row) -> list[int]:
     """P7 drift loop item 3 (plan section 9): "Reconcile-on-touch" --
-    a node whose `predicted_touches` globs overlap any file a currently
-    `stale` component is anchored to must not sail through to `done`
-    unreviewed. `node_touches` (the real per-node structure-graph join
-    table) has no populated writer yet anywhere in the codebase, so
-    `predicted_touches` (already populated since P0) is the overlap
-    signal used here, same fallback the P7 prompt itself names -- see
-    docs/decisions.md."""
+    a node whose predicted globs or committed paths overlap any file a
+    currently `stale` component is anchored to must not sail through to
+    `done` unreviewed (decision #136, supersedes #61)."""
     globs = [
         row["path_glob"]
         for row in db_mod.query_all(
             conn,
-            "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
-            (node["id"],),
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ? "
+            "UNION SELECT path FROM actual_touches WHERE node_id = ?",
+            (node["id"], node["id"]),
         )
     ]
     if not globs:

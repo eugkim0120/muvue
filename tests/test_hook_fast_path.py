@@ -95,7 +95,10 @@ def test_stop_fails_open_and_still_spools_with_no_db_present(repo, monkeypatch):
     assert _queue_lines(repo)[0]["event"] == "stop"
 
 
-def test_pre_push_default_action_spools_minimal_event(repo):
+def test_pre_push_default_action_spools_minimal_event(repo, monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
     exit_code = _hook.main(["pre-push", str(repo)])
     assert exit_code == 0
     assert _queue_lines(repo)[0]["event"] == "pre-push"
@@ -108,8 +111,18 @@ def test_no_muvue_dir_fails_open_silently(tmp_path):
 
 
 def test_unknown_hook_name_fails_open(repo):
-    assert _hook.main(["pre-receive", str(repo)]) == 0
+    assert _hook.main(["post-merge", str(repo)]) == 0
     assert _queue_lines(repo) == []
+
+
+def test_pre_receive_outside_an_airlock_fails_closed(repo, monkeypatch):
+    """pre-receive is the strict-mode enforcement, so unlike the other
+    hooks it refuses when it can't check."""
+    import io
+
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("sys.stdin", io.StringIO("0 1 refs/heads/main\n"))
+    assert _hook.main(["pre-receive"]) == 1
 
 
 # -- PreToolUse: the one DB-reading path --------------------------------

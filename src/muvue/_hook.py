@@ -311,6 +311,60 @@ def _unlogged_work_reason(conn, node_id, *, what: str):
     )
 
 
+def _stale_component_reason(conn, node_id):
+    """v4 section 9, drift loop 3: "Stop blocks `done` on a stale touched
+    component". A component is touched when one of the node's predicted
+    globs or committed paths covers one of its anchor paths. It counts as
+    reconciled once a note since `start` names it as `C<id>`."""
+    import fnmatch
+    import re
+
+    node = _in_progress_node(conn, node_id)
+    if node is None:
+        return None
+    touches = [r[0] for r in conn.execute(
+        "SELECT path_glob FROM predicted_touches WHERE node_id = ? "
+        "UNION SELECT path FROM actual_touches WHERE node_id = ?", (node_id, node_id),
+    )]
+    if not touches:
+        return None
+    started = conn.execute(
+        "SELECT MAX(id) i FROM events WHERE node_id = ? AND type = 'node.start'", (node_id,)
+    ).fetchone()["i"] or 0
+    noted = " ".join(
+        r[0] or "" for r in conn.execute(
+            "SELECT json_extract(payload, '$.text') FROM events WHERE node_id = ? "
+            "AND type = 'note.added' AND id > ?", (node_id, started),
+        )
+    )
+    unreconciled = []
+    for row in conn.execute("SELECT id, name, anchors_json FROM components WHERE status = 'stale'"):
+        try:
+            anchors = json.loads(row["anchors_json"] or "{}")
+        except ValueError:
+            continue
+        paths = list(anchors) if isinstance(anchors, dict) else []
+        hit = any(
+            fnmatch.fnmatch(p, t) or fnmatch.fnmatch(t, p) for p in paths for t in touches
+        )
+        if hit and not re.search(rf"\bC{row['id']}\b", noted):
+            unreconciled.append(f"C{row['id']} ({row['name']})")
+    if not unreconciled:
+        return None
+    return (
+        f"muvue node {node_id} touches stale component(s) {', '.join(unreconciled)}: their code "
+        "changed since they were last verified. Re-read them and record what changed with "
+        f"`muvue note {node_id} --kind discovery --text 'C<id>: ...'` before finishing."
+    )
+
+
+def _stop_reason(conn, node_id):
+    return (
+        _unlogged_work_reason(conn, node_id, what="before ending the turn")
+        or _stale_component_reason(conn, node_id)
+    )
+
+
 def _session_brief(conn, node_id):
     """A compact, stdlib-only brief for SessionStart context. The full
     ranked brief (`muvue brief N`) needs `muvue.core`, which this module
@@ -372,7 +426,7 @@ def run(
     if name == "session-start":
         fn = lambda c: _session_brief(c, node_id)  # noqa: E731
     elif name == "stop":
-        fn = lambda c: _unlogged_work_reason(c, node_id, what="before ending the turn")  # noqa: E731
+        fn = lambda c: _stop_reason(c, node_id)  # noqa: E731
     else:  # pre-compact
         fn = lambda c: _unlogged_work_reason(c, node_id, what="before compacting")  # noqa: E731
     try:
@@ -390,12 +444,159 @@ def run(
     return HookOutcome(2, "", text + "\n")
 
 
+# -- git hooks that decide (strict mode) -------------------------------------
+
+AIRLOCK_REPO_ROOT_MARKER = "muvue-repo-root"  # core.strict.REPO_ROOT_MARKER
+_NODE_BRANCH_RE = r"^refs/heads/node-(\d+)$"
+_ACTIVE_STATUSES = ("in_progress", "review")
+_TRAILER_RE = r"^(?:Muvue-Node|Refs):\s*(.+)$"
+_ZERO_SHA = "0" * 40
+
+
+def _read_db(repo_root: str, fn):
+    """Read-only query for git hooks. They aren't on the per-tool-call
+    path, so no 150 ms deadline; a normal lock wait applies."""
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{os.path.join(repo_root, DB_RELPATH)}?mode=ro", uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        return fn(conn)
+    finally:
+        conn.close()
+
+
+def evaluate_ref_update(conn, ref_name: str) -> tuple[bool, str]:
+    """Strict-mode pre-receive rule for one pushed ref (plan section 5):
+    `main` is never pushed directly; a `node-<id>` branch is accepted
+    only while that node is `in_progress` or `review` with a bound
+    worktree. `core.strict` delegates here so the rule has one home."""
+    import re
+
+    if ref_name == "refs/heads/main":
+        return False, (
+            "refs/heads/main is protected in strict mode; push must target a "
+            "node worktree branch (node-<id>), never main directly"
+        )
+    m = re.match(_NODE_BRANCH_RE, ref_name)
+    if not m:
+        return False, f"{ref_name}: not a recognized muvue node-worktree branch"
+    node_id = int(m.group(1))
+    node = conn.execute(
+        "SELECT status, worktree FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+    ).fetchone()
+    if node is None:
+        return False, f"{ref_name}: no such node {node_id}"
+    if node["worktree"] is None:
+        return False, f"{ref_name}: node {node_id} has no bound worktree"
+    if node["status"] not in _ACTIVE_STATUSES:
+        return False, (
+            f"{ref_name}: node {node_id} is status={node['status']!r}, "
+            f"not in {_ACTIVE_STATUSES}"
+        )
+    return True, ""
+
+
+def evaluate_ref_updates(conn, lines: list[str]) -> tuple[bool, list[str]]:
+    """All-or-nothing over `<old> <new> <ref>` lines, like git itself."""
+    messages = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        ok, reason = evaluate_ref_update(conn, parts[2])
+        if not ok:
+            messages.append(reason)
+    return not messages, messages
+
+
+def pre_receive(airlock_dir: str, lines: list[str]) -> HookOutcome:
+    """Server side, in the strict-mode airlock (a bare repo with no
+    `.muvue/`): the marker file names the real repo whose DB is checked."""
+    marker = os.path.join(airlock_dir, AIRLOCK_REPO_ROOT_MARKER)
+    if not os.path.exists(marker):
+        return HookOutcome(1, "", f"muvue: {airlock_dir} is not a muvue airlock (missing {AIRLOCK_REPO_ROOT_MARKER})\n")
+    with open(marker) as f:
+        repo_root = f.read().strip()
+    if not os.path.exists(os.path.join(repo_root, DB_RELPATH)):
+        return HookOutcome(1, "", f"muvue: no {DB_RELPATH} under {repo_root}\n")
+    accept, messages = _read_db(repo_root, lambda c: evaluate_ref_updates(c, lines))
+    return HookOutcome(0 if accept else 1, "", "".join(f"muvue: rejected: {m}\n" for m in messages))
+
+
+def _config_mode(repo_root: str) -> str:
+    import tomllib
+
+    try:
+        with open(os.path.join(repo_root, ".muvue", "config.toml"), "rb") as f:
+            return tomllib.load(f).get("mode", "light")
+    except (OSError, tomllib.TOMLDecodeError):
+        return "light"
+
+
+def _pushed_messages(repo_root: str, local_sha: str, remote_sha: str) -> list[str]:
+    import subprocess
+
+    span = [local_sha, "--not", "--remotes"] if remote_sha == _ZERO_SHA else [f"{remote_sha}..{local_sha}"]
+    out = subprocess.run(
+        ["git", "log", "--format=%B%x00", *span], cwd=repo_root, capture_output=True, text=True,
+    )
+    return out.stdout.split("\x00") if out.returncode == 0 else []
+
+
+def pre_push(repo_root: str, lines: list[str]) -> HookOutcome:
+    """Strict mode (plan section 7: "pre-push (strict)"): node work
+    reaches a remote only through review and merge. A pushed commit whose
+    `Muvue-Node:`/`Refs:` trailer names a node that isn't `done` means
+    that work skipped the airlock, so the push is refused. Light mode only
+    spools the event."""
+    import re
+
+    _append_queue(repo_root, {"event": "pre-push", "ts": _now_iso()})
+    if _config_mode(repo_root) != "strict":
+        return HookOutcome()
+    referenced: dict[int, str] = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4 or parts[1] == _ZERO_SHA:
+            continue  # malformed, or a branch deletion
+        for message in _pushed_messages(repo_root, parts[1], parts[3]):
+            for value in re.findall(_TRAILER_RE, message, re.MULTILINE):
+                for token in re.split(r"[,\s]+", value.strip()):
+                    if token.isdigit():
+                        referenced.setdefault(int(token), parts[2])
+    if not referenced:
+        return HookOutcome()
+
+    def statuses(conn):
+        return {
+            node_id: (conn.execute("SELECT status FROM nodes WHERE id = ?", (node_id,)).fetchone() or {"status": None})["status"]
+            for node_id in referenced
+        }
+
+    problems = [
+        f"{ref}: a pushed commit carries Muvue-Node: {node_id}, which is "
+        f"{status or 'unknown'}; in strict mode node work reaches a remote after review "
+        "and `muvue merge`"
+        for node_id, status in _read_db(repo_root, statuses).items()
+        if status != "done"
+        for ref in [referenced[node_id]]
+    ]
+    return HookOutcome(1 if problems else 0, "", "".join(f"muvue: rejected: {p}\n" for p in problems))
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         return 0
     name = argv[0]
     path = argv[1] if len(argv) > 1 else "."
+    if name == "pre-receive":
+        # Runs inside the bare airlock, which has no `.muvue/`. Unlike
+        # the other hooks this one fails closed: it is the enforcement.
+        outcome = pre_receive(os.getcwd(), sys.stdin.read().splitlines())
+        sys.stderr.write(outcome.stderr)
+        return outcome.exit_code
     repo_root = _find_repo_root(path)
     if repo_root is None:
         # No .muvue/ found -- nothing to spool against, nothing to
@@ -416,14 +617,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if name == "pre-push":
-        _append_queue(repo_root, {"event": "pre-push", "ts": _now_iso()})
-        return 0
+        outcome = pre_push(repo_root, sys.stdin.read().splitlines())
+        sys.stderr.write(outcome.stderr)
+        return outcome.exit_code
 
-    # Unknown/unsupported event name (e.g. `pre-receive`, which runs
-    # server-side in a bare airlock repo with no `.muvue/` -- it is
-    # never reached via this branch, and stays on the full `muvue hook
-    # pre-receive` CLI path; see docs/decisions.md). Fail open.
-    return 0
+    return 0  # unknown event name: fail open
 
 
 if __name__ == "__main__":

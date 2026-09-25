@@ -360,6 +360,9 @@ def test_lesson_not_retrieved_enough_is_archived(conn, project):
     nodes.start(conn, task["id"], owner="a")
     nodes.fail(conn, task["id"], owner="a", lesson="stale lesson", trigger="t", do_instead="d", scope="s")
     note = conn.execute("SELECT id FROM notes WHERE kind = 'lesson'").fetchone()
+    # Three later projects went by without a brief retrieving it.
+    for i in range(3):
+        projects.create_project(conn, goal=f"later {i}")
 
     archived = drift.decay_lessons(conn, k=3)
     assert note["id"] in archived
