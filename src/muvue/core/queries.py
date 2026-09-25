@@ -10,12 +10,17 @@ for (node + notes + commits + predicted_touches)."""
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import sqlite3
+import subprocess
+from collections import deque
+from pathlib import Path
 
 from . import db as db_mod
 from . import drift as drift_mod
 from . import nodes as nodes_mod
+from . import risk as risk_mod
 
 STRUCTURE_SEARCH_LIMIT = 3
 
@@ -179,3 +184,70 @@ def status_summary(conn: sqlite3.Connection, project_id: int | None = None) -> d
             "SELECT status, COUNT(*) c FROM nodes WHERE deleted_at IS NULL GROUP BY status",
         )
     return {"project_id": project_id, "counts": {r["status"]: r["c"] for r in rows}}
+
+
+DIFF_MAX_LINES = 3000
+
+
+def _git_out(cwd: str | Path, *args: str) -> str | None:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return result.stdout if result.returncode == 0 else None
+
+
+def node_diff(conn: sqlite3.Connection, node_id: int, repo_root: str | Path) -> dict:
+    """The node panel's diff (plan section 8). A node with linked
+    commits shows their patches. Otherwise a node with a live worktree
+    shows its work so far against its branch point, uncommitted edits
+    included. `source` says which, or `"none"`."""
+    node = nodes_mod.get_node(conn, node_id)
+    shas = risk_mod.node_commit_shas(conn, node_id)
+    worktree = node["worktree"] if node["worktree"] and Path(node["worktree"]).exists() else None
+    text, source = "", "none"
+    if shas:
+        # Strict-mode commits live in the airlock; its worktree can read them.
+        for cwd in filter(None, (repo_root, worktree)):
+            patches = [_git_out(cwd, "show", "--format=commit %H%n%s%n", sha) for sha in shas]
+            if all(p is not None for p in patches):
+                text, source = "\n".join(patches), "commits"
+                break
+    elif worktree:
+        head = (_git_out(repo_root, "rev-parse", "HEAD") or "").strip()
+        base = (_git_out(worktree, "merge-base", "HEAD", head) or "").strip() if head else ""
+        diff = _git_out(worktree, "diff", base or "main")
+        if diff is not None:
+            text, source = diff, "worktree"
+    lines = text.splitlines()
+    truncated = len(lines) > DIFF_MAX_LINES
+    if truncated:
+        text = "\n".join(lines[:DIFF_MAX_LINES]) + "\n"
+    return {"node_id": node_id, "source": source, "diff": text, "truncated": truncated, "commits": shas}
+
+
+def tail_log(repo_root: str | Path, node_id: int, lines: int) -> str:
+    """The last `lines` lines of a node's driver output: the runner's
+    `<id>.log`, then `run-<id>.log` from a dashboard-started run."""
+    logs = Path(repo_root) / ".muvue" / "logs"
+    tail: deque[str] = deque(maxlen=max(lines, 0))
+    for name in (f"run-{node_id}.log", f"{node_id}.log"):
+        path = logs / name
+        if path.exists():
+            with open(path, errors="replace") as f:
+                tail.extend(f)
+    return "".join(tail)
+
+
+def touch_drift(conn: sqlite3.Connection) -> float:
+    """Prediction-vs-actual touch drift (plan section 8 KPIs): over the
+    nodes with recorded actual touches, the mean share of those paths no
+    predicted glob covers. 0.0 when nothing has been committed yet."""
+    predicted: dict[int, list[str]] = {}
+    for row in db_mod.query_all(conn, "SELECT node_id, path_glob FROM predicted_touches"):
+        predicted.setdefault(row["node_id"], []).append(row["path_glob"])
+    actual: dict[int, list[str]] = {}
+    for row in db_mod.query_all(conn, "SELECT node_id, path FROM actual_touches"):
+        actual.setdefault(row["node_id"], []).append(row["path"])
+    shares = [
+        sum(not any(fnmatch.fnmatch(p, g) for g in predicted.get(node_id, [])) for p in paths) / len(paths)
+        for node_id, paths in actual.items()
+    ]
+    return sum(shares) / len(shares) if shares else 0.0

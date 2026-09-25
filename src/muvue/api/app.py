@@ -35,7 +35,7 @@ from typing import Iterator
 from urllib.parse import urlsplit
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from muvue import core
 from muvue.core.config import MuvueConfig
@@ -157,29 +157,22 @@ def create_app(
         if origin is not None and not _origin_ok(origin):
             return JSONResponse({"detail": "invalid Origin header"}, status_code=403)
 
-        # Control 4 (JSON-only half): every mutating request that
-        # actually carries a body must use Content-Type: application/
-        # json. A plain HTML <form> can only submit application/x-www-
-        # form-urlencoded or multipart/form-data without JavaScript, so
-        # this alone defeats classic HTML-form CSRF; JS-driven cross-
-        # origin requests are already blocked by the Origin check above.
-        # A body-less mutation (e.g. `POST /projects/{id}/pause`, no
-        # payload) has no attacker-controlled content to smuggle via a
-        # form submission in the first place, so it's exempt from the
-        # content-type check itself -- it still needs a valid session
-        # token, enforced separately by each route's `_require_session`.
+        # Control 4 (JSON-only half): every mutating request must use
+        # Content-Type: application/json, with or without a body. A
+        # plain HTML <form> can only submit form-encoded or multipart
+        # bodies, and a cross-site `fetch` with a JSON content type
+        # needs a preflight this app never answers, so this defeats
+        # form CSRF. Body-less POSTs such as `pause` are included: an
+        # empty form submission to them would otherwise carry the
+        # session cookie (decision #143).
         if request.method in _MUTATING_METHODS:
-            content_length = request.headers.get("content-length")
-            has_body = content_length not in (None, "0")
-            if has_body:
-                content_type = request.headers.get("content-type", "")
-                media_type = content_type.split(";", 1)[0].strip().lower()
-                if media_type != "application/json":
-                    return JSONResponse(
-                        {"detail": "mutating requests with a body must use "
-                                   "Content-Type: application/json"},
-                        status_code=403,
-                    )
+            content_type = request.headers.get("content-type", "")
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                return JSONResponse(
+                    {"detail": "mutating requests must use Content-Type: application/json"},
+                    status_code=403,
+                )
 
         response = await call_next(request)
         # Belt-and-suspenders: this app never adds CORS middleware, but
@@ -245,32 +238,50 @@ def create_app(
             conn.close()
 
     # ------------------------------------------------------------------
-    # Auth exchange (plan v4 section 8a, control 5): the dashboard's own
-    # JS reads the one-time URL fragment (never sent over HTTP, so it
-    # never reaches this endpoint or any server log via the URL itself)
-    # and POSTs its value here as JSON. On a match, mints an HttpOnly,
-    # SameSite=Strict cookie carrying that same token -- `Secure` is
-    # omitted because loopback HTTP has no TLS to require it; SameSite
-    # =Strict is what actually matters (a cross-site request, even a
-    # "simple" same-site-looking one, never carries this cookie).
-    # `HttpOnly` means page JS (or an XSS payload) can never read the
-    # cookie back out. Nothing here is ever written to disk.
+    # Auth exchange (plan v4 section 8a, control 5). `serve` prints a
+    # dashboard link whose `#n=` fragment is a single-use nonce, not the
+    # session token. The fragment never goes over HTTP; the page's own
+    # JS POSTs it here and gets an HttpOnly, SameSite=Strict cookie
+    # carrying the token. `Secure` is omitted because loopback HTTP has
+    # no TLS. Nothing here is written to disk.
+    #
+    # `"header": true` also returns the token in the body. The
+    # dashboard asks for it only when it runs inside an iframe (the VS
+    # Code webview), where the page is a cross-site subframe and the
+    # SameSite=Strict cookie is never sent. The page keeps it in
+    # memory (decision #144).
     # ------------------------------------------------------------------
 
     @app.post("/auth/exchange")
-    def exchange_token(token: str = Body(..., embed=True)) -> JSONResponse:
-        if not session.verify_and_touch(token):
-            raise HTTPException(status_code=403, detail="invalid token")
-        resp = JSONResponse({"ok": True})
+    def exchange_nonce(
+        nonce: str = Body(..., embed=True), header: bool = Body(default=False, embed=True),
+    ) -> JSONResponse:
+        if not session.consume_nonce(nonce):
+            raise HTTPException(status_code=403, detail="invalid or already used nonce")
+        resp = JSONResponse({"ok": True, "token": session.token} if header else {"ok": True})
         resp.set_cookie(
             SESSION_COOKIE_NAME,
-            token,
+            session.token,
             httponly=True,
             samesite="strict",
             secure=False,
             path="/",
         )
         return resp
+
+    @app.post("/auth/nonce")
+    def mint_nonce(request: Request) -> dict:
+        """A fresh one-time dashboard nonce for a caller that already
+        holds the token (the VS Code extension opening its webview)."""
+        _require_session(request)
+        return {"nonce": session.mint_nonce()}
+
+    @app.get("/auth/check")
+    def auth_check(request: Request) -> dict:
+        """200 when the request carries a live session, else 403. The
+        dashboard uses it to tell whether its cookie is being sent."""
+        _require_session(request)
+        return {"ok": True}
 
     # ------------------------------------------------------------------
     # Ops / dashboard
@@ -344,6 +355,12 @@ def create_app(
                     "SELECT * FROM nodes WHERE status = 'blocked' AND deleted_at IS NULL",
                 )
             )
+            awaiting_approval = _rows_to_list(
+                core.db.query_all(
+                    conn,
+                    "SELECT * FROM nodes WHERE status = 'awaiting_approval' AND deleted_at IS NULL",
+                )
+            )
             # P7 drift loop items 2/4: unattributed commits and audit's
             # drafted diffs are unacked `events` rows (same "unacked ==
             # still in the inbox" convention `/events/{id}/ack` already
@@ -392,6 +409,7 @@ def create_app(
             "unverified_external": unverified,
             "structure_updates": structure_updates,
             "blocked": blocked,
+            "awaiting_approval": awaiting_approval,
             "signals": signals,
             "audit_items": audit_items,
             "unattributed_commits": unattributed_commits,
@@ -431,14 +449,19 @@ def create_app(
             # docs/decisions.md).
             driver_states = core.runner.driver_budget_states(conn, config)
             drift = core.drift.drift_pct(conn, repo_root)
+            touch_drift = core.queries.touch_drift(conn)
         rubber_stamp_rate = (rubber_stamps / total_reviewed) if total_reviewed else 0.0
         tokens_per_node = (total_tokens / nodes_with_usage) if nodes_with_usage else 0.0
         spend_vs_budget = max((s["pct"] for s in driver_states.values()), default=0.0)
         return {
             "drift_pct": drift,
+            "touch_drift": touch_drift,
             "rubber_stamp_rate": rubber_stamp_rate,
+            "approvals_timed": total_reviewed,
+            "rubber_stamps": rubber_stamps,
             "tokens_per_node": tokens_per_node,
             "spend_vs_budget": spend_vs_budget,
+            "spend_by_driver": driver_states,
         }
 
     # ------------------------------------------------------------------
@@ -528,6 +551,30 @@ def create_app(
                 rows = core.db.query_all(conn, "SELECT * FROM nodes WHERE deleted_at IS NULL")
         return _rows_to_list(rows)
 
+    @app.get("/graph")
+    def graph(project_id: int | None = None) -> dict:
+        """The tree/DAG view (plan section 8): nodes plus parent->child
+        and dependency->dependent edges."""
+        with _conn() as conn:
+            where, params = ("AND project_id = ?", (project_id,)) if project_id is not None else ("", ())
+            rows = core.db.query_all(
+                conn,
+                "SELECT id, project_id, parent_id, kind, title, status, risk_tier, owner FROM nodes "
+                f"WHERE deleted_at IS NULL {where} ORDER BY id",
+                params,
+            )
+            ids = {r["id"] for r in rows}
+            edges = [
+                {"from": r["parent_id"], "to": r["id"], "kind": "parent"}
+                for r in rows if r["parent_id"] in ids
+            ]
+            edges += [
+                {"from": d["depends_on"], "to": d["node_id"], "kind": "dep"}
+                for d in core.db.query_all(conn, "SELECT node_id, depends_on FROM deps ORDER BY rowid")
+                if d["node_id"] in ids and d["depends_on"] in ids
+            ]
+        return {"nodes": _rows_to_list(rows), "edges": edges}
+
     @app.get("/brief")
     def get_brief(
         node_id: int, budget: int = core.brief.DEFAULT_BUDGET_TOKENS, since: int | None = None
@@ -555,41 +602,24 @@ def create_app(
 
     @app.get("/nodes/{node_id}/diff")
     def node_diff(node_id: int) -> dict:
-        """No real diff capture exists yet (no git integration until
-        P3's hooks/structure layer) -- stub per the P2 prompt: returns
-        what P0/P1 already track (committed files, predicted touches)."""
+        """The node's real diff: its commits' patches, or its worktree
+        against the branch point (`core.queries.node_diff`)."""
+        with _conn() as conn:
+            try:
+                return core.queries.node_diff(conn, node_id, repo_root)
+            except LookupError as e:
+                _handle_core_error(e)
+
+    @app.get("/nodes/{node_id}/logs", response_class=PlainTextResponse)
+    def node_logs(node_id: int, lines: int = 200) -> str:
+        """Tail of the node's driver output (`.muvue/logs/`, written by
+        the runner). Empty until a runner has driven the node."""
         with _conn() as conn:
             try:
                 core.nodes.get_node(conn, node_id)
             except LookupError as e:
                 _handle_core_error(e)
-            commits = _rows_to_list(
-                core.db.query_all(conn, "SELECT * FROM node_commits WHERE node_id = ?", (node_id,))
-            )
-        return {"node_id": node_id, "commits": commits, "diff": None}
-
-    @app.get("/nodes/{node_id}/logs")
-    def node_logs(node_id: int) -> StreamingResponse:
-        """Stub stream (plan section 4): no live agent process exists
-        until P5's runner, so this streams the node's own event history
-        as newline-delimited JSON -- real content, just not a live tail."""
-
-        def gen():
-            with _conn() as conn:
-                try:
-                    core.nodes.get_node(conn, node_id)
-                except LookupError as e:
-                    _handle_core_error(e)
-                rows = core.db.query_all(
-                    conn,
-                    "SELECT ts, actor, type, payload FROM events WHERE node_id = ? "
-                    "ORDER BY id ASC",
-                    (node_id,),
-                )
-            for r in rows:
-                yield json.dumps(dict(r)) + "\n"
-
-        return StreamingResponse(gen(), media_type="application/x-ndjson")
+        return core.queries.tail_log(repo_root, node_id, min(max(lines, 1), 5000))
 
     @app.post("/nodes/{node_id}/start")
     def start_node(
@@ -810,19 +840,29 @@ def create_app(
 
     @app.post("/nodes/{node_id}/comment")
     def comment_on_node(
-        node_id: int, request: Request, text: str = Body(...), pinned: bool = Body(default=False)
+        node_id: int, request: Request, text: str = Body(...), pinned: bool = Body(default=False),
+        line: int | None = Body(default=None),
     ) -> dict:
         """Spec-document inline comments (plan section 8: "spec document
         view with inline comments (stored as `feedback` events)") -- reuse
         `nodes.add_note`'s existing `feedback` note kind/dedupe machinery
-        rather than adding a parallel comment table."""
+        rather than adding a parallel comment table. `line` anchors the
+        comment to a line of the node's body as an `[L<n>] ` prefix, so
+        the agent reading the note in its brief sees the anchor too
+        (decision #145)."""
         _require_session(request)
         with _conn() as conn:
             try:
+                note_text = text
+                if line is not None:
+                    body_lines = (core.nodes.get_node(conn, node_id)["body_md"] or "").splitlines()
+                    if not 1 <= line <= len(body_lines):
+                        raise ValueError(f"line {line} is outside the node body (1-{len(body_lines)})")
+                    note_text = f"[L{line}] {text}"
                 result = core.idempotency.once(
                     conn, _request_id(request), "comment",
                     lambda: core.nodes.add_note(
-                    conn, node_id, kind="feedback", text=text, actor="human", pinned=pinned,
+                    conn, node_id, kind="feedback", text=note_text, actor="human", pinned=pinned,
                     actor_evidence="dashboard_token",
                 ),
                 )

@@ -97,7 +97,7 @@ def test_close_preview_shows_closeable_diff(client, done_task, token):
 def test_close_commits_and_flips_phase(client, done_task, token):
     r = client.post(
         f"/projects/{done_task['project']['id']}/close",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     assert r.status_code == 200
     body = r.json()
@@ -130,7 +130,7 @@ def test_import_links_external_ref(client, done_task, token):
 def test_merge_with_pr_flag_includes_body(client, done_task, token):
     r = client.post(
         f"/nodes/{done_task['task']['id']}/merge?pr=true",
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     assert r.status_code == 200
     body = r.json()

@@ -2,20 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>muvue</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root { color-scheme: dark; }
   body { font-family: system-ui, sans-serif; margin: 0; background: #0e0e12; color: #e6e6e6; }
-  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #17171d; border-bottom: 1px solid #2a2a33; position: sticky; top: 0; z-index: 5; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; background: #17171d; border-bottom: 1px solid #2a2a33; position: sticky; top: 0; z-index: 5; }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+  header .spacer { flex: 1; }
   #status-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #294; }
   #status-pill.paused { background: #a33; }
-  nav { display: flex; gap: 4px; padding: 8px 16px; background: #101015; border-bottom: 1px solid #22222a; }
+  #status-pill.closed { background: #555; }
+  #auth-state { font-size: 11px; color: #8a8a95; }
+  #auth-state.ok { color: #7c7; }
+  select, textarea, input[type=text], input[type=password] { background: #101015; color: #eee; border: 1px solid #2a2a33; border-radius: 6px; padding: 5px 6px; font-family: inherit; font-size: 13px; }
+  textarea, input[type=text], input[type=password] { width: 100%; box-sizing: border-box; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 16px; background: #101015; border-bottom: 1px solid #22222a; }
   nav button { background: none; border: none; color: #9a9aa5; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
   nav button.active { background: #23232d; color: #fff; }
-  main { padding: 16px; max-width: 1100px; margin: 0 auto; }
-  .card { background: #17171d; border: 1px solid #24242e; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  nav .count { background: #a33; color: #fff; border-radius: 8px; padding: 0 6px; font-size: 10px; margin-left: 4px; }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  .card { background: #17171d; border: 1px solid #24242e; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .muted { color: #8a8a95; font-size: 12px; }
   .badge { padding: 1px 7px; border-radius: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
   .status-pending { background: #444; }
@@ -29,29 +37,60 @@
   .tier-low { color: #7c7; }
   .tier-medium { color: #cc7; }
   .tier-high { color: #e77; }
-  a.nodelink, button.linklike { color: #9cf; background: none; border: none; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
-  textarea, input[type=text], input[type=password] { width: 100%; box-sizing: border-box; background: #101015; color: #eee; border: 1px solid #2a2a33; border-radius: 6px; padding: 6px; font-family: inherit; }
-  button.action { background: #2b2b58; color: #dde; border: 1px solid #3a3a70; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button.linklike { color: #9cf; background: none; border: none; cursor: pointer; padding: 0; font: inherit; text-decoration: underline; text-align: left; }
+  button.action { background: #2b2b58; color: #dde; border: 1px solid #3a3a70; border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
   button.action:hover { background: #35356a; }
-  pre { white-space: pre-wrap; word-break: break-word; background: #101015; padding: 8px; border-radius: 6px; }
-  #panel-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 10; }
+  button.action.danger { background: #582b2b; border-color: #703a3a; }
+  button.action:disabled { opacity: 0.5; cursor: default; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #101015; padding: 8px; border-radius: 6px; font-size: 12px; margin: 4px 0; }
+  pre.diff { white-space: pre; overflow-x: auto; max-height: 360px; }
+  pre.logs { max-height: 260px; overflow: auto; }
+  .d-add { color: #7c7; } .d-del { color: #e77; } .d-hunk { color: #9cf; } .d-meta { color: #8a8a95; }
+  h2 { font-size: 15px; margin: 14px 0 6px; } h3 { font-size: 13px; margin: 12px 0 4px; color: #bbb; }
+  ul.criteria { margin: 4px 0; padding-left: 20px; }
+  #panel-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: flex-start; justify-content: center; padding: 32px 16px; z-index: 10; }
   #panel-overlay.open { display: flex; }
-  #panel { background: #17171d; border: 1px solid #2a2a33; border-radius: 10px; padding: 16px; width: 100%; max-width: 640px; max-height: 85vh; overflow: auto; }
-  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  #panel { background: #17171d; border: 1px solid #2a2a33; border-radius: 10px; padding: 16px; width: 100%; max-width: 820px; max-height: 88vh; overflow: auto; box-sizing: border-box; }
+  #panel h2 { margin-top: 0; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
   .kpi-grid .card { text-align: center; }
-  .kpi-grid .kpi-value { font-size: 22px; font-weight: 700; }
-  #token-form { display: flex; gap: 6px; margin-bottom: 10px; }
+  .kpi-value { font-size: 22px; font-weight: 700; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { border-bottom: 1px solid #24242e; padding: 5px 6px; text-align: left; }
+  #token-form { display: none; gap: 6px; margin-bottom: 10px; }
+  #token-form.open { display: flex; }
+  #dag-wrap { overflow-x: auto; }
+  svg.dag .node rect { stroke: #0e0e12; stroke-width: 1.5; rx: 6; cursor: pointer; }
+  svg.dag .node:hover rect { stroke: #fff; }
+  svg.dag .node text { fill: #fff; font-size: 11px; pointer-events: none; }
+  svg.dag .node text.sub { fill: #ddd; font-size: 9px; }
+  svg.dag path.edge { fill: none; stroke: #55556a; stroke-width: 1.5; }
+  svg.dag path.edge.dep { stroke: #c9a24a; stroke-dasharray: 5 4; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; margin-bottom: 8px; align-items: center; }
+  .spec-line { display: flex; gap: 8px; font-family: ui-monospace, monospace; font-size: 12px; padding: 1px 4px; border-radius: 4px; cursor: pointer; }
+  .spec-line:hover { background: #20202a; }
+  .spec-line .ln { color: #666; min-width: 28px; text-align: right; user-select: none; }
+  .spec-line .tx { white-space: pre-wrap; flex: 1; }
+  .spec-comment { margin: 2px 0 6px 36px; padding: 4px 8px; border-left: 3px solid #77a; background: #1b1b24; font-size: 12px; }
+  .spec-form { margin: 2px 0 6px 36px; display: flex; gap: 6px; }
 </style>
 </head>
 <body>
 <header>
   <h1>muvue</h1>
+  <select id="project-select" title="project"></select>
   <span id="status-pill">connecting...</span>
+  <span class="spacer"></span>
+  <span id="auth-state">read-only</span>
+  <button class="action" id="pause-btn">pause</button>
+  <button class="action" id="resume-btn">resume</button>
+  <button class="action" id="close-btn">close project...</button>
   <span class="muted" id="protocol-info"></span>
 </header>
 <nav id="tabs">
   <button data-tab="tree" class="active">tree</button>
-  <button data-tab="inbox">inbox</button>
+  <button data-tab="inbox">inbox<span class="count" id="inbox-count" hidden></span></button>
   <button data-tab="spec">spec</button>
   <button data-tab="timeline">timeline</button>
   <button data-tab="revisions">revisions</button>
@@ -59,10 +98,8 @@
 </nav>
 <main>
   <div id="token-form">
-    <input type="password" id="token-input" placeholder="session token (for approve/reject/pause/...)">
-    <button class="action" id="token-save">save</button>
-    <button class="action" id="pause-btn">pause</button>
-    <button class="action" id="resume-btn">resume</button>
+    <input type="password" id="token-input" placeholder="api token printed by `muvue serve` (kept in this tab's memory only)">
+    <button class="action" id="token-save">use token</button>
   </div>
   <section id="view-tree" class="view"></section>
   <section id="view-inbox" class="view" hidden></section>
@@ -77,50 +114,60 @@
 <script>
 "use strict";
 
-// v4 section 8a control 5: the session token never touches localStorage
-// (or any other disk-backed storage) -- an XSS payload or a cooperating
-// same-origin script reading localStorage could otherwise exfiltrate a
-// token that survives page reloads indefinitely. `state.token` here is
-// only a same-tab, in-memory fallback for a manually pasted token (e.g.
-// while iterating without exchanging a fresh `serve` link); the primary
-// path is the HttpOnly `muvue_session` cookie minted by `/auth/exchange`
-// below, which page JS can never read back out at all.
-const state = { projectId: null, token: "" };
+// Session handling (v4 section 8a control 5). `muvue serve` prints a
+// link whose `#n=` fragment is a single-use nonce. The page exchanges
+// it for an HttpOnly, SameSite=Strict cookie, so page JS never sees
+// the token. Inside the VS Code webview the page is a cross-site
+// iframe and that cookie is never sent, so there the exchange also
+// returns the token and it is kept in `state.token`, in memory only.
+// Nothing here writes to web storage or any other persistent store.
+const state = { projectId: null, projects: [], token: "", authed: false };
 
 function api(path, opts) {
   opts = opts || {};
   const headers = Object.assign({"Content-Type": "application/json"}, opts.headers || {});
   if (state.token) headers["Authorization"] = "Bearer " + state.token;
-  return fetch(path, Object.assign({}, opts, {headers, credentials: "same-origin"})).then(function (r) {
-    return r.json().then(function (body) {
+  return fetch(path, Object.assign({}, opts, {headers: headers, credentials: "same-origin"})).then(function (r) {
+    const type = r.headers.get("content-type") || "";
+    const parse = type.indexOf("application/json") === 0 ? r.json() : r.text();
+    return parse.then(function (body) {
+      if (r.status === 403 && opts.method === "POST") { setAuthed(false); }
       if (!r.ok) { throw new Error((body && body.detail) || r.statusText); }
       return body;
     });
   });
 }
 
-// One-time URL-fragment hand-off (v4 section 8a control 5): `muvue
-// serve` prints a link with `#t=<token>`. The fragment is never sent
-// over HTTP by the browser (so it never reaches this or any other
-// server, and typically isn't logged the way a query string would be),
-// but this page's own JS can read `location.hash` and exchange it here
-// for an HttpOnly, SameSite=Strict session cookie -- then scrubs the
-// fragment from the visible URL/history so it doesn't linger.
-function exchangeFragmentToken() {
-  const hash = window.location.hash || "";
-  const match = hash.match(/(?:^#|[&])t=([^&]+)/);
-  if (!match) return;
-  const token = decodeURIComponent(match[1]);
-  fetch("/auth/exchange", {
+function post(path, body) {
+  return api(path, {method: "POST", body: JSON.stringify(body || {})});
+}
+
+function setAuthed(ok) {
+  state.authed = ok;
+  const label = document.getElementById("auth-state");
+  label.textContent = ok ? "signed in" : "read-only";
+  label.classList.toggle("ok", ok);
+  document.getElementById("token-form").classList.toggle("open", !ok);
+}
+
+function checkAuth() {
+  return api("/auth/check").then(function () { setAuthed(true); }, function () { setAuthed(false); });
+}
+
+function exchangeFragmentNonce() {
+  const match = (window.location.hash || "").match(/(?:^#|[&])n=([^&]+)/);
+  if (!match) return checkAuth();
+  const embedded = window.top !== window.self;
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  return fetch("/auth/exchange", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     credentials: "same-origin",
-    body: JSON.stringify({token: token}),
-  }).then(function (r) {
-    if (r.ok) {
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-    }
-  }).catch(function () { /* exchange endpoint unreachable; dashboard still usable read-only */ });
+    body: JSON.stringify({nonce: decodeURIComponent(match[1]), header: embedded}),
+  }).then(function (r) { return r.ok ? r.json() : {}; }).then(function (body) {
+    if (body.token) state.token = body.token;
+    return checkAuth();
+  }, function () { return checkAuth(); });
 }
 
 function el(tag, attrs, children) {
@@ -130,16 +177,46 @@ function el(tag, attrs, children) {
     else if (k === "class") node.className = attrs[k];
     else node.setAttribute(k, attrs[k]);
   });
-  (children || []).forEach(function (c) { node.appendChild(c); });
+  (children || []).forEach(function (c) { node.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
   return node;
 }
 
-function statusBadge(status) {
-  return el("span", {class: "badge status-" + status, text: status});
+function button(text, onClick, cls) {
+  const b = el("button", {class: "action" + (cls ? " " + cls : ""), text: text});
+  b.addEventListener("click", onClick);
+  return b;
 }
 
-function tierLabel(tier) {
-  return el("span", {class: "tier-" + tier, text: tier + " risk"});
+function statusBadge(status) { return el("span", {class: "badge status-" + status, text: status}); }
+function tierLabel(tier) { return el("span", {class: "tier-" + tier, text: tier + " risk"}); }
+function none(view) { view.appendChild(el("p", {class: "muted", text: "none"})); }
+function fail(e) { alert(e.message); }
+function refresh() { refreshStatus(); loadTab(currentTab); }
+
+function nodeLink(n, label) {
+  const link = el("button", {class: "linklike", text: label || ("#" + n.id + " " + n.title)});
+  link.addEventListener("click", function () { openPanel(n.id); });
+  return link;
+}
+
+function projectQuery(prefix) {
+  return state.projectId ? prefix + "project_id=" + state.projectId : "";
+}
+
+// -- diff rendering ----------------------------------------------------
+
+function renderDiff(text) {
+  const pre = el("pre", {class: "diff"});
+  if (!text) { pre.textContent = "(no diff)"; return pre; }
+  text.split("\n").forEach(function (line) {
+    let cls = "";
+    if (line.indexOf("+++") === 0 || line.indexOf("---") === 0 || line.indexOf("diff ") === 0 || line.indexOf("commit ") === 0 || line.indexOf("index ") === 0) cls = "d-meta";
+    else if (line.indexOf("@@") === 0) cls = "d-hunk";
+    else if (line[0] === "+") cls = "d-add";
+    else if (line[0] === "-") cls = "d-del";
+    pre.appendChild(el("span", {class: cls, text: line + "\n"}));
+  });
+  return pre;
 }
 
 // -- node panel --------------------------------------------------------
@@ -149,98 +226,219 @@ function openPanel(nodeId) {
     const n = data.node;
     const panel = document.getElementById("panel");
     panel.textContent = "";
-    panel.appendChild(el("h2", {text: n.title}));
-    panel.appendChild(el("div", {class: "row"}, [statusBadge(n.status), tierLabel(n.risk_tier)]));
-    panel.appendChild(el("h3", {text: "criteria"}));
-    panel.appendChild(el("pre", {text: n.criteria_json}));
-    if (n.summary) {
-      panel.appendChild(el("h3", {text: "summary"}));
-      panel.appendChild(el("pre", {text: n.summary}));
-    }
+    panel.appendChild(el("h2", {text: "#" + n.id + " " + n.title}));
+    panel.appendChild(el("div", {class: "row"}, [
+      el("span", {}, [statusBadge(n.status), " ", tierLabel(n.risk_tier)]),
+      el("span", {class: "muted", text: n.kind + (n.owner ? " - owner " + n.owner : "") + (n.parent_id ? " - parent #" + n.parent_id : "")}),
+    ]));
+    if (n.block_reason) panel.appendChild(el("p", {class: "muted", text: "blocked: " + n.block_reason}));
+    if (n.body_md) { panel.appendChild(el("h3", {text: "body"})); panel.appendChild(el("pre", {text: n.body_md})); }
+
+    panel.appendChild(el("h3", {text: "criteria (" + n.criteria_mode + ", " + data.verification.replace(/_/g, " ") + ")"}));
+    let criteria = [];
+    try { criteria = JSON.parse(n.criteria_json || "[]"); } catch (e) { criteria = [String(n.criteria_json)]; }
+    if (criteria.length) {
+      const list = el("ul", {class: "criteria"});
+      criteria.forEach(function (c) { list.appendChild(el("li", {text: typeof c === "string" ? c : JSON.stringify(c)})); });
+      panel.appendChild(list);
+    } else panel.appendChild(el("p", {class: "muted", text: "(none)"}));
+
+    if (n.summary) { panel.appendChild(el("h3", {text: "summary"})); panel.appendChild(el("pre", {text: n.summary})); }
     panel.appendChild(el("h3", {text: "predicted touches"}));
     panel.appendChild(el("pre", {text: (data.predicted_touches || []).join("\n") || "(none)"}));
     panel.appendChild(el("h3", {text: "notes"}));
+    if (!(data.notes || []).length) panel.appendChild(el("p", {class: "muted", text: "(none)"}));
     (data.notes || []).forEach(function (note) {
       panel.appendChild(el("div", {class: "card"}, [
-        el("div", {class: "muted", text: note.kind + " - " + note.created_at}),
+        el("div", {class: "muted", text: note.kind + (note.pinned ? " (pinned)" : "") + " - " + note.created_at}),
         el("div", {text: note.text}),
       ]));
     });
     panel.appendChild(el("h3", {text: "commits"}));
     panel.appendChild(el("pre", {text: (data.commits || []).map(function (c) { return c.sha; }).join("\n") || "(none)"}));
 
+    panel.appendChild(el("h3", {text: "diff"}));
+    const diffSlot = el("div", {class: "muted", text: "loading..."});
+    panel.appendChild(diffSlot);
+    api("/nodes/" + n.id + "/diff").then(function (d) {
+      const label = {commits: "patches of the linked commits", worktree: "worktree against its branch point", none: "nothing committed yet"}[d.source];
+      diffSlot.replaceWith(el("div", {}, [el("div", {class: "muted", text: label + (d.truncated ? " (truncated)" : "")}), renderDiff(d.diff)]));
+    }, function (e) { diffSlot.textContent = e.message; });
+
+    panel.appendChild(el("div", {class: "row"}, [el("h3", {text: "logs (tail)"}), button("refresh", function () { loadLogs(); })]));
+    const logs = el("pre", {class: "logs", text: "loading..."});
+    panel.appendChild(logs);
+    function loadLogs() {
+      api("/nodes/" + n.id + "/logs?lines=200").then(function (t) {
+        logs.textContent = t || "(no driver output yet)";
+        logs.scrollTop = logs.scrollHeight;
+      }, function (e) { logs.textContent = e.message; });
+    }
+    loadLogs();
+
+    const actions = el("div", {class: "actions"});
     if (n.status === "review") {
-      const approveBtn = el("button", {class: "action", text: "approve"});
-      approveBtn.addEventListener("click", function () {
-        api("/nodes/" + n.id + "/approve", {method: "POST", body: JSON.stringify({target: "review"})})
-          .then(function () { closePanel(); loadTab(currentTab); })
-          .catch(function (e) { alert(e.message); });
-      });
-      const rejectBtn = el("button", {class: "action", text: "reject"});
-      rejectBtn.addEventListener("click", function () {
-        const feedback = prompt("feedback for rejection?") || "";
-        api("/nodes/" + n.id + "/reject", {method: "POST", body: JSON.stringify({feedback: feedback})})
-          .then(function () { closePanel(); loadTab(currentTab); })
-          .catch(function (e) { alert(e.message); });
-      });
-      panel.appendChild(approveBtn);
-      panel.appendChild(rejectBtn);
+      actions.appendChild(button("approve", function () {
+        post("/nodes/" + n.id + "/approve", {target: "review"}).then(closeAndRefresh, fail);
+      }));
+      actions.appendChild(button("reject", function () {
+        const feedback = prompt("what should change?");
+        if (!feedback) return;
+        post("/nodes/" + n.id + "/reject", {feedback: feedback}).then(closeAndRefresh, fail);
+      }, "danger"));
     }
-
+    if (n.status === "awaiting_approval") {
+      actions.appendChild(button("approve changed criteria", function () {
+        post("/nodes/" + n.id + "/approve", {target: "node"}).then(closeAndRefresh, fail);
+      }));
+    }
+    if (n.kind === "spec" && n.status === "pending") {
+      actions.appendChild(button("approve spec", function () {
+        post("/nodes/" + n.id + "/approve", {target: "spec"}).then(closeAndRefresh, fail);
+      }));
+    }
     if (n.status === "ready") {
-      const startBtn = el("button", {class: "action", text: "start with agent"});
-      startBtn.addEventListener("click", function () {
-        const agent = prompt("agent name (stub -- no driver yet)?", "claude") || "";
-        const owner = prompt("owner id?", "dashboard-user") || "dashboard-user";
-        api("/nodes/" + n.id + "/start?agent=" + encodeURIComponent(agent), {
-          method: "POST", body: JSON.stringify({owner: owner}),
-        }).then(function () { closePanel(); loadTab(currentTab); })
-          .catch(function (e) { alert(e.message); });
-      });
-      panel.appendChild(startBtn);
+      actions.appendChild(button("start with agent...", function () {
+        const agent = prompt("agent from config.toml [agents.*]", "claude");
+        if (!agent) return;
+        api("/nodes/" + n.id + "/start?agent=" + encodeURIComponent(agent), {method: "POST", body: "{}"})
+          .then(function (r) { alert("started runner pid " + r.spawned.pid + ", log " + r.spawned.log); closeAndRefresh(); }, fail);
+      }));
     }
-
-    const closeBtn = el("button", {class: "action", text: "close"});
-    closeBtn.addEventListener("click", closePanel);
-    panel.appendChild(document.createElement("br"));
-    panel.appendChild(closeBtn);
-
+    actions.appendChild(button("close", closePanel));
+    panel.appendChild(actions);
     document.getElementById("panel-overlay").classList.add("open");
-  }).catch(function (e) { alert(e.message); });
+  }, fail);
 }
 
-function closePanel() {
-  document.getElementById("panel-overlay").classList.remove("open");
-}
+function closePanel() { document.getElementById("panel-overlay").classList.remove("open"); }
+function closeAndRefresh() { closePanel(); refresh(); }
 document.getElementById("panel-overlay").addEventListener("click", function (ev) {
   if (ev.target.id === "panel-overlay") closePanel();
 });
 
-// -- tabs ----------------------------------------------------------------
+// -- tree / DAG ----------------------------------------------------------
 
-let currentTab = "tree";
+const SVG_NS = "http://www.w3.org/2000/svg";
+const STATUS_FILL = {
+  pending: "#444", ready: "#345", in_progress: "#a70", review: "#77a", done: "#285",
+  blocked: "#a33", failed: "#711", awaiting_approval: "#a7a",
+};
+const BOX_W = 180, BOX_H = 44, GAP_X = 24, GAP_Y = 70, PAD = 16;
 
-function nodeLink(n) {
-  const link = el("button", {class: "linklike", text: "#" + n.id + " " + n.title});
-  link.addEventListener("click", function () { openPanel(n.id); });
-  return link;
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(SVG_NS, tag);
+  Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+  return node;
+}
+
+// Layered layout: a node's layer is the longest path to it over parent
+// and dependency edges, so a dependency always sits above what waits on
+// it. Within a layer, nodes are ordered by the mean position of their
+// predecessors, which keeps siblings together and cuts crossings.
+function layout(graph) {
+  const byId = {}, incoming = {};
+  graph.nodes.forEach(function (n) { byId[n.id] = n; incoming[n.id] = []; });
+  graph.edges.forEach(function (e) { incoming[e.to].push(e.from); });
+  const depth = {};
+  function depthOf(id, seen) {
+    if (depth[id] !== undefined) return depth[id];
+    if (seen[id]) return 0;  // a cycle would be a data bug; don't hang on it
+    seen[id] = true;
+    let d = 0;
+    incoming[id].forEach(function (from) { d = Math.max(d, depthOf(from, seen) + 1); });
+    depth[id] = d;
+    return d;
+  }
+  graph.nodes.forEach(function (n) { depthOf(n.id, {}); });
+  const layers = [];
+  graph.nodes.forEach(function (n) { (layers[depth[n.id]] = layers[depth[n.id]] || []).push(n.id); });
+  const pos = {};
+  layers.forEach(function (layer, y) {
+    layer.sort(function (a, b) {
+      function center(id) {
+        const xs = incoming[id].filter(function (f) { return pos[f]; }).map(function (f) { return pos[f].i; });
+        return xs.length ? xs.reduce(function (s, x) { return s + x; }, 0) / xs.length : id;
+      }
+      return center(a) - center(b) || a - b;
+    });
+    layer.forEach(function (id, i) { pos[id] = {i: i, layer: y}; });
+  });
+  const widest = Math.max.apply(null, layers.map(function (l) { return l.length; }));
+  const width = PAD * 2 + widest * BOX_W + (widest - 1) * GAP_X;
+  layers.forEach(function (layer) {
+    const rowWidth = layer.length * BOX_W + (layer.length - 1) * GAP_X;
+    const left = (width - rowWidth) / 2;
+    layer.forEach(function (id, i) {
+      pos[id].x = left + i * (BOX_W + GAP_X);
+      pos[id].y = PAD + pos[id].layer * (BOX_H + GAP_Y);
+    });
+  });
+  return {pos: pos, width: width, height: PAD * 2 + layers.length * BOX_H + (layers.length - 1) * GAP_Y};
+}
+
+function renderDag(graph) {
+  const lay = layout(graph);
+  const svg = svgEl("svg", {class: "dag", width: lay.width, height: lay.height, viewBox: "0 0 " + lay.width + " " + lay.height});
+  graph.edges.forEach(function (e) {
+    const a = lay.pos[e.from], b = lay.pos[e.to];
+    const x1 = a.x + BOX_W / 2, y1 = a.y + BOX_H, x2 = b.x + BOX_W / 2, y2 = b.y;
+    const mid = (y1 + y2) / 2;
+    svg.appendChild(svgEl("path", {
+      class: "edge" + (e.kind === "dep" ? " dep" : ""),
+      d: "M" + x1 + "," + y1 + " C" + x1 + "," + mid + " " + x2 + "," + mid + " " + x2 + "," + y2,
+    }));
+  });
+  graph.nodes.forEach(function (n) {
+    const p = lay.pos[n.id];
+    const g = svgEl("g", {class: "node", transform: "translate(" + p.x + "," + p.y + ")", tabindex: "0"});
+    const title = svgEl("title", {});
+    title.textContent = "#" + n.id + " " + n.title + " (" + n.status + ", " + n.risk_tier + " risk)";
+    g.appendChild(title);
+    g.appendChild(svgEl("rect", {width: BOX_W, height: BOX_H, fill: STATUS_FILL[n.status] || "#444"}));
+    const label = svgEl("text", {x: 8, y: 18});
+    const text = "#" + n.id + " " + n.title;
+    label.textContent = text.length > 26 ? text.slice(0, 25) + "…" : text;
+    g.appendChild(label);
+    const sub = svgEl("text", {x: 8, y: 34, class: "sub"});
+    sub.textContent = n.kind + " - " + n.status.replace(/_/g, " ") + " - " + n.risk_tier;
+    g.appendChild(sub);
+    g.addEventListener("click", function () { openPanel(n.id); });
+    g.addEventListener("keydown", function (ev) { if (ev.key === "Enter") openPanel(n.id); });
+    svg.appendChild(g);
+  });
+  return svg;
 }
 
 function loadTree() {
   const view = document.getElementById("view-tree");
   view.textContent = "loading...";
-  api("/nodes").then(function (nodes) {
+  api("/graph" + projectQuery("?")).then(function (graph) {
     view.textContent = "";
-    if (!nodes.length) { view.appendChild(el("p", {class: "muted", text: "no nodes yet"})); return; }
-    nodes.sort(function (a, b) { return a.id - b.id; });
-    nodes.forEach(function (n) {
-      const card = el("div", {class: "card"}, [
-        el("div", {class: "row"}, [nodeLink(n), statusBadge(n.status)]),
-        el("div", {class: "muted"}, [tierLabel(n.risk_tier), document.createTextNode(" - " + n.kind + (n.parent_id ? " - parent #" + n.parent_id : ""))]),
-      ]);
-      view.appendChild(card);
-    });
-  });
+    if (!graph.nodes.length) { view.appendChild(el("p", {class: "muted", text: "no nodes yet"})); return; }
+    const legend = el("div", {class: "legend"});
+    Object.keys(STATUS_FILL).forEach(function (s) { legend.appendChild(statusBadge(s)); });
+    legend.appendChild(el("span", {class: "muted", text: "solid edge: parent to child; dashed: dependency to dependent"}));
+    view.appendChild(legend);
+    view.appendChild(el("div", {id: "dag-wrap"}, [renderDag(graph)]));
+  }, function (e) { view.textContent = e.message; });
+}
+
+// -- inbox ---------------------------------------------------------------
+
+function ackButton(ev) {
+  return button("ack", function () { post("/events/" + ev.id + "/ack").then(refresh, fail); });
+}
+
+function payloadOf(ev) {
+  try { return JSON.parse(ev.payload || "{}"); } catch (e) { return {}; }
+}
+
+function eventCard(ev, summary, extra) {
+  return el("div", {class: "card"}, [
+    el("div", {class: "row"}, [el("div", {text: summary}), ackButton(ev)]),
+    el("div", {class: "muted", text: ev.ts + (ev.node_id ? " - node #" + ev.node_id : "")}),
+  ].concat(extra || []));
 }
 
 function loadInbox() {
@@ -248,118 +446,198 @@ function loadInbox() {
   view.textContent = "loading...";
   api("/inbox").then(function (data) {
     view.textContent = "";
+    updateInboxCount(data);
+
     view.appendChild(el("h2", {text: "open questions"}));
-    (data.questions || []).forEach(function (q) {
-      view.appendChild(el("div", {class: "card"}, [el("div", {text: q.text}), el("div", {class: "muted", text: "default: " + (q.default_answer || "(none)")})]));
+    data.questions.forEach(function (q) {
+      const input = el("input", {type: "text", placeholder: "answer"});
+      view.appendChild(el("div", {class: "card"}, [
+        el("div", {text: q.text}),
+        el("div", {class: "muted", text: "node #" + q.node_id + " - default: " + (q.default_answer || "(none)") + (q.default_ok ? " (safe to default)" : "")}),
+        el("div", {class: "row"}, [input, button("answer", function () {
+          if (!input.value.trim()) return;
+          post("/questions/" + q.id + "/answer", {text: input.value}).then(refresh, fail);
+        })]),
+      ]));
     });
-    if (!data.questions.length) view.appendChild(el("p", {class: "muted", text: "none"}));
+    if (!data.questions.length) none(view);
+
     view.appendChild(el("h2", {text: "awaiting review"}));
-    (data.review || []).forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n)])); });
-    if (!data.review.length) view.appendChild(el("p", {class: "muted", text: "none"}));
+    data.review.forEach(function (n) { view.appendChild(el("div", {class: "card"}, [el("div", {class: "row"}, [nodeLink(n), tierLabel(n.risk_tier)])])); });
+    if (!data.review.length) none(view);
+
+    view.appendChild(el("h2", {text: "unverified external criteria"}));
+    data.unverified_external.forEach(function (u) {
+      view.appendChild(el("div", {class: "card"}, [nodeLink({id: u.node_id, title: u.title}), el("div", {class: "muted", text: "muvue could not run these checks; verify before approving"})]));
+    });
+    if (!data.unverified_external.length) none(view);
+
+    view.appendChild(el("h2", {text: "criteria changed, awaiting approval"}));
+    data.awaiting_approval.forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n)])); });
+    if (!data.awaiting_approval.length) none(view);
+
     view.appendChild(el("h2", {text: "blocked"}));
-    (data.blocked || []).forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n), el("span", {class: "muted", text: " " + (n.block_reason || "")})])); });
-    if (!data.blocked.length) view.appendChild(el("p", {class: "muted", text: "none"}));
-  });
+    data.blocked.forEach(function (n) { view.appendChild(el("div", {class: "card"}, [nodeLink(n), el("span", {class: "muted", text: " " + (n.block_reason || "")})])); });
+    if (!data.blocked.length) none(view);
+
+    view.appendChild(el("h2", {text: "structure updates"}));
+    data.structure_updates.forEach(function (ev) {
+      const p = payloadOf(ev);
+      const extra = [el("div", {class: "muted", text: p.message || ""})];
+      if (p.pr_url) extra.push(el("a", {href: p.pr_url, target: "_blank", rel: "noopener", text: p.pr_url}));
+      if (p.pr_error) extra.push(el("div", {class: "muted", text: "PR not opened: " + p.pr_error}));
+      view.appendChild(eventCard(ev, "structure diff on " + p.ref + " (" + String(p.sha || "").slice(0, 12) + ")", extra));
+    });
+    if (!data.structure_updates.length) none(view);
+
+    view.appendChild(el("h2", {text: "audit drafts"}));
+    data.audit_items.forEach(function (ev) {
+      const p = payloadOf(ev);
+      view.appendChild(eventCard(ev, "component #" + p.component_id + " " + (p.name || "") + ": " + (p.message || "re-verify"), [renderDiff(p.diff || "")]));
+    });
+    if (!data.audit_items.length) none(view);
+
+    view.appendChild(el("h2", {text: "commits touching components without a node"}));
+    data.signals.forEach(function (ev) {
+      const p = payloadOf(ev);
+      view.appendChild(eventCard(ev, String(p.sha || "").slice(0, 12) + " touched " + (p.files || []).join(", ")));
+    });
+    if (!data.signals.length) none(view);
+
+    view.appendChild(el("h2", {text: "unattributed commits"}));
+    data.unattributed_commits.forEach(function (ev) {
+      const p = payloadOf(ev);
+      view.appendChild(eventCard(ev, String(p.sha || "").slice(0, 12) + " has no resolvable Muvue-Node trailer", [el("div", {class: "muted", text: (p.files || []).join(", ")})]));
+    });
+    if (!data.unattributed_commits.length) none(view);
+  }, function (e) { view.textContent = e.message; });
 }
+
+function updateInboxCount(data) {
+  const n = data.questions.length + data.review.length + data.awaiting_approval.length + data.blocked.length +
+    data.structure_updates.length + data.audit_items.length + data.signals.length + data.unattributed_commits.length;
+  const badge = document.getElementById("inbox-count");
+  badge.textContent = String(n);
+  badge.hidden = n === 0;
+}
+
+// -- spec: line-anchored comments -----------------------------------------
 
 function loadSpec() {
   const view = document.getElementById("view-spec");
   view.textContent = "loading...";
-  api("/nodes").then(function (nodes) {
+  api("/nodes" + projectQuery("?")).then(function (nodes) {
     const specs = nodes.filter(function (n) { return n.kind === "spec"; });
     view.textContent = "";
     if (!specs.length) { view.appendChild(el("p", {class: "muted", text: "no spec nodes yet"})); return; }
     specs.forEach(function (spec) {
       const wrap = el("div", {class: "card"});
-      wrap.appendChild(el("h2", {text: spec.title}));
-      wrap.appendChild(el("pre", {text: spec.body_md || "(empty)"}));
-      const ta = el("textarea", {rows: "2", placeholder: "inline comment (stored as a feedback note)"});
-      const btn = el("button", {class: "action", text: "comment"});
-      btn.addEventListener("click", function () {
-        if (!ta.value.trim()) return;
-        api("/nodes/" + spec.id + "/comment", {method: "POST", body: JSON.stringify({text: ta.value})})
-          .then(function () { ta.value = ""; loadSpec(); })
-          .catch(function (e) { alert(e.message); });
-      });
-      wrap.appendChild(ta);
-      wrap.appendChild(btn);
       view.appendChild(wrap);
+      api("/nodes/" + spec.id).then(function (data) { renderSpec(wrap, data); }, function (e) { wrap.textContent = e.message; });
     });
-  });
+  }, function (e) { view.textContent = e.message; });
 }
 
-// Timeline scrubber (P7, plan section 8 "event timeline"): fetches the
-// full window once, then scrubs/filters client-side against a range
-// slider over event index -- re-fetching against `/events`' `since`/
-// `until` on every drag would spam the daemon, and 100 events is small
-// enough to hold in memory and slice locally.
-let timelineEvents = [];
+function renderSpec(wrap, data) {
+  const spec = data.node;
+  const byLine = {}, general = [];
+  (data.notes || []).filter(function (n) { return n.kind === "feedback"; }).forEach(function (note) {
+    const m = note.text.match(/^\[L(\d+)\] ([\s\S]*)$/);
+    if (m) (byLine[m[1]] = byLine[m[1]] || []).push(m[2]); else general.push(note.text);
+  });
+  wrap.appendChild(el("div", {class: "row"}, [el("h2", {text: "#" + spec.id + " " + spec.title}), statusBadge(spec.status)]));
+  wrap.appendChild(el("div", {class: "muted", text: "click a line to comment on it; comments are stored as feedback notes the agent sees"}));
+  const lines = (spec.body_md || "").split("\n");
+  lines.forEach(function (text, i) {
+    const n = i + 1;
+    const row = el("div", {class: "spec-line"}, [el("span", {class: "ln", text: String(n)}), el("span", {class: "tx", text: text || " "})]);
+    wrap.appendChild(row);
+    (byLine[n] || []).forEach(function (c) { wrap.appendChild(el("div", {class: "spec-comment", text: c})); });
+    row.addEventListener("click", function () {
+      if (row.nextSibling && row.nextSibling.classList && row.nextSibling.classList.contains("spec-form")) return;
+      const input = el("input", {type: "text", placeholder: "comment on line " + n});
+      const form = el("div", {class: "spec-form"}, [input, button("comment", function () {
+        if (!input.value.trim()) return;
+        post("/nodes/" + spec.id + "/comment", {text: input.value, line: n}).then(loadSpec, fail);
+      })]);
+      row.after(form);
+      input.focus();
+    });
+  });
+  if (general.length) {
+    wrap.appendChild(el("h3", {text: "general comments"}));
+    general.forEach(function (c) { wrap.appendChild(el("div", {class: "spec-comment", text: c})); });
+  }
+  const ta = el("textarea", {rows: "2", placeholder: "general comment on this spec"});
+  wrap.appendChild(ta);
+  wrap.appendChild(el("div", {class: "actions"}, [button("comment", function () {
+    if (!ta.value.trim()) return;
+    post("/nodes/" + spec.id + "/comment", {text: ta.value}).then(loadSpec, fail);
+  })]));
+}
 
+// -- timeline --------------------------------------------------------------
+
+// Fetches the newest 100 events once and scrubs them client-side:
+// re-querying `/events?since=&until=` on every drag would spam the daemon.
 function renderTimelineList(view, events) {
   const list = el("div", {id: "timeline-list"});
   events.slice().reverse().forEach(function (ev) {
     list.appendChild(el("div", {class: "card"}, [
-      el("div", {class: "muted", text: ev.ts + " - " + ev.actor}),
+      el("div", {class: "muted", text: ev.ts + " - " + ev.actor + " (" + ev.actor_evidence + ")"}),
       el("div", {text: ev.type + (ev.node_id ? " (node #" + ev.node_id + ")" : "")}),
     ]));
   });
   if (!events.length) list.appendChild(el("p", {class: "muted", text: "no events in range"}));
   const existing = view.querySelector("#timeline-list");
-  if (existing) existing.replaceWith(list);
-  else view.appendChild(list);
+  if (existing) existing.replaceWith(list); else view.appendChild(list);
 }
 
 function loadTimeline() {
   const view = document.getElementById("view-timeline");
   view.textContent = "loading...";
-  api("/events?limit=100").then(function (events) {
-    timelineEvents = events;
+  api("/events?limit=100" + projectQuery("&")).then(function (events) {
     view.textContent = "";
-    if (!events.length) {
-      view.appendChild(el("p", {class: "muted", text: "no events yet"}));
-      return;
-    }
-    const scrubber = el("div", {class: "card"});
+    if (!events.length) { view.appendChild(el("p", {class: "muted", text: "no events yet"})); return; }
     const label = el("div", {class: "muted", id: "timeline-scrub-label"});
-    const slider = el("input", {
-      type: "range", min: "0", max: String(events.length - 1), value: "0", id: "timeline-scrub",
-    });
-    function updateFromScrub() {
-      const startIdx = Number(slider.value);
-      const windowed = events.slice(startIdx);
-      label.textContent = windowed.length
-        ? "showing from " + windowed[0].ts + " (" + windowed.length + " of " + events.length + " events)"
-        : "no events in range";
+    const slider = el("input", {type: "range", min: "0", max: String(events.length - 1), value: "0", id: "timeline-scrub"});
+    function update() {
+      const windowed = events.slice(Number(slider.value));
+      label.textContent = "showing from " + windowed[0].ts + " (" + windowed.length + " of " + events.length + " events)";
       renderTimelineList(view, windowed);
     }
-    slider.addEventListener("input", updateFromScrub);
-    scrubber.appendChild(el("div", {class: "muted", text: "scrub to the oldest event shown:"}));
-    scrubber.appendChild(slider);
-    scrubber.appendChild(label);
-    view.appendChild(scrubber);
-    updateFromScrub();
-  });
+    slider.addEventListener("input", update);
+    view.appendChild(el("div", {class: "card"}, [el("div", {class: "muted", text: "scrub to the oldest event shown:"}), slider, label]));
+    update();
+  }, function (e) { view.textContent = e.message; });
 }
+
+// -- revisions -------------------------------------------------------------
 
 function loadRevisions() {
   const view = document.getElementById("view-revisions");
-  view.textContent = "loading...";
-  api("/projects").then(function (projects) {
-    view.textContent = "";
-    if (!projects.length) { view.appendChild(el("p", {class: "muted", text: "no projects yet"})); return; }
-    const p = projects[projects.length - 1];
-    state.projectId = p.id;
-    api("/projects/" + p.id + "/revisions").then(function (revs) {
-      if (!revs.length) { view.appendChild(el("p", {class: "muted", text: "no plan revisions yet"})); return; }
-      revs.forEach(function (rev) {
-        view.appendChild(el("div", {class: "card"}, [
-          el("div", {text: "revision " + rev.n + (rev.approved_at ? " (approved " + rev.approved_at + ")" : " (pending)")}),
-          el("pre", {text: JSON.stringify(rev.diff, null, 2)}),
-        ]));
-      });
+  view.textContent = "";
+  if (!state.projectId) { view.appendChild(el("p", {class: "muted", text: "no project yet"})); return; }
+  api("/projects/" + state.projectId + "/revisions").then(function (revs) {
+    if (!revs.length) { view.appendChild(el("p", {class: "muted", text: "no plan revisions yet"})); return; }
+    revs.forEach(function (rev) {
+      const card = el("div", {class: "card"}, [
+        el("div", {text: "revision " + rev.n + (rev.approved_at ? " (approved " + rev.approved_at + ")" : " (pending)")}),
+        el("pre", {text: JSON.stringify(rev.diff, null, 2)}),
+      ]);
+      if (!rev.approved_at) {
+        card.appendChild(button("approve revision", function () {
+          post("/nodes/" + state.projectId + "/approve", {target: "revision", n: rev.n}).then(refresh, fail);
+        }));
+      }
+      view.appendChild(card);
     });
-  });
+  }, function (e) { view.textContent = e.message; });
 }
+
+// -- KPIs ------------------------------------------------------------------
+
+function pct(x) { return (x * 100).toFixed(1) + "%"; }
 
 function loadKpis() {
   const view = document.getElementById("view-kpis");
@@ -368,30 +646,41 @@ function loadKpis() {
     view.textContent = "";
     const grid = el("div", {class: "kpi-grid"});
     [
-      ["drift %", (k.drift_pct * 100).toFixed(1) + "%"],
-      ["rubber-stamp rate", (k.rubber_stamp_rate * 100).toFixed(1) + "%"],
-      ["tokens / node", k.tokens_per_node],
-      ["spend vs budget", (k.spend_vs_budget * 100).toFixed(1) + "%"],
-    ].forEach(function (pair) {
-      grid.appendChild(el("div", {class: "card"}, [
-        el("div", {class: "kpi-value", text: String(pair[1])}),
-        el("div", {class: "muted", text: pair[0]}),
-      ]));
+      ["components verified in the last 50 commits", pct(k.drift_pct)],
+      ["touches outside the prediction", pct(k.touch_drift)],
+      ["rubber-stamp rate (medium/high)", pct(k.rubber_stamp_rate), k.rubber_stamps + " fast of " + k.approvals_timed + " timed approvals"],
+      ["tokens per node", Math.round(k.tokens_per_node)],
+      ["worst driver spend vs budget", pct(k.spend_vs_budget)],
+    ].forEach(function (item) {
+      const card = el("div", {class: "card"}, [el("div", {class: "kpi-value", text: String(item[1])}), el("div", {class: "muted", text: item[0]})]);
+      if (item[2]) card.appendChild(el("div", {class: "muted", text: item[2]}));
+      grid.appendChild(card);
     });
     view.appendChild(grid);
-  });
+    view.appendChild(el("h2", {text: "spend per driver"}));
+    const drivers = Object.keys(k.spend_by_driver || {});
+    if (!drivers.length) { view.appendChild(el("p", {class: "muted", text: "no driver has a [agents.<name>.budget]"})); return; }
+    const table = el("table", {}, [el("tr", {}, ["driver", "spent", "limit", "used"].map(function (h) { return el("th", {text: h}); }))]);
+    drivers.forEach(function (name) {
+      const s = k.spend_by_driver[name];
+      table.appendChild(el("tr", {}, [
+        el("td", {text: name}), el("td", {text: s.spent + " " + s.unit}), el("td", {text: s.limit + " " + s.unit}),
+        el("td", {text: pct(s.pct) + (s.exhausted ? " (exhausted)" : s.warn ? " (warning)" : "")}),
+      ]));
+    });
+    view.appendChild(table);
+  }, function (e) { view.textContent = e.message; });
 }
 
+// -- tabs, project selector, header actions ---------------------------------
+
+let currentTab = "tree";
 const loaders = {tree: loadTree, inbox: loadInbox, spec: loadSpec, timeline: loadTimeline, revisions: loadRevisions, kpis: loadKpis};
 
 function loadTab(tab) {
   currentTab = tab;
-  Object.keys(loaders).forEach(function (t) {
-    document.getElementById("view-" + t).hidden = t !== tab;
-  });
-  document.querySelectorAll("nav button").forEach(function (b) {
-    b.classList.toggle("active", b.getAttribute("data-tab") === tab);
-  });
+  Object.keys(loaders).forEach(function (t) { document.getElementById("view-" + t).hidden = t !== tab; });
+  document.querySelectorAll("nav button").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tab") === tab); });
   loaders[tab]();
 }
 
@@ -400,52 +689,113 @@ document.querySelectorAll("nav button").forEach(function (btn) {
 });
 
 document.getElementById("token-save").addEventListener("click", function () {
-  // In-memory only for this tab (see `state` above) -- never persisted.
   state.token = document.getElementById("token-input").value.trim();
-  alert("token set for this tab only (not saved to disk/localStorage)");
+  document.getElementById("token-input").value = "";
+  checkAuth();
 });
 
+document.getElementById("project-select").addEventListener("change", function (ev) {
+  state.projectId = Number(ev.target.value);
+  refresh();
+});
+
+function currentProject() {
+  return state.projects.filter(function (p) { return p.id === state.projectId; })[0];
+}
+
 document.getElementById("pause-btn").addEventListener("click", function () {
-  if (!state.projectId) { alert("no project loaded yet -- open the revisions tab once first"); return; }
-  api("/projects/" + state.projectId + "/pause", {method: "POST"})
-    .then(function () { refreshStatus(); })
-    .catch(function (e) { alert(e.message); });
+  if (!state.projectId) return;
+  post("/projects/" + state.projectId + "/pause").then(function (r) {
+    const stopped = (r.result || r).stopped_runners || [];
+    alert("paused; stopped " + stopped.length + " runner process(es)");
+    refresh();
+  }, fail);
 });
 document.getElementById("resume-btn").addEventListener("click", function () {
-  if (!state.projectId) { alert("no project loaded yet -- open the revisions tab once first"); return; }
-  api("/projects/" + state.projectId + "/resume", {method: "POST"})
-    .then(function () { refreshStatus(); })
-    .catch(function (e) { alert(e.message); });
+  if (!state.projectId) return;
+  post("/projects/" + state.projectId + "/resume").then(refresh, fail);
+});
+
+document.getElementById("close-btn").addEventListener("click", function () {
+  if (!state.projectId) return;
+  api("/projects/" + state.projectId + "/close-preview").then(function (preview) {
+    const panel = document.getElementById("panel");
+    panel.textContent = "";
+    panel.appendChild(el("h2", {text: "close project #" + state.projectId}));
+    if (!preview.closeable) {
+      panel.appendChild(el("p", {text: "not closeable yet: nodes " + preview.blocking_nodes.join(", ") + " are not done"}));
+    }
+    const diff = preview.diff || {};
+    [["decisions", "title"], ["promoted_lessons", "title"], ["components", "name"], ["changed_components", "name"]].forEach(function (pair) {
+      const items = diff[pair[0]] || [];
+      panel.appendChild(el("h3", {text: pair[0].replace(/_/g, " ") + " (" + items.length + ")"}));
+      if (!items.length) { panel.appendChild(el("p", {class: "muted", text: "(none)"})); return; }
+      const list = el("ul", {class: "criteria"});
+      items.forEach(function (item) { list.appendChild(el("li", {text: item[pair[1]] || JSON.stringify(item)})); });
+      panel.appendChild(list);
+    });
+    const prBox = el("input", {type: "checkbox", id: "close-pr"});
+    const actions = el("div", {class: "actions"}, [
+      el("label", {}, [prBox, " open a GitHub PR if main can't be fast-forwarded"]),
+    ]);
+    const confirm = button("close and commit structure", function () {
+      post("/projects/" + state.projectId + "/close", {pr: prBox.checked}).then(function (r) {
+        const res = r.result || r;
+        alert(res.fast_forwarded ? "closed; main fast-forwarded" :
+          "closed; structure is on " + res.structure_ref + (res.pr_url ? ", PR " + res.pr_url : res.pr_error ? " (PR failed: " + res.pr_error + ")" : ""));
+        closeAndRefresh();
+      }, fail);
+    }, "danger");
+    confirm.disabled = !preview.closeable;
+    actions.appendChild(confirm);
+    actions.appendChild(button("cancel", closePanel));
+    panel.appendChild(actions);
+    document.getElementById("panel-overlay").classList.add("open");
+  }, fail);
 });
 
 function refreshStatus() {
-  api("/healthz").then(function (h) {
-    document.getElementById("protocol-info").textContent = "protocol v" + h.protocol_version;
-  });
+  api("/healthz").then(function (h) { document.getElementById("protocol-info").textContent = "protocol v" + h.protocol_version; });
   api("/projects").then(function (projects) {
+    state.projects = projects;
+    const select = document.getElementById("project-select");
+    select.textContent = "";
+    projects.forEach(function (p) {
+      select.appendChild(el("option", {value: String(p.id), text: "#" + p.id + " " + p.goal.slice(0, 40) + " (" + p.phase + ")"}));
+    });
+    if (!state.projectId || !currentProject()) {
+      const open = projects.filter(function (p) { return p.phase !== "closed"; });
+      state.projectId = projects.length ? (open.length ? open[open.length - 1] : projects[projects.length - 1]).id : null;
+    }
+    if (state.projectId) select.value = String(state.projectId);
     const pill = document.getElementById("status-pill");
-    if (!projects.length) { pill.textContent = "no project"; return; }
-    const p = projects[projects.length - 1];
-    state.projectId = p.id;
-    pill.textContent = p.phase;
-    pill.classList.toggle("paused", p.phase === "paused");
+    const p = currentProject();
+    pill.textContent = p ? p.phase : "no project";
+    pill.className = p ? p.phase : "";
+    document.getElementById("pause-btn").disabled = !p || p.phase === "paused" || p.phase === "closed";
+    document.getElementById("resume-btn").disabled = !p || p.phase !== "paused";
+    document.getElementById("close-btn").disabled = !p || p.phase === "closed";
   });
+  api("/inbox").then(updateInboxCount, function () {});
 }
 
-// -- SSE: refresh whenever the daemon reports a DB change ----------------
-
+// SSE: refresh whenever the daemon reports a DB change. Skipped while
+// the node panel is open so it doesn't close under the reader.
 function connectStream() {
   try {
     const src = new EventSource("/events/stream");
-    src.onmessage = function () { refreshStatus(); loadTab(currentTab); };
-    src.onerror = function () { /* browser auto-reconnects */ };
-  } catch (e) { /* EventSource unsupported; dashboard still works via manual refresh */ }
+    src.onmessage = function () {
+      if (document.getElementById("panel-overlay").classList.contains("open")) return;
+      refresh();
+    };
+  } catch (e) { /* no EventSource: the dashboard still works on manual refresh */ }
 }
 
-exchangeFragmentToken();
-refreshStatus();
-loadTab("tree");
-connectStream();
+exchangeFragmentNonce().then(function () {
+  refreshStatus();
+  loadTab("tree");
+  connectStream();
+});
 </script>
 </body>
 </html>

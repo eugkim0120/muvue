@@ -2002,9 +2002,9 @@ reading here. Real `decisions` table entries start once dogfooding begins
     it (`C<id>`). This uses the same bounded read path as #114.
 
 139. **`audit` items carry a real draft.** Each `inbox.audit_drift_signal`
-    payload now has `draft.diff` (the anchor files' `git diff` since
-    `verified_sha`, capped at 200 lines) and `draft.proposed` (the
-    anchors and `verified_sha` the component would get if accepted). The
+    payload now has `diff` (the anchor files' `git diff` since
+    `verified_sha`, capped at 200 lines) and `proposed` (the anchors and
+    `verified_sha` the component would get if accepted). The
     CHANGELOG had claimed this since P7. Now it is true.
 
 140. **`close --pr` opens a pull request; supersedes #105.** #105 left PR
@@ -2041,3 +2041,60 @@ reading here. Real `decisions` table entries start once dogfooding begins
     Pydantic. `strict.handle_pre_receive` delegates to the same code.
     `pre-receive` fails closed: outside an airlock, or with an
     unreadable DB, it refuses.
+
+143. **Every mutating request must be JSON, body-less ones included.**
+    Control 4 used to exempt a POST without a body on the theory that it
+    had nothing to smuggle. But a body-less verb such as `pause` or
+    `ack` still acts, and an empty cross-site form POST to it carries
+    the session cookie wherever SameSite doesn't apply (an older
+    browser, or a same-site origin on another port). Requiring
+    `Content-Type: application/json` everywhere means a form can never
+    reach a mutating route, and a cross-site `fetch` with that header
+    needs a preflight this app never answers. The dashboard and the VS
+    Code extension already sent the header.
+
+144. **The dashboard link carries a one-time nonce, not the token;
+    embedded dashboards use an in-memory header token.** v4 §8a says the
+    URL fragment is "one-time", but it used to be the token itself, so a
+    link left in browser history, a screenshot or a terminal scrollback
+    was a working credential until `serve` restarted. `serve` now mints
+    a single-use nonce for the link and prints the token separately for
+    API clients. `POST /auth/nonce` mints more nonces for a caller that
+    holds the token.
+
+    Inside the VS Code webview (the iframe from #67) the dashboard is a
+    cross-site subframe, and a SameSite=Strict cookie is never sent
+    there, so the cookie exchange silently left it read-only. When the
+    page detects it is framed, it asks the exchange for the token
+    (`"header": true`) and keeps it in a JS variable. The extension also
+    stops storing the token in `SecretStorage`: the token rotates on
+    every `serve` restart, so a stored copy only goes stale, and v4 says
+    nothing token-shaped goes on disk. A 403 makes the extension forget
+    the token and ask again. #67's iframe itself stays.
+
+145. **Spec line comments are `[L<n>] `-prefixed feedback notes.** The
+    plan stores spec comments as `feedback`. Adding a line column would
+    need a schema change for one integer, and the agent reads notes as
+    text in its brief anyway. So the anchor is part of the text, where
+    the agent sees which line the comment is about. The API validates
+    that the line exists in the node's body; the dashboard renders the
+    comment under that line.
+
+146. **`doctor` probes the bind (control 1).** It used to skip control 1,
+    saying it couldn't observe how another process was started. It can
+    observe the result: `probe_bind` connects to the daemon's port on
+    each non-loopback IPv4 address of this machine (the outbound route's
+    address and the hostname's addresses, found without sending a
+    packet). This runs before the loopback reachability check, because a
+    daemon bound only to an external address is invisible on 127.0.0.1.
+    Addresses the stdlib can't discover (an interface with no route and
+    no hostname entry) are not probed.
+
+147. **Per-driver spend is on `/kpis`; supersedes #99.** #99 kept
+    `spend_vs_budget` a single number because nothing asked for a
+    breakdown, but v4 §8 lists "spend vs budget per driver" as a KPI.
+    `spend_by_driver` now carries each budgeted driver's
+    `driver_budget_state`; `spend_vs_budget` stays as the worst driver
+    for existing clients. `/kpis` also gains `touch_drift` (the §8
+    "prediction-vs-actual touch drift") and the rubber-stamp counts
+    behind the rate.

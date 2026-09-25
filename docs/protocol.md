@@ -296,9 +296,10 @@ the socket: `core.daemon.reconcile_on_start` reverts every
 original `attempts + 1`/`failed` behavior), then drains the event queue
 (`events.acked_at`). A fresh 256-bit session token is minted in memory
 (`core.daemon.SessionManager`, **never written to disk** -- v3's
-`~/.muvue/session` file is gone entirely) and the dashboard URL is
-printed once with it as a one-time `#fragment`
-(`http://host:port/#t=<token>`).
+`~/.muvue/session` file is gone entirely). `serve` prints the dashboard
+URL with a single-use nonce as its `#fragment`
+(`http://host:port/#n=<nonce>`, decision #144) and, on a separate
+`api token: <token>` line, the token itself for API clients.
 
 `muvue.api.create_app(repo_root, config, *, session=None, port=None)`
 mirrors the CLI verbs 1:1 (FastAPI, OpenAPI at `/openapi.json` for
@@ -311,26 +312,45 @@ route handler):
   daemon's own origin 403s, *before* any auth check. No
   `Access-Control-*` header is ever emitted by this app (no CORS
   middleware exists here at all).
-- **Control 4 (content-type half):** a mutating request (`POST`/`PUT`/
-  `PATCH`/`DELETE`) that carries a body must use `Content-Type:
-  application/json` or 403s (a body-less mutation, e.g. `POST
-  /projects/{id}/pause`, is exempt from this specific check -- it has
-  nothing to smuggle via a form submission -- but still needs a valid
-  token).
+- **Control 4 (content-type half):** every mutating request (`POST`/
+  `PUT`/`PATCH`/`DELETE`) must use `Content-Type: application/json` or
+  403s, body-less ones such as `POST /projects/{id}/pause` included
+  (decision #143).
 
 Routes, by auth requirement:
 
 - **Read-only (unauthenticated):** `GET /healthz`, `GET /` (dashboard),
   `GET /events/stream` (SSE), `GET /inbox`, `GET /kpis`, `GET
   /projects`, `GET /projects/{id}`, `GET /projects/{id}/revisions`,
-  `GET /events`, `GET /nodes`, `GET /nodes/{id}`, `GET
-  /nodes/{id}/diff`, `GET /nodes/{id}/logs`.
+  `GET /events`, `GET /nodes`, `GET /graph[?project_id=]`, `GET
+  /nodes/{id}`, `GET /nodes/{id}/diff`, `GET /nodes/{id}/logs[?lines=N]`,
+  `GET /brief`, `GET /status`.
+  - `/graph` returns `{"nodes", "edges"}`; each edge is `{"from", "to",
+    "kind"}` with `kind` `parent` (parent to child) or `dep`
+    (dependency to dependent).
+  - `/nodes/{id}/diff` returns `{"source", "diff", "truncated",
+    "commits"}`. `source` is `commits` (the patches of the node's linked
+    commits), `worktree` (its worktree against the branch point,
+    uncommitted edits included) or `none`. Capped at 3000 lines.
+  - `/nodes/{id}/logs` is `text/plain`: the last `lines` (default 200)
+    lines of the runner's driver output, `.muvue/logs/run-<id>.log` then
+    `.muvue/logs/<id>.log`. Empty until a runner has driven the node.
+  - `/inbox` lists `questions`, `review`, `unverified_external`,
+    `awaiting_approval`, `blocked`, `structure_updates`, `signals`,
+    `audit_items` and `unattributed_commits`.
+  - `/kpis` returns `drift_pct`, `touch_drift` (mean share of a node's
+    committed paths outside its predicted globs), `rubber_stamp_rate`
+    with `rubber_stamps`/`approvals_timed` (medium/high tiers only),
+    `tokens_per_node`, `spend_vs_budget` (worst driver) and
+    `spend_by_driver`.
 - **Every mutating endpoint, agent verbs included (control 4, token
   half; see docs/decisions.md #84 for why agent verbs are gated now,
   a change from P2/P2b):** `POST /nodes/{id}/start[?agent=X]`, `POST
   /nodes/{id}/done`, `POST /nodes/{id}/fail`, `POST /nodes/{id}/ask`,
   `POST /questions/{id}/answer`, `POST /questions/{id}/wait`, `POST
-  /nodes/{id}/replan`, `POST /nodes/{id}/comment`, `POST
+  /nodes/{id}/replan`, `POST /nodes/{id}/note`, `POST
+  /nodes/{id}/comment` (optional `line`: anchors the feedback note to a
+  line of the node body as an `[L<n>] ` prefix, decision #145), `POST
   /projects/{id}/propose-revision`, `POST /nodes/{id}/approve`, `POST
   /nodes/{id}/reject`, `POST /events/{id}/ack`, `POST
   /nodes/{id}/merge`, `POST /nodes/{id}/handoff`, `POST /import`, `GET
@@ -343,20 +363,29 @@ Routes, by auth requirement:
   daemon-security tests specify `403` uniformly across all five
   rejection cases).
 - **`POST /auth/exchange`** (control 5, unauthenticated by necessity --
-  it's how a session is established): body `{"token": "<fragment
-  value>"}`; on a match, sets an `HttpOnly`, `SameSite=Strict`
-  `muvue_session` cookie carrying that same token value (see
-  docs/decisions.md #86 for why the cookie reuses the token value
-  rather than a second derived session id) and returns `200`; on a
-  mismatch, `403` and no cookie.
+  it's how a session is established): body `{"nonce": "<fragment
+  value>", "header": false}`. A nonce works once. On success it sets an
+  `HttpOnly`, `SameSite=Strict` `muvue_session` cookie carrying the
+  session token (see docs/decisions.md #86 for why the cookie reuses
+  the token value rather than a second derived session id) and returns
+  `200`; with `"header": true` the body also carries `"token"`, which
+  the dashboard requests only when it is framed (the VS Code webview,
+  where the cookie is never sent). An unknown or used nonce, or the
+  token itself, gets `403` and no cookie.
+- **`POST /auth/nonce`** (session-gated): `{"nonce"}`, a fresh one-time
+  dashboard nonce. The VS Code extension uses it to open its webview.
+- **`GET /auth/check`** (session-gated): `200` with a live session,
+  else `403`. The dashboard uses it to show "signed in" or "read-only".
 
 `pause`/`resume` are real: `projects.set_phase` to `paused`/`executing`.
 `nodes.start` refuses while `project.phase` is `planning` **or**
 `paused` (plan section 5 "Emergency stop... refuses start").
 
 `muvue doctor` gained `--skip-security-probes` and `--daemon-port`
-(control 7): by default it issues live HTTP probes (bad `Host`, bad
-`Origin`, form-encoded POST, missing/query-string token) against a
+(control 7): by default it first tries to connect to that port on each
+of this machine's non-loopback addresses (control 1, `probe_bind`), then
+issues live HTTP probes (bad `Host`, bad `Origin`, form-encoded POST,
+missing/query-string token) against a
 running daemon -- an already-running one on `--daemon-port` (default
 8765) if reachable, otherwise a throwaway one spun up against an
 isolated scratch repo (never `repo_root` -- see docs/decisions.md #87)
@@ -1255,9 +1284,9 @@ never-verified) non-deprecated components -- `components` carries no
 creation timestamp, so "oldest" is read as never-verified first, then
 ascending `id` as a proxy for insertion order -- and drafts a proposed
 update for each into the inbox as an unacked `inbox.audit_drift_signal`
-event (`GET /inbox`'s `"audit_items"`). The payload's `draft.diff` is
+event (`GET /inbox`'s `"audit_items"`). The payload's `diff` is
 `git diff <verified_sha> HEAD` over the anchor files (at most
-`AUDIT_DIFF_MAX_LINES`, 200, lines) and `draft.proposed` holds the
+`AUDIT_DIFF_MAX_LINES`, 200, lines) and `proposed` holds the
 anchors and `verified_sha` the component would get (decision #139). Also runs a lesson-decay pass
 (below) as part of the same run -- "`audit` may prune" (plan section 9).
 

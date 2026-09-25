@@ -25,7 +25,7 @@ import pytest
 from muvue.core import db as core_db, nodes, projects
 from muvue.core.repo_init import init_repo
 
-TOKEN_RE = re.compile(r"#t=(\S+)")
+TOKEN_RE = re.compile(r"^api token: (\S+)", re.MULTILINE)
 
 
 def _free_port() -> int:

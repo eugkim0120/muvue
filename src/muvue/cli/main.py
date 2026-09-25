@@ -306,12 +306,13 @@ def serve(
 
     Security (plan v4 section 8a): binds loopback-only unless
     `--i-know-this-is-exposed` is passed (control 1). Mints a fresh
-    256-bit session token in memory -- never written to disk, never
-    logged anywhere but this one-time stdout line (control 5/6) -- and
-    prints the dashboard URL with it in a one-time `#fragment`; the
-    dashboard's own JS exchanges that fragment for an HttpOnly session
-    cookie on first load (`POST /auth/exchange`) and the fragment is
-    then irrelevant. v3's `~/.muvue/session` file is gone entirely.
+    256-bit session token in memory -- never written to disk (control
+    5/6) -- and prints the dashboard URL with a single-use nonce in its
+    `#fragment`; the dashboard's own JS exchanges that nonce for an
+    HttpOnly session cookie on first load (`POST /auth/exchange`), after
+    which the link is dead. The token itself is printed once for API
+    clients such as the VS Code extension. v3's `~/.muvue/session` file
+    is gone entirely.
     """
     import signal
     import socket
@@ -352,8 +353,13 @@ def serve(
         typer.echo(f"reconciled expired lease: node {reverted['id']} -> {reverted['status']}")
 
     session = daemon_mod.SessionManager()
-    dashboard_url = f"http://{host}:{port}/#t={session.token}"
-    typer.echo(f"dashboard (one-time link, do not share or log elsewhere): {dashboard_url}")
+    dashboard_url = f"http://{host}:{port}/#n={session.mint_nonce()}"
+    typer.echo(f"dashboard (one-time link, works once): {dashboard_url}")
+    typer.echo(f"api token: {session.token}")
+    typer.echo(
+        "  (send as `Authorization: Bearer <token>`; the VS Code extension asks for it. "
+        "It lives only in this process: do not paste it into files or logs.)"
+    )
 
     app_instance = create_app(repo_root, config=config, session=session, port=port)
 

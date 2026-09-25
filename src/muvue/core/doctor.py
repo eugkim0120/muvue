@@ -88,6 +88,44 @@ def _probe_request(
         return None, {}
 
 
+def non_loopback_addresses() -> list[str]:
+    """This machine's IPv4 addresses other than 127.0.0.0/8, found
+    without sending a packet: connecting a UDP socket only selects a
+    route, and the host's own name may resolve to more."""
+    found: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1, never routed
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(info[4][0])
+    except OSError:
+        pass
+    return sorted({a for a in found if not a.startswith("127.") and a != "0.0.0.0"})
+
+
+def probe_bind(port: int) -> list[str]:
+    """Control 1: the daemon must not accept connections on any address
+    but loopback. Tries a TCP connect to `port` on each non-loopback
+    address of this machine."""
+    issues = []
+    for address in non_loopback_addresses():
+        try:
+            with socket.create_connection((address, port), timeout=_PROBE_TIMEOUT_SECONDS):
+                pass
+        except OSError:
+            continue
+        issues.append(
+            f"doctor: port {port} accepts connections on {address}, not only loopback "
+            "(v4 section 8a control 1); if that is `muvue serve`, restart it without "
+            "--i-know-this-is-exposed"
+        )
+    return issues
+
+
 def _daemon_reachable(base_url: str) -> bool:
     status, _ = _probe_request(base_url, "/healthz")
     return status == 200
@@ -107,10 +145,10 @@ def run_security_probes(
     all: this process has no way to learn that daemon's in-memory-only
     token (control 5's own point), so any probe strategy that required
     one would only ever be able to test a daemon this same `doctor`
-    invocation started. Control 1 (bind) is enforced by `muvue serve`
-    itself at startup (a CLI-level refuse-to-start gate) and is not
-    independently re-probed here -- doctor has no way to observe how a
-    *different*, already-running daemon process was invoked. See
+    invocation started. Control 1 (bind) is probed against an
+    already-running daemon by connecting to its port on each of this
+    machine's non-loopback addresses (`probe_bind`); a throwaway daemon
+    is always loopback, so it isn't probed. See
     docs/decisions.md #87 for the "probe or spin up a throwaway" choice
     documented below.
     """
@@ -122,6 +160,9 @@ def run_security_probes(
     scratch_dir: tempfile.TemporaryDirectory | None = None
 
     try:
+        # Before anything else: a daemon bound to a non-loopback address
+        # only is invisible on 127.0.0.1, so probe the bind first.
+        issues.extend(probe_bind(target_port))
         if not _daemon_reachable(base_url):
             # v4 section 8a control 7 explicitly leaves this choice to
             # the implementer ("decide sensibly whether doctor should

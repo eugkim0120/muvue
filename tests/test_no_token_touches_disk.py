@@ -21,7 +21,8 @@ import pytest
 from muvue.core import db as core_db, gates, projects
 from muvue.core.repo_init import init_repo
 
-TOKEN_RE = re.compile(r"#t=(\S+)")
+TOKEN_RE = re.compile(r"^api token: (\S+)", re.MULTILINE)
+NONCE_RE = re.compile(r"#n=(\S+)")
 
 
 def _free_port() -> int:
@@ -53,6 +54,7 @@ def test_full_serve_exchange_approve_flow_writes_no_token_shaped_file(tmp_path: 
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     token = None
+    nonce = None
     try:
         deadline = time.monotonic() + 20
         ready = False
@@ -65,17 +67,20 @@ def test_full_serve_exchange_approve_flow_writes_no_token_shaped_file(tmp_path: 
             m = TOKEN_RE.search(line)
             if m:
                 token = m.group(1)
+            n = NONCE_RE.search(line)
+            if n:
+                nonce = n.group(1)
             if "listening on" in line:
                 ready = True
                 break
         assert ready
-        assert token
+        assert token and nonce
 
         with httpx.Client(base_url=f"http://127.0.0.1:{port}") as client:
-            # The full dashboard flow: exchange the fragment token for
+            # The full dashboard flow: exchange the fragment nonce for
             # the HttpOnly cookie, then use the cookie (no Authorization
             # header at all from here) to perform a human-verb mutation.
-            r = client.post("/auth/exchange", json={"token": token})
+            r = client.post("/auth/exchange", json={"nonce": nonce})
             assert r.status_code == 200
             assert "muvue_session" in client.cookies
 

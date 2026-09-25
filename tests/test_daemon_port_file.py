@@ -44,8 +44,8 @@ def test_serve_writes_port_file_without_token_and_removes_it_on_exit(tmp_path: P
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             line = proc.stdout.readline()
-            if "#t=" in line:
-                token = line.split("#t=", 1)[1].strip()
+            if line.startswith("api token: "):
+                token = line.split(": ", 1)[1].strip()
             if "listening on" in line:
                 break
         assert token

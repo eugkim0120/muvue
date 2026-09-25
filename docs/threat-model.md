@@ -78,22 +78,40 @@ web-page-originated**, not local:
    JS-driven cross-origin requests are already blocked by control 3).
    Query-string tokens are rejected because they leak into daemon
    access logs, shell history (if a user tests with `curl`), and the
-   `Referer` header of any subsequent same-tab navigation.
+   `Referer` header of any subsequent same-tab navigation. Body-less
+   POSTs such as `pause` need the JSON content type too (decision
+   #143): an empty form submitted cross-site to one would otherwise
+   still carry the session cookie wherever SameSite doesn't stop it.
 5. **In-memory-only token, one-time URL fragment, `HttpOnly`
    `SameSite=Strict` cookie exchange.** Defends against (2) directly:
-   there is no file to read. The `#fragment` is never sent over HTTP by
-   design (browsers strip it before the request line is built), so it
-   never touches the daemon's request log even during the one exchange
-   call; the cookie that replaces it is `HttpOnly` (page JS, including
-   an XSS payload, cannot read it back out) and `SameSite=Strict`
-   (never attached to a cross-site request, including image/link-driven
-   simple requests a same-origin check alone wouldn't catch).
+   there is no file to read. The dashboard link's `#n=` fragment is a
+   single-use nonce, not the token (decision #144), so a link that
+   survives in browser history, a screenshot or a shell scrollback is
+   dead once the page has exchanged it. The fragment is never sent over
+   HTTP (browsers strip it before the request line is built), so it
+   never touches the daemon's request log; the cookie that replaces it
+   is `HttpOnly` (page JS, including an XSS payload, cannot read it back
+   out) and `SameSite=Strict` (never attached to a cross-site request,
+   including image/link-driven simple requests a same-origin check
+   alone wouldn't catch).
+
+   Two places see the token itself. `serve` prints it once on stdout
+   for API clients (the VS Code extension, scripts). And inside the VS
+   Code webview the dashboard is a cross-site iframe, where the
+   SameSite cookie is never sent. There the page asks the exchange for
+   the token (`"header": true`, only when it is framed) and keeps it in
+   a JS variable. An XSS payload in that framed page could read it; it
+   could equally act through the page, so this adds no capability. The
+   extension keeps its copy in memory too, not in `SecretStorage`.
 6. **Token rotates every `serve` restart; 8h idle expiry.** Bounds the
    blast radius of a token that *does* leak (over-the-shoulder, a
    screen share, a copy-pasted log) to, at most, one `serve` session's
    worth of time, and to periods of actual use within it.
-7. **`doctor` live probes.** Turns 1-4 from "true today, by
-   inspection" into "verified now, by a real request/response" —
+7. **`doctor` live probes.** Controls 2–4 are probed with real
+   requests, and control 1 by trying to connect to the daemon's port on
+   each of this machine's non-loopback addresses (`probe_bind`). That
+   turns 1–4 from "true today, by inspection" into "verified now, by a
+   real request/response" —
    config drift, a future code change that accidentally reopens one of
    these, or a daemon a script started with different flags than
    expected are all caught, not assumed away.

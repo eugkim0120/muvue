@@ -9,31 +9,53 @@
  */
 
 import * as vscode from "vscode";
-import { buildAuthHeaders, buildWebviewHtml, DEFAULT_DAEMON_URL, joinUrl, resolveEndpoint } from "./lib";
+import {
+  buildAuthHeaders,
+  buildWebviewHtml,
+  DEFAULT_DAEMON_URL,
+  joinUrl,
+  NONCE_PATH,
+  resolveEndpoint,
+  shouldReprompt,
+} from "./lib";
 
-const SESSION_TOKEN_KEY = "muvue.sessionToken";
+/** Earlier versions kept the token in SecretStorage; it is removed on
+ * activation because v4 section 8a keeps the token off disk. */
+const LEGACY_SECRET_KEY = "muvue.sessionToken";
+
+/** The session token, in this extension host's memory only. `muvue serve`
+ * mints a new one on every start, so a remembered token would go stale
+ * anyway; a 403 clears it and the next call asks again. */
+let sessionToken: string | undefined;
 
 function getDaemonUrl(): string {
   return vscode.workspace.getConfiguration("muvue").get<string>("daemonUrl", DEFAULT_DAEMON_URL);
 }
 
-/**
- * `muvue serve` prints the human-verb session token once at startup and
- * writes it to `<repo>/.muvue/session` (`core.daemon.create_session`); the
- * extension does not read that file (it is `0600`, repo-local, and the
- * extension may run against a remote/forwarded daemon), so it asks once
- * and remembers the answer in `SecretStorage` for this VS Code install.
- */
-async function getSessionToken(context: vscode.ExtensionContext): Promise<string | undefined> {
-  const existing = await context.secrets.get(SESSION_TOKEN_KEY);
-  if (existing) return existing;
+async function getSessionToken(): Promise<string | undefined> {
+  if (sessionToken) return sessionToken;
   const entered = await vscode.window.showInputBox({
-    prompt: "muvue session token (printed by `muvue serve`, or in <repo>/.muvue/session)",
+    prompt: "muvue api token (printed by `muvue serve` as `api token: ...`)",
     password: true,
     ignoreFocusOut: true,
   });
-  if (entered) await context.secrets.store(SESSION_TOKEN_KEY, entered);
-  return entered || undefined;
+  sessionToken = entered?.trim() || undefined;
+  return sessionToken;
+}
+
+/** POSTs to the daemon with the session token. On a 403 the token is
+ * dropped and the user is asked once more before giving up. */
+async function postWithToken(path: string): Promise<Response | undefined> {
+  const url = joinUrl(getDaemonUrl(), path);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await getSessionToken();
+    if (!token) return undefined;
+    const response = await fetch(url, { method: "POST", headers: buildAuthHeaders(token), body: "{}" });
+    if (!shouldReprompt(response.status)) return response;
+    sessionToken = undefined;
+  }
+  vscode.window.showErrorMessage("muvue: the daemon rejected the token (403). Copy the current `api token` from `muvue serve`.");
+  return undefined;
 }
 
 async function promptForId(what: string): Promise<number | undefined> {
@@ -45,25 +67,16 @@ async function promptForId(what: string): Promise<number | undefined> {
 }
 
 /** Shared by `approveNode` and `pauseProject`: resolves the endpoint,
- * calls the daemon with the stored session token, and reports the result.
- * The daemon call itself is a plain `fetch` (no HTTP client dependency,
- * per plan working rule 2). */
-async function callHumanVerb(
-  context: vscode.ExtensionContext,
-  command: "approveNode" | "pauseProject",
-  what: string,
-): Promise<void> {
+ * calls the daemon with the session token, and reports the result. The
+ * daemon call itself is a plain `fetch` (no HTTP client dependency, per
+ * plan working rule 2). */
+async function callHumanVerb(command: "approveNode" | "pauseProject", what: string): Promise<void> {
   const id = await promptForId(what);
   if (id === undefined) return;
-  const token = await getSessionToken(context);
-  if (!token) {
-    vscode.window.showWarningMessage("muvue: no session token entered, cancelled.");
-    return;
-  }
   const { method, path } = resolveEndpoint(command, id);
-  const url = joinUrl(getDaemonUrl(), path);
   try {
-    const response = await fetch(url, { method, headers: buildAuthHeaders(token) });
+    const response = await postWithToken(path);
+    if (!response) return;
     if (!response.ok) {
       const body = await response.text();
       vscode.window.showErrorMessage(`muvue: ${method} ${path} -> ${response.status}: ${body}`);
@@ -71,39 +84,44 @@ async function callHumanVerb(
     }
     vscode.window.showInformationMessage(`muvue: ${method} ${path} -> ${response.status} OK`);
   } catch (err) {
-    vscode.window.showErrorMessage(`muvue: could not reach daemon at ${url}: ${String(err)}`);
+    vscode.window.showErrorMessage(`muvue: could not reach daemon at ${getDaemonUrl()}: ${String(err)}`);
   }
 }
 
 /**
- * Opens (or reveals) the webview panel. The panel's own HTML is just an
- * `<iframe>` (`buildWebviewHtml`) pointed at the daemon's real `/` URL --
- * the dashboard rendered is P2/P7's actual `index.html`, served live by
- * the daemon, not a bundled copy (P8 acceptance #1). The extension does
- * not start `muvue serve` itself (decision #66); it assumes one is
- * already running at `muvue.daemonUrl`.
+ * Opens the webview panel. The panel's own HTML is just an `<iframe>`
+ * (`buildWebviewHtml`) pointed at the daemon's real `/` URL, so the
+ * dashboard rendered is the daemon's actual `index.html` (P8 acceptance
+ * #1). With a token, the extension first mints a one-time nonce for the
+ * iframe so the dashboard can act; without one it opens read-only. The
+ * extension does not start `muvue serve` itself (decision #66).
  */
-function openDashboard(context: vscode.ExtensionContext): void {
-  const daemonUrl = getDaemonUrl();
+async function openDashboard(context: vscode.ExtensionContext): Promise<void> {
+  let nonce: string | undefined;
+  try {
+    const response = await postWithToken(NONCE_PATH);
+    if (response?.ok) nonce = ((await response.json()) as { nonce?: string }).nonce;
+  } catch (err) {
+    vscode.window.showWarningMessage(`muvue: could not reach daemon at ${getDaemonUrl()}: ${String(err)}`);
+  }
   const panel = vscode.window.createWebviewPanel(
     "muvueDashboard",
     "muvue dashboard",
     vscode.ViewColumn.One,
     { enableScripts: false, retainContextWhenHidden: true },
   );
-  panel.webview.html = buildWebviewHtml(daemonUrl);
+  panel.webview.html = buildWebviewHtml(getDaemonUrl(), nonce);
   context.subscriptions.push(panel);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("muvue.openDashboard", () => openDashboard(context)),
-    vscode.commands.registerCommand("muvue.approveNode", () =>
-      callHumanVerb(context, "approveNode", "node"),
-    ),
-    vscode.commands.registerCommand("muvue.pauseProject", () =>
-      callHumanVerb(context, "pauseProject", "project"),
-    ),
+    vscode.commands.registerCommand("muvue.approveNode", () => callHumanVerb("approveNode", "node")),
+    vscode.commands.registerCommand("muvue.pauseProject", () => callHumanVerb("pauseProject", "project")),
+  );
+  context.secrets.delete(LEGACY_SECRET_KEY).then(undefined, (err) =>
+    vscode.window.showWarningMessage(`muvue: could not remove the token an older version stored: ${String(err)}`),
   );
 }
 

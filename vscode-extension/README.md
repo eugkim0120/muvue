@@ -25,9 +25,10 @@ look at:
 muvue serve /path/to/repo --port 8765
 ```
 
-`serve` prints a session token once at startup (also written to
-`<repo>/.muvue/session`, `0600`). Human verbs (approve, pause, ...) need
-that token.
+`serve` prints two lines at startup: a one-time dashboard link
+(`#n=<nonce>`) and an `api token: ...` line. The token lives only in the
+daemon's memory and changes every time `serve` restarts. Human verbs
+(approve, pause, ...) need it.
 
 ## Commands
 
@@ -38,8 +39,18 @@ that token.
 | `muvue.pauseProject` | muvue: Pause Project (Emergency Stop) | `POST /projects/{id}/pause` |
 
 `approveNode` and `pauseProject` prompt for a numeric id, then for the
-session token the first time (cached afterwards in VS Code's
-`SecretStorage` for this machine).
+api token the first time. The extension keeps the token in memory only,
+never in `SecretStorage` or settings (v4 section 8a: nothing
+token-shaped on disk), and removes a token that an older version stored.
+A 403 means the token is stale (the daemon restarted), so the extension
+forgets it and asks again.
+
+`openDashboard` uses the token to mint a one-time nonce (`POST
+/auth/nonce`) and opens the iframe at `#n=<nonce>`. The dashboard
+exchanges the nonce. Inside the webview the dashboard is a cross-site
+iframe, so its SameSite=Strict cookie is never sent; the page therefore
+asks the exchange for the token and keeps it in memory instead. Without
+a token the dashboard opens read-only.
 
 ## Configuration
 
@@ -86,7 +97,8 @@ exercised:
   webview and would call, respond exactly as this extension assumes.
 - **Not run inside an actual VS Code window.** `vscode.window.
   createWebviewPanel`, the CSP as VS Code's real webview host enforces it,
-  `SecretStorage`, and the command palette wiring have not been exercised
+  the cookie behaviour of the cross-site iframe, and the command palette
+  wiring have not been exercised
   against a real Extension Host. If you have VS Code installed, the
   fastest manual check is: `code --extensionDevelopmentPath=$(pwd)
   <some-repo>`, then run "muvue: Open Dashboard" from the command palette

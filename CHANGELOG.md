@@ -2,6 +2,46 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W9: dashboard, daemon security, VS Code
+
+### Added
+- **Tree view is a DAG.** Inline SVG with a layered layout, parent and
+  dependency edges, and status colours. Click a node to open it.
+  Served by the new `GET /graph`.
+- **Node panel**: criteria as a list with how they are verified, the
+  real diff (`GET /nodes/{id}/diff`: the node's commit patches, or its
+  worktree against the branch point), and a tail of the driver's
+  output (`GET /nodes/{id}/logs`, plain text).
+- **Spec comments anchored to lines** (#145): click a spec line to
+  comment on it. `POST /nodes/{id}/comment` takes `line`.
+- **Inbox actions**: answer questions, ack signals, audit drafts (with
+  their diff), unattributed commits and structure updates. Adds the
+  `unverified_external`, `awaiting_approval` and `structure_updates`
+  sections.
+- **KPIs**: touch drift, spend per driver, and the medium/high
+  rubber-stamp counts (#147, supersedes #99).
+- **Project selector** in the header. Pause, resume, revisions, and the
+  new close preview and close button act on the selected project.
+- `POST /auth/nonce`, `GET /auth/check`.
+- **`doctor` probes the bind** (control 1, #146).
+
+### Changed
+- **The dashboard link's `#n=` fragment is a single-use nonce**, not
+  the session token (#144). `serve` prints the token on its own
+  `api token:` line for API clients.
+- **Every mutating request needs `Content-Type: application/json`**,
+  including body-less ones such as `pause` (#143).
+- **VS Code extension**: it keeps the token in memory only (a copy an
+  older version put in `SecretStorage` is removed), asks again on 403,
+  and opens the dashboard with a one-time nonce. Inside the webview the
+  dashboard falls back to an in-memory header token, because its
+  SameSite cookie is never sent to a cross-site iframe.
+
+### Removed
+- `POST /auth/exchange` no longer accepts the session token itself.
+- The event-history stub behind `GET /nodes/{id}/logs`; the timeline
+  already shows events.
+
 ## [Unreleased] - v4 delta closure, W8: structure and drift
 
 ### Added

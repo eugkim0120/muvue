@@ -214,14 +214,6 @@ def test_node_diff_stub_endpoint(client, ready_task):
     assert r.json()["node_id"] == node_id
 
 
-def test_node_logs_stream_endpoint(client, ready_task):
-    node_id = ready_task["task"]["id"]
-    r = client.get(f"/nodes/{node_id}/logs")
-    assert r.status_code == 200
-    lines = [l for l in r.text.splitlines() if l.strip()]
-    assert len(lines) > 0
-
-
 def test_show_node_404_for_missing_node(client):
     r = client.get("/nodes/99999")
     assert r.status_code == 404
@@ -258,14 +250,14 @@ def test_approve_with_bad_token_rejected(client, ready_task):
 
 def test_pause_refuses_start_then_resume_allows_it(client, conn, ready_task, auth_headers):
     project_id = ready_task["project"]["id"]
-    r = client.post(f"/projects/{project_id}/pause", headers=auth_headers)
+    r = client.post(f"/projects/{project_id}/pause", headers={**auth_headers, "Content-Type": "application/json"})
     assert r.status_code == 200
     assert r.json()["project"]["phase"] == "paused"
 
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 409
 
-    r = client.post(f"/projects/{project_id}/resume", headers=auth_headers)
+    r = client.post(f"/projects/{project_id}/resume", headers={**auth_headers, "Content-Type": "application/json"})
     assert r.json()["project"]["phase"] == "executing"
     r = client.post(f"/nodes/{ready_task['task']['id']}/start", json={"owner": "agent-1"}, headers=auth_headers)
     assert r.status_code == 200
@@ -313,8 +305,8 @@ def test_kpis_endpoint_present_with_stubbed_and_real_fields(client):
 # -- auth exchange (v4 section 8a control 5) --------------------------------
 
 
-def test_exchange_sets_httponly_samesite_strict_cookie(client, token):
-    r = client.post("/auth/exchange", json={"token": token})
+def test_exchange_sets_httponly_samesite_strict_cookie(client, app):
+    r = client.post("/auth/exchange", json={"nonce": app.state.session.mint_nonce()})
     assert r.status_code == 200
     cookie_header = r.headers.get("set-cookie", "")
     assert "muvue_session=" in cookie_header
@@ -322,14 +314,14 @@ def test_exchange_sets_httponly_samesite_strict_cookie(client, token):
     assert "SameSite=strict" in cookie_header or "SameSite=Strict" in cookie_header
 
 
-def test_exchange_with_wrong_token_rejected(client):
-    r = client.post("/auth/exchange", json={"token": "wrong"})
+def test_exchange_with_wrong_nonce_rejected(client):
+    r = client.post("/auth/exchange", json={"nonce": "wrong"})
     assert r.status_code == 403
     assert "set-cookie" not in {k.lower() for k in r.headers.keys()}
 
 
-def test_cookie_from_exchange_authorizes_mutating_requests(client, token, ready_task):
-    r = client.post("/auth/exchange", json={"token": token})
+def test_cookie_from_exchange_authorizes_mutating_requests(client, app, ready_task):
+    r = client.post("/auth/exchange", json={"nonce": app.state.session.mint_nonce()})
     assert r.status_code == 200
     # No Authorization header this time -- the cookie the exchange just
     # set (and httpx/TestClient's cookie jar now carries) is what

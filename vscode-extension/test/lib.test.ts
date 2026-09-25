@@ -12,7 +12,9 @@ import {
   buildWebviewHtml,
   DEFAULT_DAEMON_URL,
   joinUrl,
+  NONCE_PATH,
   resolveEndpoint,
+  shouldReprompt,
 } from "../src/lib";
 
 /**
@@ -58,6 +60,26 @@ function test(name: string, fn: () => void): void {
 test("buildWebviewHtml embeds the exact daemon URL as the iframe src", () => {
   const html = buildWebviewHtml("http://127.0.0.1:8765");
   assert.match(html, /<iframe src="http:\/\/127\.0\.0\.1:8765" title="muvue dashboard"><\/iframe>/);
+});
+
+test("buildWebviewHtml hands the dashboard a one-time nonce in the fragment", () => {
+  const html = buildWebviewHtml("http://127.0.0.1:8765/", "abc-_123");
+  assert.match(html, /<iframe src="http:\/\/127\.0\.0\.1:8765\/#n=abc-_123" title="muvue dashboard"><\/iframe>/);
+});
+
+test("buildWebviewHtml escapes a nonce it didn't mint", () => {
+  const html = buildWebviewHtml("http://127.0.0.1:8765", "a\"><script>");
+  assert.match(html, /#n=a%22%3E%3Cscript%3E"/);
+});
+
+test("NONCE_PATH is the daemon's nonce-minting endpoint", () => {
+  assert.strictEqual(NONCE_PATH, "/auth/nonce");
+});
+
+test("shouldReprompt only on 403 (a stale token after `serve` restarted)", () => {
+  assert.strictEqual(shouldReprompt(403), true);
+  assert.strictEqual(shouldReprompt(409), false);
+  assert.strictEqual(shouldReprompt(200), false);
 });
 
 test("buildWebviewHtml scopes the CSP frame-src to the daemon's origin", () => {

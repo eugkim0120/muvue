@@ -12,19 +12,29 @@
  * setting -- the extension never spawns the daemon itself (decision #66). */
 export const DEFAULT_DAEMON_URL = "http://127.0.0.1:8765";
 
+/** Mints a one-time dashboard nonce (`POST /auth/nonce`, session-gated). */
+export const NONCE_PATH = "/auth/nonce";
+
 /**
  * Builds the webview's own (wrapper) HTML: a single `<iframe>` pointed at
  * the daemon's real HTTP URL, so the dashboard the iframe renders is
- * whatever `GET /` on the running daemon serves right now (P2's
- * `index.html`, extended by P7) -- never a bundled copy (P8 acceptance #1).
+ * whatever `GET /` on the running daemon serves right now -- never a
+ * bundled copy (P8 acceptance #1).
+ *
+ * With a `nonce` (minted by the daemon for this panel), the iframe URL
+ * carries it as `#n=<nonce>`. The dashboard exchanges it once. Because
+ * the iframe is cross-site to the webview, its SameSite=Strict cookie is
+ * never sent, so the page asks the exchange for the token and keeps it in
+ * memory. Without a nonce the dashboard opens read-only.
  *
  * The CSP is scoped to that one origin: `frame-src` allows only the
  * daemon's origin, `script-src 'none'` since this wrapper page runs no
  * script of its own (all dashboard JS runs inside the iframe, same-origin
  * with the daemon, and is unaffected by this outer CSP).
  */
-export function buildWebviewHtml(daemonUrl: string): string {
+export function buildWebviewHtml(daemonUrl: string, nonce?: string): string {
   const origin = new URL(daemonUrl).origin;
+  const src = nonce ? `${daemonUrl.replace(/\/+$/, "")}/#n=${encodeURIComponent(nonce)}` : daemonUrl;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,10 +43,16 @@ export function buildWebviewHtml(daemonUrl: string): string {
 <style>html, body, iframe { margin: 0; padding: 0; width: 100%; height: 100%; border: 0; display: block; }</style>
 </head>
 <body>
-<iframe src="${daemonUrl}" title="muvue dashboard"></iframe>
+<iframe src="${src}" title="muvue dashboard"></iframe>
 </body>
 </html>
 `;
+}
+
+/** A 403 from a session-gated call means the token is wrong or stale:
+ * `serve` mints a new one on every restart. */
+export function shouldReprompt(status: number): boolean {
+  return status === 403;
 }
 
 /** The two mutating human-verb daemon endpoints (src/muvue/api/app.py)
@@ -67,9 +83,9 @@ export function resolveEndpoint(command: MuvueCommandId, id: number): EndpointSp
   }
 }
 
-/** Human verbs on the daemon require the repo-scoped session token as a
- * bearer header (`core.daemon.verify_session`, src/muvue/api/app.py
- * `_require_session`) -- same convention `index.html` already follows. */
+/** Mutating calls need the session token printed by `muvue serve` as a
+ * bearer header (src/muvue/api/app.py `_require_session`), and every one
+ * of them must be `Content-Type: application/json`, body or not. */
 export function buildAuthHeaders(token: string | undefined): Record<string, string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;

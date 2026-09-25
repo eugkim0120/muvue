@@ -166,6 +166,24 @@ class SessionManager:
         self.token: str = secrets.token_urlsafe(32)  # 256 bits
         self.idle_timeout_minutes = idle_timeout_minutes
         self.last_activity: datetime = now or _now()
+        self._nonces: set[str] = set()
+
+    def mint_nonce(self) -> str:
+        """A single-use value for a dashboard link's `#n=` fragment
+        (control 5). It is not the token, so a link that leaks through
+        browser history or a screenshot is dead once the page has
+        exchanged it."""
+        nonce = secrets.token_urlsafe(32)
+        self._nonces.add(nonce)
+        return nonce
+
+    def consume_nonce(self, nonce: str | None, *, now: datetime | None = None) -> bool:
+        """True once per minted nonce, and only while the session itself
+        is still live."""
+        if not nonce or nonce not in self._nonces:
+            return False
+        self._nonces.discard(nonce)
+        return self.verify_and_touch(self.token, now=now)
 
     def verify_and_touch(self, token: str | None, *, now: datetime | None = None) -> bool:
         """Constant-time compare against the live token; on success,

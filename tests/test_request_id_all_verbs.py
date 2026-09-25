@@ -144,7 +144,10 @@ def test_api_mutations_dedupe_on_x_request_id_header(repo):
     project_id, task_id = _ready_task(repo)
     app = create_app(repo)
     client = TestClient(app, base_url="http://127.0.0.1")
-    headers = {"Authorization": f"Bearer {app.state.session.token}", "X-Request-Id": "c-1"}
+    headers = {
+        "Authorization": f"Bearer {app.state.session.token}", "X-Request-Id": "c-1",
+        "Content-Type": "application/json",
+    }
     for _ in range(2):
         r = client.post(f"/nodes/{task_id}/comment", json={"text": "tighten this"}, headers=headers)
         assert r.status_code == 200, r.text
