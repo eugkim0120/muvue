@@ -526,14 +526,15 @@ def project_create(
     (`[agents.<name>.budget]` in config.toml), not per project."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
+    who, evidence = _invoker()
     try:
         def _apply():
             return core.projects.create_project(
                 conn, goal=goal, repo_root=repo_root, follows=list(follows),
-                supersedes=list(supersedes), actor_evidence=_evidence(),
+                supersedes=list(supersedes), actor=who, actor_evidence=evidence,
             )
         result = core.idempotency.once(
-            conn, request_id, "project.create", _apply, actor=_invoker()[0],
+            conn, request_id, "project.create", _apply, actor=who,
         )
     finally:
         conn.close()

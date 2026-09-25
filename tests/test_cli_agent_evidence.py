@@ -45,3 +45,19 @@ def test_cli_agent_verbs_without_a_tty_are_not_recorded_as_tty(tmp_path):
     conn.close()
     assert {r["type"] for r in rows} == {"project.created", "node.created", "note.added"}
     assert all(r["actor_evidence"] != "tty" for r in rows), [tuple(r) for r in rows]
+
+
+def test_project_create_under_an_agent_is_recorded_as_the_agents(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from muvue.cli.main import app
+    from muvue.core import actor
+
+    init_repo(tmp_path)
+    monkeypatch.setattr(actor, "detect_invoker", lambda **_: ("agent", "agent_parent:claude"))
+    result = CliRunner().invoke(app, ["project", "create", "--goal", "g", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    conn = core_db.connect(tmp_path / ".muvue" / "muvue.db")
+    row = conn.execute("SELECT actor, actor_evidence FROM events WHERE type = 'project.created'").fetchone()
+    conn.close()
+    assert tuple(row) == ("agent", "agent_parent:claude")
