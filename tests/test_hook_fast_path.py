@@ -78,15 +78,14 @@ def test_session_start_default_action_spools_and_allows(repo, monkeypatch):
     exit_code = _hook.main(["session-start", str(repo)])
 
     assert exit_code == 0
-    assert json.loads(out.getvalue()) == {"decision": "allow"}
+    assert out.getvalue() == ""  # node 7 doesn't exist: no brief to inject
     lines = _queue_lines(repo)
     assert lines == [{"event": "session-start", "ts": lines[0]["ts"], "node_id": 7}]
 
 
-def test_stop_default_action_never_reads_db_no_db_present(repo, monkeypatch):
+def test_stop_fails_open_and_still_spools_with_no_db_present(repo, monkeypatch):
     # No .muvue/muvue.db in this repo at all (init_repo does create one,
-    # so delete it) -- proves `stop` truly never opens the DB, unlike
-    # the old synchronous core.claude_hooks.stop which queried `notes`.
+    # so delete it): `stop` must still spool its event and allow.
     (repo / ".muvue" / "muvue.db").unlink()
     import sys
 
@@ -181,8 +180,7 @@ def test_pre_tool_use_reads_current_node_file_when_payload_has_none(repo, conn_a
 
 def test_pre_tool_use_bash_no_longer_blocks_git_commit_without_trailer(repo, conn_and_project):
     """v4 section 7 / changelog item 10: deliberate behavior *reduction*
-    (mirrors core.claude_hooks -- see test_adapters.py's equivalent
-    test). Trailer enforcement moved to post-hoc `post-commit`
+    (see tests/test_claude_hook_decisions.py). Trailer enforcement moved to post-hoc `post-commit`
     detection; see tests/test_trailer_enforcement_relocation.py."""
     result = _hook.pre_tool_use(
         str(repo), {"tool_name": "Bash", "tool_input": {"command": "git commit -m 'x'"}}
@@ -236,9 +234,8 @@ def test_pre_tool_use_within_deadline_does_not_spool(repo, conn_and_project):
     nodes.start(conn, node_id=node["id"], owner="agent-1")
     conn.close()
 
-    calls = iter([0.0, 0.01])
     result = _hook.pre_tool_use(
-        str(repo), {"tool_name": "Edit", "node_id": node["id"]}, clock=lambda: next(calls)
+        str(repo), {"tool_name": "Edit", "node_id": node["id"]}, clock=lambda: 0.01
     )
     assert result == {"decision": "allow"}
     assert _queue_lines(repo) == []

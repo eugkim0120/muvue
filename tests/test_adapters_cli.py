@@ -34,8 +34,7 @@ def test_hook_pre_tool_use_blocks_edit_with_no_node_and_exits_2(tmp_path: Path):
     payload = json.dumps({"tool_name": "Edit", "tool_input": {}})
     result = _run(tmp_path, "hook", "pre-tool-use", str(tmp_path), input_text=payload)
     assert result.returncode == 2
-    decision = json.loads(result.stdout)
-    assert decision["decision"] == "block"
+    assert "no active muvue node" in result.stderr
 
 
 def test_hook_pre_tool_use_allows_edit_after_cli_start_sets_current_node(tmp_path: Path):
@@ -53,7 +52,7 @@ def test_hook_pre_tool_use_allows_edit_after_cli_start_sets_current_node(tmp_pat
     payload = json.dumps({"tool_name": "Edit", "tool_input": {}})
     hook_result = _run(tmp_path, "hook", "pre-tool-use", str(tmp_path), input_text=payload)
     assert hook_result.returncode == 0, hook_result.stderr
-    assert json.loads(hook_result.stdout)["decision"] == "allow"
+    assert hook_result.stdout == ""
 
     done_result = _run(
         tmp_path, "done", str(task["id"]), "--owner", "claude", "--summary", "ok", "--path", str(tmp_path)

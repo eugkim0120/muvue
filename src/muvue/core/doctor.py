@@ -18,6 +18,7 @@ from pathlib import Path
 from . import adapters as adapters_mod
 from . import db as core_db
 from . import gitutil
+from . import hooks as hooks_mod
 from . import runner as runner_mod
 from .config import ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
@@ -43,6 +44,9 @@ class DoctorReport:
     # `ok` to False; a deep-but-still-draining queue isn't a broken
     # install.
     warnings: list[str] = field(default_factory=list)
+    # Informational lines, always printed (e.g. the hook queue depth).
+    info: list[str] = field(default_factory=list)
+    queue_depth: int = 0
 
     def fail(self, msg: str) -> None:
         self.ok = False
@@ -294,14 +298,14 @@ def run_doctor(
     # `muvue._hook`'s spool -- see src/muvue/_hook.py). A deep queue
     # means drain (absent-daemon CLI-callback drain, or the daemon's
     # continuous loop) is falling behind the spool rate.
-    queue_path = muvue_dir / "queue.jsonl"
-    if queue_path.exists():
-        depth = sum(1 for line in queue_path.read_text().splitlines() if line.strip())
-        if depth > QUEUE_DEPTH_WARN_THRESHOLD:
-            report.warn(
-                f"hook queue depth is {depth} (> {QUEUE_DEPTH_WARN_THRESHOLD}) at "
-                f"{queue_path}; drain is falling behind"
-            )
+    depth = hooks_mod._pending_line_count(repo_root)
+    report.queue_depth = depth
+    report.info.append(f"hook queue depth: {depth}")
+    if depth > QUEUE_DEPTH_WARN_THRESHOLD:
+        report.warn(
+            f"hook queue depth is {depth} (> {QUEUE_DEPTH_WARN_THRESHOLD}) in "
+            f"{muvue_dir}; drain is falling behind"
+        )
 
     husky_dir = repo_root / ".husky"
     for name in HOOK_NAMES:

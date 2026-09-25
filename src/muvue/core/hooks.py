@@ -194,10 +194,9 @@ def _drain_clock() -> float:
 def _process_queue_event(conn: sqlite3.Connection, repo_root: Path, event: dict) -> None:
     """Dispatch one spooled line to the existing full handler for its
     event type (working rule: reuse, don't reimplement). `post-commit`
-    is the only spooled event with real DB mutation work left to do
-    (`core.claude_hooks.session_start`/`pre_compact`/`stop` are
-    read-only advisory checks in the synchronous path they used to run
-    on -- nothing about them was ever a deferred *write*); the rest are
+    is the only spooled event with real DB mutation work left to do (the
+    Claude Code decision hooks decide synchronously in `muvue._hook.run`;
+    nothing about them is a deferred *write*); the rest are
     recorded as an audit-trail `hook.<event>` event (v4 principle 10:
     "detection everywhere else") so a fast-path event that COULD have
     mattered (e.g. a `hook_timeout`) stays visible even though nothing

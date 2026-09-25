@@ -2,7 +2,7 @@
 <name>` points a vendor coding tool at muvue's CLI/MCP surface.
 
 Claude Code gets a real hook config (`.claude/settings.json`) wired to
-`muvue hook <event>` handlers (see core/claude_hooks.py) -- SessionStart,
+`muvue._hook` decision hooks (see src/muvue/_hook.py) -- SessionStart,
 PreToolUse, PreCompact, Stop. Codex/Gemini/Cursor are config writers only
 (plan section 7: "Codex, Gemini, Cursor: config writers"): each gets a
 small instructions/config file pointing at `muvue brief`/`muvue mcp`,

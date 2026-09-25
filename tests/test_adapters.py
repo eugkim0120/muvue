@@ -1,7 +1,7 @@
 """P3: adapter config writers (plan section 7) -- Claude Code's real hook
 config, Codex/Gemini/Cursor's best-effort instruction files, doctor's
 protocol_version mismatch check, and the Claude Code hook decision logic
-(core/claude_hooks.py)."""
+(src/muvue/_hook.py, see tests/test_claude_hook_decisions.py)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from muvue.core import adapters, claude_hooks, db as core_db, doctor, nodes, projects
+from muvue.core import adapters, db as core_db, doctor, nodes, projects
 from muvue.core.config import MuvueConfig
 from muvue.core.repo_init import init_repo
 
@@ -121,100 +121,3 @@ def test_doctor_ok_when_no_adapter_installed(tmp_path: Path):
     init_repo(tmp_path)
     report = doctor.run_doctor(tmp_path, skip_security_probes=True)
     assert report.ok is True
-
-
-# -- claude_hooks decision logic -------------------------------------------
-
-
-@pytest.fixture
-def conn(tmp_path: Path):
-    c = core_db.init_db(tmp_path / "muvue.db")
-    yield c
-    c.close()
-
-
-@pytest.fixture
-def project(conn):
-    return projects.create_project(conn, goal="claude hooks test")
-
-
-def test_pre_tool_use_blocks_edit_with_no_active_node(conn):
-    result = claude_hooks.pre_tool_use(conn, tool_name="Edit", tool_input={}, node_id=None)
-    assert result["decision"] == "block"
-
-
-def test_pre_tool_use_allows_edit_with_in_progress_node(conn, project):
-    projects.set_phase(conn, project["id"], "executing")
-    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    nodes.start(conn, task["id"], owner="claude")
-    result = claude_hooks.pre_tool_use(conn, tool_name="Edit", tool_input={}, node_id=task["id"])
-    assert result["decision"] == "allow"
-
-
-def test_pre_tool_use_blocks_edit_when_node_awaiting_approval(conn, project):
-    projects.set_phase(conn, project["id"], "executing")
-    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    nodes.start(conn, task["id"], owner="claude")
-    conn.execute("UPDATE nodes SET status = 'awaiting_approval' WHERE id = ?", (task["id"],))
-    conn.commit()
-    result = claude_hooks.pre_tool_use(conn, tool_name="Edit", tool_input={}, node_id=task["id"])
-    assert result["decision"] == "block"
-
-
-def test_pre_tool_use_no_longer_blocks_git_commit_without_trailer(conn):
-    """v4 section 7 / changelog item 10: deliberate behavior *reduction*.
-    v3's `PreToolUse` string-matched a `Bash` `git commit` call and
-    blocked it for a missing trailer; v4 removes that (defeated by
-    `git -C`, heredocs, chained commands, aliases, scripts, and
-    false-positives on any string containing "git commit") in favor of
-    post-hoc `post-commit` detection -- see
-    tests/test_trailer_enforcement_relocation.py."""
-    result = claude_hooks.pre_tool_use(
-        conn, tool_name="Bash", tool_input={"command": "git commit -m 'fix bug'"}, node_id=None,
-    )
-    assert result["decision"] == "allow"
-
-
-def test_pre_tool_use_allows_git_commit_with_trailer(conn):
-    result = claude_hooks.pre_tool_use(
-        conn, tool_name="Bash",
-        tool_input={"command": "git commit -m 'fix bug\n\nMuvue-Node: 5'"}, node_id=None,
-    )
-    assert result["decision"] == "allow"
-
-
-def test_pre_tool_use_allows_unrelated_bash_commands(conn):
-    result = claude_hooks.pre_tool_use(conn, tool_name="Bash", tool_input={"command": "ls -la"}, node_id=None)
-    assert result["decision"] == "allow"
-
-
-def test_session_start_returns_brief_as_additional_context(conn, project):
-    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    result = claude_hooks.session_start(conn, node_id=task["id"])
-    assert result["decision"] == "allow"
-    assert result["hookSpecificOutput"]["additionalContext"]["node"]["id"] == task["id"]
-
-
-def test_session_start_allows_when_no_node(conn):
-    assert claude_hooks.session_start(conn, node_id=None) == {"decision": "allow"}
-
-
-def test_pre_compact_requires_summary_when_in_progress(conn, project):
-    projects.set_phase(conn, project["id"], "executing")
-    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    nodes.start(conn, task["id"], owner="claude")
-    assert claude_hooks.pre_compact(conn, node_id=task["id"], summary=None)["decision"] == "block"
-    assert claude_hooks.pre_compact(conn, node_id=task["id"], summary="progress so far")["decision"] == "allow"
-
-
-def test_stop_blocks_in_progress_node_with_no_notes(conn, project):
-    projects.set_phase(conn, project["id"], "executing")
-    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
-    nodes.start(conn, task["id"], owner="claude")
-    assert claude_hooks.stop(conn, node_id=task["id"])["decision"] == "block"
-    nodes.add_note(conn, task["id"], kind="discovery", text="progress", actor="agent")
-    assert claude_hooks.stop(conn, node_id=task["id"])["decision"] == "allow"
-
-
-def test_stop_allows_when_no_active_node(conn):
-    assert claude_hooks.stop(conn, node_id=None)["decision"] == "allow"

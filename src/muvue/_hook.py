@@ -26,12 +26,18 @@ through `write_txn` as usual (working rule 3: the queue *append* here
 is intentionally NOT a core DB write, by design, to stay off SQLite on
 the hot path; the *drain* is a core write like any other mutation).
 
-`PreToolUse` is the one exception (v4 section 4a): it must answer
-allow/deny, so it is the only event permitted to read the DB. It opens
-`.muvue/muvue.db` read-only, runs a single indexed query, and has a
-hard 150ms wall-clock deadline after which it fails open (allows the
-tool call) and spools a `hook_timeout` line so the miss is still
-visible later (v4 principle 10: "detection everywhere else").
+The Claude Code decision hooks read the DB: `PreToolUse` (allow/deny,
+v4 section 4a) and, per decision #114, the once-per-session/turn
+`SessionStart` (inject the brief), `Stop` (block unlogged work) and
+`PreCompact` (require a progress summary). Each opens `.muvue/muvue.db`
+read-only, runs a couple of indexed queries, and has a hard 150ms
+deadline enforced *during* the query by an sqlite progress handler:
+past it the hook fails open and spools a `hook_timeout` line so the
+miss is still visible later (v4 principle 10: "detection everywhere
+else").
+
+Claude Code's hook contract: exit 2 blocks and feeds stderr back as the
+reason; on exit 0, SessionStart's stdout becomes session context.
 """
 
 from __future__ import annotations
@@ -47,6 +53,8 @@ DB_RELPATH = os.path.join(".muvue", "muvue.db")
 
 # v4 section 4a: "a hard 150 ms deadline after which it fails open".
 PRE_TOOL_USE_DEADLINE_S = 0.150
+# How many sqlite VM instructions run between deadline checks.
+_PROGRESS_OPS = 1000
 
 # v4 section 7 / changelog item 10: `Bash` used to be here too, for the
 # `git commit`-without-trailer string-match block -- REMOVED, not
@@ -57,6 +65,7 @@ PRE_TOOL_USE_DEADLINE_S = 0.150
 # keeps every `Bash` PreToolUse call on the zero-DB-open fast path,
 # same as Read/Grep/Glob/etc.
 _BLOCKING_TOOL_NAMES = ("Edit", "Write")
+DECISION_HOOKS = ("pre-tool-use", "session-start", "stop", "pre-compact")
 
 
 def _now_iso() -> str:
@@ -155,6 +164,64 @@ def _read_head_sha(repo_root: str) -> str | None:
     return None
 
 
+class HookOutcome:
+    __slots__ = ("exit_code", "stdout", "stderr")
+
+    def __init__(self, exit_code: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _DeadlineExceeded(Exception):
+    pass
+
+
+def _query_with_deadline(repo_root: str, fn, *, clock, start: float, deadline_s: float):
+    """Run `fn(conn)` against a read-only connection under the hook
+    deadline. Returns `fn`'s result, or None when the DB is missing.
+    Raises `_DeadlineExceeded` when the deadline passes (lock wait or a
+    slow query); any other sqlite error propagates as `sqlite3.Error`."""
+    db_path = os.path.join(repo_root, DB_RELPATH)
+    if not os.path.exists(db_path):
+        return None
+
+    import sqlite3  # lazy: only DB-reading hooks pay for it (v4 section 4a)
+
+    remaining = deadline_s - (clock() - start)
+    if remaining <= 0:
+        raise _DeadlineExceeded
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=remaining)
+        conn.row_factory = sqlite3.Row
+        conn.set_progress_handler(lambda: 1 if clock() - start > deadline_s else 0, _PROGRESS_OPS)
+        try:
+            result = fn(conn)
+        except sqlite3.OperationalError as e:
+            if clock() - start > deadline_s:
+                raise _DeadlineExceeded from e
+            raise
+    finally:
+        if conn is not None:
+            conn.close()
+    if clock() - start > deadline_s:
+        raise _DeadlineExceeded
+    return result
+
+
+def _spool_timeout(repo_root: str, hook: str, node_id) -> None:
+    _append_queue(
+        repo_root,
+        {"event": "hook_timeout", "ts": _now_iso(), "hook": hook, "node_id": node_id},
+    )
+
+
+def _resolve_node_id(repo_root: str, payload: dict):
+    node_id = payload.get("node_id")
+    return _get_current_node(repo_root) if node_id is None else node_id
+
+
 def pre_tool_use(
     repo_root: str,
     payload: dict,
@@ -162,48 +229,27 @@ def pre_tool_use(
     clock=time.monotonic,
     deadline_s: float = PRE_TOOL_USE_DEADLINE_S,
 ) -> dict:
-    """The one DB-reading path (v4 section 4a). Mirrors
-    `core.claude_hooks.pre_tool_use`'s decision logic exactly (that
-    logic does not change, only its execution path does), against a
-    read-only connection, under a hard wall-clock deadline enforced by
-    an elapsed-time check after the query -- a pathologically slow
-    query still can't be preempted mid-flight, but it can't make this
-    process block past the deadline either: on overrun this fails open
-    and still records `hook_timeout` to the queue so the miss is
-    auditable."""
+    """The allow/deny decision (v4 section 4a), as a dict. On a deadline
+    overrun this fails open and records `hook_timeout` to the queue so
+    the miss is auditable."""
     start = clock()
     tool_name = payload.get("tool_name", "")
-    node_id = payload.get("node_id")
-    if node_id is None:
-        node_id = _get_current_node(repo_root)
+    node_id = _resolve_node_id(repo_root, payload)
 
     if tool_name not in _BLOCKING_TOOL_NAMES:
         # Most PreToolUse calls (Read/Grep/Glob/...) never need the DB
         # at all -- keep them on the zero-import-cost path.
         return {"decision": "allow"}
 
-    db_path = os.path.join(repo_root, DB_RELPATH)
-    if not os.path.exists(db_path):
-        return {"decision": "allow"}
-
-    import sqlite3  # lazy: only this branch pays for it (v4 section 4a)
-
-    conn = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        decision = _decide(conn, tool_name=tool_name, node_id=node_id)
-    finally:
-        if conn is not None:
-            conn.close()
-
-    if clock() - start > deadline_s:
-        _append_queue(
-            repo_root,
-            {"event": "hook_timeout", "ts": _now_iso(), "hook": "pre-tool-use", "node_id": node_id},
+        decision = _query_with_deadline(
+            repo_root, lambda c: _decide(c, tool_name=tool_name, node_id=node_id),
+            clock=clock, start=start, deadline_s=deadline_s,
         )
+    except _DeadlineExceeded:
+        _spool_timeout(repo_root, "pre-tool-use", node_id)
         return {"decision": "allow"}
-    return decision
+    return decision if decision is not None else {"decision": "allow"}
 
 
 def _decide(conn, *, tool_name: str, node_id) -> dict:
@@ -230,6 +276,120 @@ def _decide(conn, *, tool_name: str, node_id) -> dict:
     return {"decision": "allow"}
 
 
+def _in_progress_node(conn, node_id):
+    if node_id is None:
+        return None
+    row = conn.execute(
+        "SELECT * FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+    ).fetchone()
+    if row is None or row["status"] != "in_progress":
+        return None
+    return row
+
+
+def _notes_since_start(conn, node_id) -> int:
+    """Notes logged on `node_id` since its latest `node.start` event --
+    progress from a previous attempt doesn't count for this one."""
+    # Ordered by event id, not timestamp: a note and a restart can land in
+    # the same millisecond.
+    started = conn.execute(
+        "SELECT MAX(id) i FROM events WHERE node_id = ? AND type = 'node.start'", (node_id,)
+    ).fetchone()["i"]
+    return conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE node_id = ? AND type = 'note.added' AND id > ?",
+        (node_id, started or 0),
+    ).fetchone()["c"]
+
+
+def _unlogged_work_reason(conn, node_id, *, what: str):
+    node = _in_progress_node(conn, node_id)
+    if node is None or _notes_since_start(conn, node_id) > 0:
+        return None
+    return (
+        f"muvue node {node_id} is in_progress with nothing logged since it started -- "
+        f"record progress with `muvue note {node_id} --kind discovery --text ...` {what}"
+    )
+
+
+def _session_brief(conn, node_id):
+    """A compact, stdlib-only brief for SessionStart context. The full
+    ranked brief (`muvue brief N`) needs `muvue.core`, which this module
+    must not import."""
+    if node_id is None:
+        return None
+    node = conn.execute(
+        "SELECT * FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
+    ).fetchone()
+    if node is None:
+        return None
+    lines = [f'T{node["id"]} {node["status"]} "{node["title"]}"']
+    try:
+        criteria = json.loads(node["criteria_json"] or "[]")
+    except ValueError:
+        criteria = []
+    for c in criteria:
+        lines.append(f"  criterion: {c}")
+    for row in conn.execute(
+        "SELECT kind, text FROM notes WHERE node_id = ? AND archived_at IS NULL "
+        "ORDER BY id DESC LIMIT 5",
+        (node_id,),
+    ):
+        lines.append(f"  {row['kind']}: {row['text']}")
+    lines.append(f"Full context: `muvue brief {node_id}`. Log progress with `muvue note`.")
+    return "\n".join(lines) + "\n"
+
+
+def run(
+    name: str,
+    repo_root: str,
+    payload: dict,
+    *,
+    clock=time.monotonic,
+    deadline_s: float = PRE_TOOL_USE_DEADLINE_S,
+) -> HookOutcome:
+    """One Claude Code decision hook, end to end: spool the event (every
+    hook but PreToolUse), then decide under the deadline."""
+    if name == "pre-tool-use":
+        result = pre_tool_use(repo_root, payload, clock=clock, deadline_s=deadline_s)
+        if result.get("decision") == "block":
+            return HookOutcome(2, "", result.get("reason", "") + "\n")
+        return HookOutcome()
+
+    start = clock()
+    node_id = _resolve_node_id(repo_root, payload)
+    event = {"event": name, "ts": _now_iso(), "node_id": node_id}
+    if name == "pre-compact":
+        event["summary"] = payload.get("summary")
+    _append_queue(repo_root, event)
+
+    if name == "stop" and payload.get("stop_hook_active"):
+        # Claude Code's own guidance: allow while a Stop hook is already
+        # forcing continuation, or the turn can loop forever.
+        return HookOutcome()
+    if name == "pre-compact" and payload.get("summary"):
+        return HookOutcome()
+
+    if name == "session-start":
+        fn = lambda c: _session_brief(c, node_id)  # noqa: E731
+    elif name == "stop":
+        fn = lambda c: _unlogged_work_reason(c, node_id, what="before ending the turn")  # noqa: E731
+    else:  # pre-compact
+        fn = lambda c: _unlogged_work_reason(c, node_id, what="before compacting")  # noqa: E731
+    try:
+        text = _query_with_deadline(repo_root, fn, clock=clock, start=start, deadline_s=deadline_s)
+    except _DeadlineExceeded:
+        _spool_timeout(repo_root, name, node_id)
+        return HookOutcome()
+    except Exception:
+        # A broken or foreign DB must never wedge the agent: fail open.
+        return HookOutcome()
+    if not text:
+        return HookOutcome()
+    if name == "session-start":
+        return HookOutcome(0, text, "")
+    return HookOutcome(2, "", text + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
@@ -244,27 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         # break every tool call.
         return 0
 
-    if name == "pre-tool-use":
-        payload = _read_stdin_json()
-        result = pre_tool_use(repo_root, payload)
-        sys.stdout.write(json.dumps(result) + "\n")
-        return 2 if result.get("decision") == "block" else 0
+    if name in DECISION_HOOKS:
+        outcome = run(name, repo_root, _read_stdin_json())
+        sys.stdout.write(outcome.stdout)
+        sys.stderr.write(outcome.stderr)
+        return outcome.exit_code
 
     if name == "post-commit":
         sha = _read_head_sha(repo_root)
         _append_queue(repo_root, {"event": "post-commit", "ts": _now_iso(), "sha": sha})
-        return 0
-
-    if name in ("session-start", "pre-compact", "stop"):
-        payload = _read_stdin_json()
-        node_id = payload.get("node_id")
-        if node_id is None:
-            node_id = _get_current_node(repo_root)
-        event = {"event": name, "ts": _now_iso(), "node_id": node_id}
-        if name == "pre-compact":
-            event["summary"] = payload.get("summary")
-        _append_queue(repo_root, event)
-        sys.stdout.write(json.dumps({"decision": "allow"}) + "\n")
         return 0
 
     if name == "pre-push":

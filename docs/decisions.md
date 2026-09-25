@@ -1717,3 +1717,34 @@ reading here. Real `decisions` table entries start once dogfooding begins
     fetch that #49 flagged as a stomping risk but only guarded in the
     merge path.
 
+114. **The Claude Code decision hooks read the DB; supersedes #80.**
+    #80 made SessionStart, Stop and PreCompact queue-only to protect the
+    section 4a latency budget, which dropped plan section 7's behaviour
+    (inject the brief; block unlogged work; require a summary). That
+    budget exists because PreToolUse fires per tool call. SessionStart
+    fires once per session, and Stop and PreCompact once per turn or
+    compaction, so they now use PreToolUse's read-only path under the
+    same 150ms fail-open deadline. This narrows section 4a's "only
+    PreToolUse reads the DB" to "only decision hooks read the DB, all
+    under the deadline". The deadline is now enforced during the query
+    (lock-wait timeout plus an sqlite progress handler), not only
+    checked afterwards. Other choices:
+    - "Unlogged work" means no `note.added` event since the node's
+      latest `node.start`, compared by event id because a note and a
+      restart can share a millisecond.
+    - Claude Code sends no summary in its PreCompact payload, so "require
+      a summary" is read as "a progress note since start, or a
+      `summary` field if a caller provides one".
+    - Stop allows while `stop_hook_active` is true, as the installed CLI's
+      own guidance says. The block is a nudge, not a trap.
+    - `core.claude_hooks` was deleted. `muvue hook NAME` calls
+      `muvue._hook.run`, so there is one implementation.
+
+115. **The daemon drains the hook spool in a lifespan background task.**
+    #83 drained inside the SSE generator because no daemon loop existed
+    yet, so nothing drained without an open dashboard, and each stream
+    stopped after about 60s. `create_app` now starts a task that drains
+    every `drain_interval_s` (0.5s) for the app's lifetime. Each drain
+    opens its own connection on the worker thread. The SSE loop only
+    polls `PRAGMA data_version`.
+

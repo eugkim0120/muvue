@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W2: hook fast path
+
+### Changed
+- **SessionStart, Stop and PreCompact decide again** (decision #114,
+  supersedes #80). SessionStart prints the active node's brief as
+  session context. Stop blocks (exit 2, reason on stderr) while the
+  active `in_progress` node has no note logged since its latest
+  `start`, and allows while `stop_hook_active` is set. PreCompact blocks
+  on the same condition unless the payload has a `summary`. All three
+  still spool their event.
+- **PreToolUse output follows Claude Code's contract.** A block exits 2
+  with the reason on stderr (it used to print JSON to stdout, which
+  Claude Code ignores on exit 2). An allow prints nothing.
+- **`core.claude_hooks` removed.** `muvue hook NAME` now runs the same
+  `muvue._hook.run` code the installed shims run.
+- **The daemon drains the hook spool continuously** in a background
+  task, with or without a dashboard connected (#115). The SSE stream no
+  longer drains.
+- **`doctor` always reports `hook queue depth: N`**, and the CLI's
+  catch-up drain no longer runs before `doctor`, so the depth is what
+  was actually queued.
+
+### Fixed
+- **The 150ms hook deadline was only checked after the query.**
+  `sqlite3.connect` kept its default 5s lock wait, so a locked DB could
+  hang a tool call. The lock wait is now capped at the time left, and a
+  progress handler interrupts a query that runs past the deadline.
+
+### Added
+- `tests/test_hook_latency_benchmark.py` times PreToolUse's DB path
+  (an `Edit` on an `in_progress` node) against the 150ms deadline, and
+  the gate's "median added latency per tool call" now uses that
+  worst case. Local numbers: DB path p50 21.0ms, p95 25.1ms, p99 27.0ms;
+  gate median 23.8ms.
+
 ## [Unreleased] - v4 delta closure, W1: confirmed bugs
 
 A full audit of the code against the v4 handoff plan found about 100

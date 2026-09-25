@@ -46,17 +46,39 @@ def repo(tmp_path_factory) -> Path:
     return root
 
 
-def _time_one_invocation(repo_root: Path) -> float:
+@pytest.fixture(scope="module")
+def edit_payload(repo) -> str:
+    """An Edit on an in_progress node: PreToolUse's worst case, the full
+    read-only DB open plus query (v4 section 4a's one DB-reading path
+    that runs per tool call)."""
+    import json
+
+    from muvue.core import db as core_db
+    from muvue.core import nodes, projects
+
+    conn = core_db.connect(repo / ".muvue" / "muvue.db")
+    try:
+        p = projects.create_project(conn, goal="bench")
+        projects.set_phase(conn, p["id"], "executing")
+        n = nodes.create_node(conn, project_id=p["id"], kind="task", title="t", status="ready")
+        nodes.start(conn, n["id"], owner="bench")
+    finally:
+        conn.close()
+    return json.dumps({"tool_name": "Edit", "tool_input": {}, "node_id": n["id"]})
+
+
+def _time_one_invocation(repo_root: Path, name: str = "pre-push", stdin: str = "") -> float:
     start = time.perf_counter()
-    subprocess.run(
-        [sys.executable, "-S", "-m", "muvue._hook", "pre-push", str(repo_root)],
+    result = subprocess.run(
+        [sys.executable, "-S", "-m", "muvue._hook", name, str(repo_root)],
         cwd=SRC_DIR,
-        check=True,
         capture_output=True,
         text=True,
-        input="",
+        input=stdin,
     )
-    return (time.perf_counter() - start) * 1000.0
+    elapsed = (time.perf_counter() - start) * 1000.0
+    assert result.returncode == 0, result.stderr
+    return elapsed
 
 
 def test_hook_fast_path_cold_latency_p95_p99(repo):
@@ -78,7 +100,23 @@ def test_hook_fast_path_cold_latency_p95_p99(repo):
     assert p99 < 120.0, f"p99={p99:.1f}ms exceeds the 120ms budget (samples={samples})"
 
 
-def test_gate_median_added_latency_per_agent_tool_call(repo):
+def test_pre_tool_use_db_path_cold_latency(repo, edit_payload):
+    """The DB-reading PreToolUse path (Edit/Write). Its budget is the
+    section 4a hard deadline: 150 ms, after which it fails open -- so a
+    p99 above that would mean checks are routinely skipped."""
+    samples = sorted(
+        _time_one_invocation(repo, "pre-tool-use", edit_payload) for _ in range(ITERATIONS)
+    )
+    p95 = _percentile(samples, 0.95)
+    p99 = _percentile(samples, 0.99)
+    print(
+        f"\nPreToolUse (Edit, DB path) cold latency over {ITERATIONS} iterations: "
+        f"p50={_percentile(samples, 0.5):.1f}ms p95={p95:.1f}ms p99={p99:.1f}ms"
+    )
+    assert p99 < 150.0, f"p99={p99:.1f}ms exceeds the 150ms deadline (samples={samples})"
+
+
+def test_gate_median_added_latency_per_agent_tool_call(repo, edit_payload):
     """v4 section 11's gate row (between P3 and P4): "median added latency
     per agent tool call < 100 ms; otherwise tighten adapters before P4."
     This criterion is new in v4 (v3's gate only had the 80%-logged
@@ -87,13 +125,15 @@ def test_gate_median_added_latency_per_agent_tool_call(repo):
 
     `PreToolUse` fires once per agent tool call (v4 section 4a), and its
     added cost to that tool call IS the hook's own cold-subprocess
-    execution time -- the same quantity `_time_one_invocation` above
-    measures for p95/p99, just reduced to its median here instead. A
+    execution time -- measured on the worst case, an Edit that opens
+    the DB. A
     fresh, independent sample set (not reusing the p95/p99 test's
     samples) so this assertion's own report is self-contained per
     working rule 9 ("verify and report", not "assume an adjacent
     measurement satisfies a differently-worded criterion")."""
-    samples = sorted(_time_one_invocation(repo) for _ in range(ITERATIONS))
+    samples = sorted(
+        _time_one_invocation(repo, "pre-tool-use", edit_payload) for _ in range(ITERATIONS)
+    )
     median = _percentile(samples, 0.5)
 
     print(

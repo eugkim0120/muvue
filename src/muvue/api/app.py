@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
@@ -59,13 +59,38 @@ def create_app(
     *,
     session: SessionManager | None = None,
     port: int | None = None,
+    drain_interval_s: float = 0.5,
 ) -> FastAPI:
     repo_root = Path(repo_root)
     db_path = repo_root / ".muvue" / "muvue.db"
     config = config or core.load_config(repo_root / ".muvue" / "config.toml")
     session = session or SessionManager()
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # v4 section 4a: "the daemon drains continuously". One background
+        # task for the daemon's lifetime, independent of any dashboard
+        # connection.
+        task = asyncio.create_task(_drain_forever())
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    def _drain_once() -> None:
+        with _conn() as conn:
+            core.hooks.drain_queue(conn, repo_root)
+
+    async def _drain_forever() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(_drain_once)
+            except Exception as e:  # keep the daemon up; the spool stays for next time
+                print(f"muvue: hook queue drain failed: {e!r}", flush=True)
+            await asyncio.sleep(drain_interval_s)
+
     app = FastAPI(
+        lifespan=lifespan,
         title="muvue",
         version=str(config.protocol_version),
         description="muvue daemon API (plan section 4): mirrors CLI verbs 1:1.",
@@ -274,30 +299,12 @@ def create_app(
             # and losing it costs nothing on restart.
             last_version: int | None = None
             iterations = 0
-            # Two connections on purpose: `PRAGMA data_version` only
-            # reliably reflects writes committed by *other* connections
-            # (see this function's docstring/docs/decisions.md) -- a
-            # drain-caused write issued on `conn` itself would never
-            # show up in `conn`'s own subsequent `data_version` read.
-            # `drain_conn` is the dedicated write connection for the
-            # periodic drain task below.
-            with _conn() as conn, _conn() as drain_conn:
+            with _conn() as conn:
                 while iterations < 600:  # ~60s safety cap
                     version = conn.execute("PRAGMA data_version").fetchone()[0]
                     if version != last_version:
                         last_version = version
                         yield f"data: {json.dumps({'data_version': version})}\n\n"
-                    # v4 section 4a: "the daemon drains continuously" --
-                    # this SSE loop is the only continuous, restart-safe
-                    # loop the daemon runs today (P2a's dedicated daemon
-                    # process/task doesn't exist yet), so the bounded
-                    # drain rides along as another periodic task here
-                    # rather than a new competing loop. Best-effort: a
-                    # drain failure must never break the SSE stream.
-                    try:
-                        core.hooks.drain_queue(drain_conn, repo_root)
-                    except Exception:
-                        pass
                     await asyncio.sleep(0.1)
                     iterations += 1
 

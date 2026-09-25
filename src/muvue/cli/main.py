@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from muvue import _hook as _hook_mod
 from muvue import core
 from muvue.core.config import ConfigError
 
@@ -20,7 +21,6 @@ app.add_typer(project_app, name="project")
 
 NOT_IMPLEMENTED = "not implemented in P0"
 
-_CLAUDE_HOOK_NAMES = {"session-start", "pre-tool-use", "pre-compact", "stop"}
 
 
 def _find_repo_root(start: Path | None = None) -> Path:
@@ -46,7 +46,7 @@ def _echo_json(obj) -> None:
 
 
 @app.callback()
-def _drain_before_every_command() -> None:
+def _drain_before_every_command(ctx: typer.Context) -> None:
     """v4 section 4a: "absent a daemon, the next CLI call drains at
     most 200 items or 200 ms, whichever comes first" -- `muvue._hook`
     (the fast path) never does this itself, so any normal CLI
@@ -58,7 +58,11 @@ def _drain_before_every_command() -> None:
     command run outside a muvue repo) or any error draining is not this
     callback's problem to report -- the command it's a prefix to either
     doesn't need a repo at all or will raise its own, clearer error a
-    moment later."""
+    moment later.
+
+    Skipped for `doctor`, which reports the queue depth it finds."""
+    if ctx.invoked_subcommand == "doctor":
+        return
     try:
         repo_root = _find_repo_root()
     except typer.BadParameter:
@@ -137,6 +141,8 @@ def doctor(
         typer.echo(f"issue: {issue}")
     for warning in report.warnings:
         typer.echo(f"warning: {warning}")
+    for line in report.info:
+        typer.echo(line)
     if report.ok:
         typer.echo("doctor: ok")
     else:
@@ -372,12 +378,10 @@ def hook(
     `node_commits`, and enqueues anchor-hash/staleness no-op signals (see
     core/hooks.py).
 
-    `session-start`/`pre-tool-use`/`pre-compact`/`stop` (P3): the Claude
-    Code adapter's hook handlers (see core/claude_hooks.py). Claude Code
-    passes hook-specific JSON on stdin and reads a JSON decision back
-    from stdout; a `"decision": "block"` response exits 2 (Claude Code's
-    documented block convention) so its reason text reaches the model,
-    exit 0 otherwise.
+    `session-start`/`pre-tool-use`/`pre-compact`/`stop`: the Claude Code
+    adapter's decision hooks, served by `muvue._hook.run`. Exit 2 blocks
+    with the reason on stderr; on exit 0 SessionStart prints the node's
+    brief as session context.
 
     `pre-push` is still a no-op -- pre-push strict-mode enforcement is P4
     scope (plan section 12 working rule 7: no strict-mode airlock in P3).
@@ -401,40 +405,21 @@ def hook(
         exit_code = core.strict.handle_pre_receive_cli(Path.cwd())
         raise typer.Exit(exit_code)
 
-    if name not in _CLAUDE_HOOK_NAMES:
+    if name not in _hook_mod.DECISION_HOOKS:
         return
 
+    # Same decision code the installed fast-path shims run
+    # (`muvue._hook.run`), so the two entry points can't drift apart.
     repo_root = _find_repo_root(path)
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
         payload = {}
-    node_id = payload.get("node_id")
-    if node_id is None:
-        node_id = core.adapters.get_current_node(repo_root)
-
-    conn = _db_connect(repo_root)
-    try:
-        if name == "session-start":
-            result = core.claude_hooks.session_start(conn, node_id=node_id)
-        elif name == "pre-tool-use":
-            result = core.claude_hooks.pre_tool_use(
-                conn, tool_name=payload.get("tool_name", ""),
-                tool_input=payload.get("tool_input"), node_id=node_id,
-            )
-        elif name == "pre-compact":
-            result = core.claude_hooks.pre_compact(
-                conn, node_id=node_id, summary=payload.get("summary"),
-            )
-        else:  # stop
-            result = core.claude_hooks.stop(conn, node_id=node_id)
-    finally:
-        conn.close()
-
-    typer.echo(json.dumps(result))
-    if result.get("decision") == "block":
-        raise typer.Exit(2)
+    outcome = _hook_mod.run(name, str(repo_root), payload)
+    sys.stdout.write(outcome.stdout)
+    sys.stderr.write(outcome.stderr)
+    raise typer.Exit(outcome.exit_code)
 
 
 @project_app.command("create")

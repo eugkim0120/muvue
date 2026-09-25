@@ -7,7 +7,6 @@ it issues raw SQL against .muvue/muvue.db.
 from . import (
     adapters,
     asks,
-    claude_hooks,
     close,
     daemon,
     db,
@@ -42,7 +41,6 @@ from .config import ConfigError, MuvueConfig, load_config
 __all__ = [
     "adapters",
     "asks",
-    "claude_hooks",
     "close",
     "daemon",
     "db",

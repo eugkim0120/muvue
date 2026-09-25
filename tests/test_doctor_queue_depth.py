@@ -73,3 +73,28 @@ def test_doctor_flags_a_hand_written_relative_interpreter_shim(tmp_path: Path):
     report = doctor.run_doctor(tmp_path, skip_security_probes=True)
     assert report.ok is False
     assert any("does not use an absolute path" in issue for issue in report.issues)
+
+
+def test_doctor_always_reports_queue_depth(tmp_path: Path):
+    """v4 section 4a: "`doctor` reports queue depth" -- always, not only
+    past the warning threshold."""
+    init_repo(tmp_path)
+    _spool(tmp_path, 5)
+    report = doctor.run_doctor(tmp_path, skip_security_probes=True)
+    assert report.queue_depth == 5
+    assert any("queue depth: 5" in line for line in report.info)
+
+
+def test_cli_doctor_reports_depth_before_the_catch_up_drain(tmp_path: Path):
+    """Every CLI call drains up to 200 lines first; `doctor` must report
+    the depth it found, not what's left after draining it itself."""
+    import subprocess
+    import sys
+
+    init_repo(tmp_path)
+    _spool(tmp_path, 5)
+    proc = subprocess.run(
+        [sys.executable, "-m", "muvue", "doctor", str(tmp_path), "--skip-security-probes"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert "hook queue depth: 5" in proc.stdout, proc.stdout + proc.stderr

@@ -39,7 +39,7 @@ def test_any_cli_command_drains_the_queue_first(tmp_path: Path):
     init_repo(tmp_path)
     _spool(tmp_path, 5)
 
-    result = _run(tmp_path, "doctor", "--skip-security-probes")
+    result = _run(tmp_path, "status")
 
     assert result.returncode == 0, result.stderr
     queue_path = tmp_path / ".muvue" / "queue.jsonl"
@@ -50,7 +50,7 @@ def test_drain_callback_is_bounded_at_200(tmp_path: Path):
     init_repo(tmp_path)
     _spool(tmp_path, 250)
 
-    result = _run(tmp_path, "doctor", "--skip-security-probes")
+    result = _run(tmp_path, "status")
 
     assert result.returncode == 0, result.stderr
     queue_path = tmp_path / ".muvue" / "queue.draining"  # bounded-drain leftover
@@ -64,7 +64,7 @@ def test_drain_failure_never_breaks_the_command(tmp_path: Path):
     init_repo(tmp_path)
     (tmp_path / ".muvue" / "queue.jsonl").write_text("not json\n")
 
-    result = _run(tmp_path, "doctor", "--skip-security-probes")
+    result = _run(tmp_path, "status")
 
     assert result.returncode == 0, result.stderr
 
