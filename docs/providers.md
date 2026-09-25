@@ -1,51 +1,81 @@
 # Provider notes
 
-Populated in P3, when adapters first exist (`muvue adapter install
-<name>`, `src/muvue/core/adapters.py`). Every note below is **best-effort
-and unverified against live vendor docs** -- this environment has no
-network access, so these formats were written from memory of each
-vendor's documented conventions at the time of writing, not confirmed
-against a real install. Treat every one of these as needing a human to
-verify before v0.1 truly ships (see the P3 handoff report).
+How muvue drives each vendor CLI, and how sure we are. Each section says
+what was checked against an installed CLI (with the version and date)
+and what is still from memory. This machine has no web access, so
+nothing here was checked against vendor documentation online.
 
-## Claude Code (2026-09-24)
+## Checking a driver
+
+`muvue doctor` runs every driver's `auth_check`. A non-zero exit is
+reported as "not installed, logged out or session expired". `doctor`
+also compares the first dotted version number the check prints against
+`pinned_version` (for example `">=2.0"` or `">=2.0,<3"`) and warns when
+it falls outside, because the output formats muvue parses change
+between vendor releases. Pick an `auth_check` that fails when logged
+out, not just `--version`, where the CLI has one (see Codex below).
+
+## Claude Code (verified 2026-09-25 against claude 2.1.281)
 
 `muvue adapter install claude-code` merges a `hooks` section into
-`.claude/settings.json`, wiring `SessionStart`/`PreToolUse`/
-`PreCompact`/`Stop` to `<abs-python> -m muvue hook <event>`. The JSON
-shape used (`{"hooks": {"SessionStart": [{"hooks": [{"type": "command",
-"command": "..."}]}]}, ...}`, `PreToolUse` carrying a `matcher`) and the
-hook stdin/stdout contract (`{"decision": "allow"|"block", "reason":
-...}`, exit 2 on block) are reproduced from memory of Claude Code's
-documented hooks configuration and hook I/O contract, not verified here.
-Headless/subscription use: no specific residual-risk note beyond the
-plan's own ("Vendor terms for headless subscription use change") --
-verify Claude Code's current terms permit this kind of automated,
-repeated hook invocation under a subscription plan before relying on it
-for unattended runs.
+`.claude/settings.json`. It wires `SessionStart`, `PreToolUse`,
+`PreCompact` and `Stop` to the fast-path shim `PYTHONPATH=<dir>
+<abs-python> -S -m muvue._hook <event>` (plan v4 section 4a). The hook
+contract below was checked against the strings in the installed
+binary, not only against docs:
 
-## Codex (2026-09-24)
+- Exit 2 blocks, and stderr becomes the reason shown to the model. This
+  holds for PreToolUse, Stop and PreCompact ("Compaction blocked by
+  PreCompact hook").
+- On exit 0, SessionStart's stdout is added to the session as context.
+- Stop hooks receive `stop_hook_active`. muvue allows the stop when it
+  is set, so a blocked Stop can't loop.
 
-`muvue adapter install codex` appends a muvue section to `AGENTS.md` at
-the repo root, on the assumption that Codex CLI reads project
-instructions from that file (a convention shared with several other
-coding agents, including Claude Code's own `CLAUDE.md`/`AGENTS.md`
-support). Not verified against Codex's current documented config
-surface -- Codex may also support hook-style configuration analogous to
-Claude Code's, which this adapter does not attempt.
+Headless (`muvue run`): `claude -p --output-format stream-json
+--verbose` reads the prompt from stdin. Without an interactive
+approver, tool use needs either `--allowedTools` or a permission mode
+set in the command. The live P5 run records the exact command that
+worked. Terms for unattended use under a subscription change. Check
+them before relying on unattended runs.
 
-## Gemini (2026-09-24)
+## Codex (verified 2026-09-25 against codex-cli 0.142.5)
+
+- `codex exec [PROMPT]` is the non-interactive mode. With no prompt
+  argument, or `-`, it reads instructions from stdin, which is how
+  `muvue run` passes the brief.
+- `--json` prints events to stdout as JSONL.
+- `-s/--sandbox` takes `read-only`, `workspace-write` or
+  `danger-full-access`. `workspace-write` is the one that lets it edit
+  the node's worktree.
+- `-C/--cd DIR` sets the working directory. muvue already spawns the
+  driver in the node's checkout.
+- `codex login status` exits 1 when not logged in, and `codex
+  --version` exits 0 either way. Use `auth_check = "codex login status"`
+  so `doctor` and the runner catch a logged-out Codex.
+- `muvue adapter install codex` appends a muvue section to `AGENTS.md`,
+  which Codex reads as project instructions. Codex also has hook
+  configuration (`--dangerously-bypass-hook-trust` exists). muvue
+  doesn't install Codex hooks, so under Codex, commits are attributed
+  by trailer only.
+- The `codex_json` usage parser was written before this check. The
+  JSONL event names it expects have not been compared against a real
+  `codex exec --json` run here, because this machine's Codex is logged
+  out.
+
+## Gemini (not verified: CLI not installed here, 2026-09-25)
 
 `muvue adapter install gemini` writes `GEMINI.md` at the repo root, the
-Gemini CLI's documented project-context file at the time of writing.
-Not verified.
+Gemini CLI's project-context file as of the adapter's writing. Headless
+use would be `gemini -p` with the prompt on stdin. Confirm the flag,
+the output format and a logged-out exit code before routing work to it.
 
-## Cursor (2026-09-24)
+## Cursor (not verified: `cursor-agent` not installed here, 2026-09-25)
 
-`muvue adapter install cursor` writes `.cursor/rules/muvue.mdc`, using
-Cursor's `.mdc` project-rules format (`alwaysApply: true` frontmatter).
-Not verified against a live Cursor install; Cursor's rules format has
-changed before and may have again.
+`muvue adapter install cursor` writes `.cursor/rules/muvue.mdc` in
+Cursor's `.mdc` project-rules format (`alwaysApply: true`). Cursor's
+headless CLI is `cursor-agent`. Its print mode, output format and auth
+status command are unverified here. Cursor's rules format has changed
+before.
 
 ## Driver usage parsers (P5, 2026-09-24)
 

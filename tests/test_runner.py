@@ -226,13 +226,25 @@ def test_rate_limit_wait_mode_blocks_without_fallback(conn, project, db_path, re
         checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(
-                command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
+                command="MUVUE_FAKE_BEHAVIOR=rate_limited MUVUE_FAKE_RETRY_AFTER_SECONDS=3600 muvue-fake-agent",
                 usage_parser="fake", cost_model="tokens", on_rate_limit="wait",
             ),
         },
         routing=RoutingConfig(spec="fake", task="fake", subtask="fake"),
     )
-    result = runner_mod.run(db_path, cfg, repo_root)
+    from datetime import datetime, timedelta, timezone
+
+    clock = {"now": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+
+    def sleep(seconds):
+        clock["now"] += timedelta(seconds=seconds)
+
+    # retry_after (1h) is past max_wait_minutes (30), so the run sleeps
+    # out the wait budget once, then escalates to the default "pause".
+    result = runner_mod.run(
+        db_path, cfg, repo_root, now_fn=lambda: clock["now"], sleep_fn=sleep,
+    )
+    assert clock["now"] == datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc)
     assert result["paused"]["reason"] == "node_blocked"
     row = nodes.get_node(conn, task["id"])
     assert row["status"] == "blocked"
@@ -442,12 +454,17 @@ def test_agent_override_beats_routing(conn, project, db_path, repo_root):
 # -- --parallel N: real disjoint-touch scheduling ----------------------------
 
 
-def test_parallel_schedules_disjoint_touches_concurrently(conn, project, config, db_path, repo_root):
+def test_parallel_schedules_disjoint_touches_concurrently(conn, project, config, db_path, repo_root, monkeypatch):
     """v4 section 6 Delta C: --parallel > 1 only proceeds when
     worktree_mode = "per_node" -- this test's `config` fixture must opt
     in explicitly (the default is "branch", refused; see
     test_parallel_refused_outside_per_node below)."""
+    from conftest import git_init_with_commit
+
+    monkeypatch.setenv("HOME", str(repo_root))  # per_node worktrees live under ~/.muvue
+    git_init_with_commit(repo_root)
     config.worktree_mode = "per_node"
+    config.worktree_setup = ""
     config.agents["fake"].max_concurrency = 5
     nodes.create_node(
         conn, project_id=project["id"], kind="task", title="a", status="ready",
@@ -478,7 +495,12 @@ def test_parallel_refused_in_default_branch_mode(conn, project, config, db_path,
     assert nodes.get_node(conn, 1)["status"] == "ready"
 
 
-def test_parallel_1_works_in_either_worktree_mode(conn, project, config, db_path, repo_root):
+def test_parallel_1_works_in_either_worktree_mode(conn, project, config, db_path, repo_root, monkeypatch):
+    from conftest import git_init_with_commit
+
+    monkeypatch.setenv("HOME", str(repo_root))  # per_node worktrees live under ~/.muvue
+    git_init_with_commit(repo_root)
+    config.worktree_setup = ""
     for mode in ("branch", "per_node"):
         config.worktree_mode = mode
         task = nodes.create_node(
@@ -486,7 +508,7 @@ def test_parallel_1_works_in_either_worktree_mode(conn, project, config, db_path
             criteria_mode="auto", criteria=["ok"],
         )
         result = runner_mod.run(db_path, config, repo_root, parallel=1)
-        assert result["paused"] is None
+        assert result["paused"] is None, result
         assert len(result["processed"]) == 1
         assert nodes.get_node(conn, task["id"])["status"] == "done"
 
@@ -571,3 +593,30 @@ def test_pause_between_selection_and_start_is_a_clean_stop(conn, project, config
     assert result["processed"][0]["outcome"] == "project_paused"
     assert result["paused"]["reason"] == "node_blocked"
     assert nodes.get_node(conn, tasks[0]["id"])["status"] == "ready"
+
+
+def test_a_node_preassigned_to_a_runner_routes_back_to_that_agent(conn, project, config):
+    config.agents["other"] = config.agents["fake"].model_copy()
+    node = nodes.create_node(
+        conn, project_id=project["id"], kind="subtask", title="rebase", status="ready",
+        owner="runner:other",
+    )
+    assert runner_mod.agent_for_node(node, config, None) == "other"
+    assert runner_mod.agent_for_node(node, config, "fake") == "fake"
+    plain = nodes.create_node(conn, project_id=project["id"], kind="subtask", title="x", status="ready")
+    assert runner_mod.agent_for_node(plain, config, None) == config.routing.subtask
+
+
+def test_a_failing_worktree_setup_stops_the_run_cleanly(conn, project, config, db_path, repo_root, monkeypatch):
+    from conftest import git_init_with_commit
+
+    monkeypatch.setenv("HOME", str(repo_root))
+    git_init_with_commit(repo_root)
+    config.worktree_mode = "per_node"
+    config.worktree_setup = "exit 3"
+    task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
+    result = runner_mod.run(db_path, config, repo_root)
+    assert result["processed"][0]["outcome"] == "start_failed"
+    assert "exit 3" in result["processed"][0]["error"]
+    assert result["paused"]["reason"] == "node_blocked"
+    assert nodes.get_node(conn, task["id"])["status"] == "ready"

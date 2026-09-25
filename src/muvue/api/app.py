@@ -27,6 +27,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -80,6 +82,7 @@ def create_app(
     def _drain_once() -> None:
         with _conn() as conn:
             core.hooks.drain_queue(conn, repo_root)
+            core.notify.flush(conn, config)
 
     async def _drain_forever() -> None:
         while True:
@@ -584,14 +587,15 @@ def create_app(
     def start_node(
         node_id: int,
         request: Request,
-        owner: str = Body(...),
+        owner: str | None = Body(default=None),
         agent: str | None = None,
         request_id: str | None = Body(default=None),
     ) -> dict:
-        """`POST /nodes/{id}/start?agent=X` (plan section 4): the driver
-        that would actually spawn agent `X` ships in P5 (runner/drivers).
-        Here `agent` is recorded on the start event but nothing is
-        spawned -- documented stub per the P2 prompt.
+        """`POST /nodes/{id}/start` takes the lease for `owner`. With
+        `?agent=X` (plan section 4) it instead launches `muvue run --node
+        ID --agent X` as a detached subprocess. That runner takes the
+        lease itself, registers in `.muvue/runners/` so `pause` can stop
+        it, and logs to `.muvue/logs/run-<id>.log`.
 
         Session-gated (v4 section 8a, docs/decisions.md #84): this is
         the endpoint the plan itself names as the RCE surface -- "a
@@ -601,19 +605,12 @@ def create_app(
         unauthenticated even though `start` is nominally an agent verb.
         """
         _require_session(request)
+        if agent:
+            return _spawn_runner(node_id, agent)
+        if not owner:
+            raise HTTPException(status_code=422, detail="start needs an owner (or ?agent=X)")
         with _conn() as conn:
             try:
-                if agent:
-                    core.events.record_event(
-                        conn,
-                        project_id=core.nodes.get_node(conn, node_id)["project_id"],
-                        node_id=node_id,
-                        actor="human",
-                        actor_evidence="dashboard_token",
-                        type_="node.agent_requested",
-                        payload={"agent": agent},
-                    )
-                    conn.commit()
                 result = core.nodes.start(
                     conn, node_id, owner=owner, request_id=request_id,
                     lease_minutes=config.planning.lease_minutes, actor_evidence="dashboard_token",
@@ -622,6 +619,42 @@ def create_app(
             except Exception as e:
                 _handle_core_error(e)
         return result
+
+    def _spawn_runner(node_id: int, agent: str) -> dict:
+        if agent not in config.agents:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown agent {agent!r} (configured: {sorted(config.agents)})",
+            )
+        with _conn() as conn:
+            try:
+                with core.db.write_txn(conn):
+                    node = core.nodes.get_node(conn, node_id)
+                    if node["status"] != "ready":
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"node {node_id} is {node['status']!r}, not ready",
+                        )
+                    core.events.record_event(
+                        conn, project_id=node["project_id"], node_id=node_id, actor="human",
+                        actor_evidence="dashboard_token", type_="node.agent_requested",
+                        payload={"agent": agent},
+                    )
+            except HTTPException:
+                raise
+            except Exception as e:
+                _handle_core_error(e)
+        log_path = repo_root / core.runner.LOGS_RELDIR / f"run-{node_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "muvue", "run", "--node", str(node_id), "--agent", agent,
+                 "--path", str(repo_root)],
+                cwd=repo_root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"spawned": {"pid": proc.pid, "node_id": node_id, "agent": agent,
+                            "log": str(log_path.relative_to(repo_root))}}
 
     @app.post("/nodes/{node_id}/done")
     def done_node(

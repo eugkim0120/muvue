@@ -21,6 +21,7 @@ import concurrent.futures
 import fnmatch
 import json
 import signal
+import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -35,9 +36,12 @@ from . import nodes as nodes_mod
 from . import projects as projects_mod
 from . import runners as runners_mod
 from . import brief as brief_mod
+from . import merge as merge_mod
+from . import notify as notify_mod
 from . import queries
 from . import review as review_mod
 from . import spend as spend_mod
+from . import strict as strict_mod
 from .config import MuvueConfig
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -54,6 +58,7 @@ _GATING_STATUSES = ("awaiting_approval", "blocked", "failed")
 # work and return control" this cycle.
 _BLOCKING_OUTCOMES = {
     "blocked_rate_limit", "blocked_unavailable", "failed", "review", "project_paused", "stopped",
+    "start_failed",
 }
 
 # Set by the SIGTERM handler `run` installs (a `pause` stops runners
@@ -65,6 +70,11 @@ _stop_requested = threading.Event()
 def _stopped(conn, node_row, owner: str, agent_name: str) -> dict:
     nodes_mod.release_lease(conn, node_row["id"], owner=owner)
     return {"node_id": node_row["id"], "agent": agent_name, "outcome": "stopped"}
+
+
+def _sleep(seconds: float) -> None:
+    """Sleep, but wake at once on SIGTERM/`pause` (`_stop_requested`)."""
+    _stop_requested.wait(max(0.0, seconds))
 
 
 def _now() -> datetime:
@@ -175,8 +185,14 @@ def reconcile_rate_limits(conn, *, now: datetime | None = None) -> list[int]:
 
 
 def agent_for_node(node, config: MuvueConfig, override: str | None) -> str:
+    """`--agent` wins; then a node pre-assigned to `runner:<agent>` (the
+    rebase subtask after a merge conflict, plan section 6) goes back to
+    that agent if it is still configured; otherwise `[routing]`."""
     if override:
         return override
+    owner = node["owner"] or ""
+    if owner.startswith("runner:") and owner.split(":", 1)[1] in config.agents:
+        return owner.split(":", 1)[1]
     return getattr(config.routing, node["kind"])
 
 
@@ -186,7 +202,7 @@ def agent_for_node(node, config: MuvueConfig, override: str | None) -> str:
 # --------------------------------------------------------------------------
 
 
-def _ready_nodes(conn, project_id: int | None):
+def _ready_nodes(conn, project_id: int | None, node_id: int | None = None):
     """`task`/`subtask` nodes only -- a `ready` `spec` node means "ready
     for decomposition" (Gate 1, `core.gates.submit_spec`/`approve_spec`),
     a distinct agent workflow (`spec`/`decompose` CLI verbs) this runner
@@ -199,8 +215,13 @@ def _ready_nodes(conn, project_id: int | None):
     base = (
         "SELECT n.* FROM nodes n JOIN projects p ON p.id = n.project_id "
         "WHERE n.status = 'ready' AND n.deleted_at IS NULL "
-        "AND n.kind IN ('task', 'subtask') AND p.phase != 'paused'"
+        "AND n.kind IN ('task', 'subtask') AND p.phase != 'paused' "
+        # A node waits for its dependencies (plan section 3 `deps`).
+        "AND NOT EXISTS (SELECT 1 FROM deps d JOIN nodes dn ON dn.id = d.depends_on "
+        "WHERE d.node_id = n.id AND dn.status != 'done' AND dn.deleted_at IS NULL)"
     )
+    if node_id is not None:
+        return core_db.query_all(conn, base + " AND n.id = ?", (node_id,))
     if project_id is not None:
         return core_db.query_all(conn, base + " AND n.project_id = ? ORDER BY n.id", (project_id,))
     return core_db.query_all(conn, base + " ORDER BY n.id")
@@ -403,6 +424,7 @@ def run_node(
     *,
     invoke: Callable = drivers.invoke_driver,
     now_fn: Callable[[], datetime] = _now,
+    sleep_fn: Callable[[float], None] = _sleep,
 ) -> dict:
     """Run one node to a terminal outcome for this cycle: `start` (binds a
     strict-mode worktree if configured), spawn the driver with `brief` on
@@ -424,6 +446,16 @@ def run_node(
         if projects_mod.get_project(conn, node["project_id"])["phase"] == "paused":
             return {"node_id": node["id"], "agent": agent_name, "outcome": "project_paused"}
         raise
+    except strict_mod.StrictModeError as e:
+        # Worktree creation or `worktree_setup` failed. `start` changed
+        # nothing, so the node stays `ready`; the run stops and says why.
+        with core_db.write_txn(conn):
+            events_mod.record_event(
+                conn, project_id=node["project_id"], node_id=node["id"], actor="daemon",
+                actor_evidence="subprocess", type_="runner.start_failed",
+                payload={"agent": agent_name, "error": str(e)},
+            )
+        return {"node_id": node["id"], "agent": agent_name, "outcome": "start_failed", "error": str(e)}
     if started["noop"]:
         return {"node_id": node["id"], "agent": agent_name, "outcome": "noop"}
     node_row = started["node"]
@@ -447,6 +479,7 @@ def run_node(
         return _apply_on_rate_limit(
             conn, node_row, agent_name, agent_cfg, config, repo_root,
             applied["retry_at"], applied["wait_started_at"], invoke, now_fn=now_fn,
+            sleep_fn=sleep_fn,
         )
 
     if result.status == "done":
@@ -475,13 +508,18 @@ def run_node(
     }
 
 
-def _dispatch_fallback(conn, node, from_agent, fallback_name, config, repo_root, invoke, now_fn, extra=None):
+def _dispatch_fallback(
+    conn, node, from_agent, fallback_name, config, repo_root, invoke, now_fn, extra=None, sleep_fn=_sleep,
+):
     fallback_cfg = config.agents.get(fallback_name)
     if fallback_cfg is None:
         return None
     nodes_mod.ready(conn, node["id"], actor="daemon", actor_evidence="subprocess")
     fresh = nodes_mod.get_node(conn, node["id"])
-    result = run_node(conn, fresh, fallback_name, fallback_cfg, config, repo_root, invoke=invoke, now_fn=now_fn)
+    result = run_node(
+        conn, fresh, fallback_name, fallback_cfg, config, repo_root, invoke=invoke, now_fn=now_fn,
+        sleep_fn=sleep_fn,
+    )
     result["fallback_from"] = from_agent
     if extra:
         result.update(extra)
@@ -490,16 +528,20 @@ def _dispatch_fallback(conn, node, from_agent, fallback_name, config, repo_root,
 
 def _apply_on_rate_limit(
     conn, node, agent_name, agent_cfg, config, repo_root, retry_at, wait_started_at, invoke,
-    *, now_fn: Callable[[], datetime] = _now,
+    *, now_fn: Callable[[], datetime] = _now, sleep_fn: Callable[[float], None] = _sleep,
 ) -> dict:
     """Plan section 6: "runner applies `config.agents.<x>.on_rate_limit`
     (`wait`/`fallback:<agent>`/`pause`)". v4 section 6 / changelog item
     11: when `mode == "wait"`, bounded by `agent_cfg.max_wait_minutes` --
-    past that, `on_rate_limit_timeout` applies instead and a notification
-    fires (`runner.rate_limit_wait_exhausted`, written via `write_txn` --
-    the minimum acceptable "notification fires" per the P5 prompt, since
-    no real notification-sending exists yet outside the dashboard; see
-    docs/decisions.md)."""
+    past that, `on_rate_limit_timeout` applies instead and
+    `runner.rate_limit_wait_exhausted` is recorded (which `core.notify`
+    also sends to `[notify] url`).
+
+    `wait` sleeps inside the run (`sleep_fn`, interruptible by pause)
+    until `retry_at` or the end of the wait budget, whichever is first.
+    Then the node goes back to `ready` and the run loop picks it up
+    again (outcome `rate_limit_waited`), or it escalates once the budget
+    is spent."""
     mode = agent_cfg.on_rate_limit
     if mode.startswith("fallback:"):
         fallback_name = mode.split(":", 1)[1]
@@ -513,35 +555,45 @@ def _apply_on_rate_limit(
         }
 
     if mode == "wait":
+        deadline = wait_started_at + timedelta(minutes=agent_cfg.max_wait_minutes)
+        retry_dt = datetime.strptime(retry_at, TS_FORMAT).replace(tzinfo=timezone.utc)
+        if now_fn() < deadline:
+            sleep_fn((min(retry_dt, deadline) - now_fn()).total_seconds())
+            if _stop_requested.is_set():
+                return {
+                    "node_id": node["id"], "agent": agent_name, "outcome": "blocked_rate_limit",
+                    "retry_at": retry_at, "on_rate_limit": mode,
+                }
         elapsed_minutes = (now_fn() - wait_started_at).total_seconds() / 60
-        if elapsed_minutes >= agent_cfg.max_wait_minutes:
-            timeout_mode = agent_cfg.on_rate_limit_timeout
-            with core_db.write_txn(conn):
-                events_mod.record_event(
-                    conn, project_id=node["project_id"], node_id=node["id"], actor="daemon",
-                    actor_evidence="subprocess",
-                    type_="runner.rate_limit_wait_exhausted",
-                    payload={
-                        "agent": agent_name, "waited_minutes": elapsed_minutes,
-                        "max_wait_minutes": agent_cfg.max_wait_minutes, "escalated_to": timeout_mode,
-                    },
-                )
-            if timeout_mode.startswith("fallback:"):
-                fallback_name = timeout_mode.split(":", 1)[1]
-                result = _dispatch_fallback(
-                    conn, node, agent_name, fallback_name, config, repo_root, invoke, now_fn,
-                    extra={"rate_limit_timeout_escalated": True},
-                )
-                if result is not None:
-                    return result
+        if elapsed_minutes < agent_cfg.max_wait_minutes:
+            reconcile_rate_limits(conn, now=now_fn())
             return {
-                "node_id": node["id"], "agent": agent_name, "outcome": "blocked_rate_limit",
+                "node_id": node["id"], "agent": agent_name, "outcome": "rate_limit_waited",
                 "retry_at": retry_at, "on_rate_limit": mode,
-                "rate_limit_timeout_escalated": True, "on_rate_limit_timeout": timeout_mode,
             }
+        timeout_mode = agent_cfg.on_rate_limit_timeout
+        with core_db.write_txn(conn):
+            events_mod.record_event(
+                conn, project_id=node["project_id"], node_id=node["id"], actor="daemon",
+                actor_evidence="subprocess",
+                type_="runner.rate_limit_wait_exhausted",
+                payload={
+                    "agent": agent_name, "waited_minutes": elapsed_minutes,
+                    "max_wait_minutes": agent_cfg.max_wait_minutes, "escalated_to": timeout_mode,
+                },
+            )
+        if timeout_mode.startswith("fallback:"):
+            fallback_name = timeout_mode.split(":", 1)[1]
+            result = _dispatch_fallback(
+                conn, node, agent_name, fallback_name, config, repo_root, invoke, now_fn,
+                extra={"rate_limit_timeout_escalated": True}, sleep_fn=sleep_fn,
+            )
+            if result is not None:
+                return result
         return {
             "node_id": node["id"], "agent": agent_name, "outcome": "blocked_rate_limit",
             "retry_at": retry_at, "on_rate_limit": mode,
+            "rate_limit_timeout_escalated": True, "on_rate_limit_timeout": timeout_mode,
         }
 
     # "pause"
@@ -609,12 +661,32 @@ def _gating_nodes(conn, project_id: int | None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-class ParallelismRefused(Exception):
+class RunRefused(Exception):
+    """`run` refused before touching anything (bad parallelism, or a
+    worktree mode this checkout can't support)."""
+
+
+class ParallelismRefused(RunRefused):
     """v4 section 6 "Parallelism (tightened from v3)": `--parallel N > 1`
     is refused unless `worktree_mode = "per_node"`. Raised before `run`
     opens a DB connection or touches anything -- refusal has zero side
     effects, matching the CLI entry point's own requirement (P5 prompt
     Delta C)."""
+
+
+def validate_worktree_mode(config: MuvueConfig, repo_root: Path) -> None:
+    """`per_node` branches every node off HEAD, so it needs a git
+    checkout with at least one commit."""
+    if config.worktree_mode != "per_node":
+        return
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=repo_root, capture_output=True, text=True,
+    )
+    if head.returncode != 0:
+        raise RunRefused(
+            f"worktree_mode = \"per_node\" needs a git repository with a commit at {repo_root}; "
+            "commit first, or use worktree_mode = \"branch\""
+        )
 
 
 def validate_parallel(config: MuvueConfig, parallel: int) -> None:
@@ -640,6 +712,8 @@ def run(
     invoke: Callable = drivers.invoke_driver,
     max_cycles: int = 1000,
     now_fn: Callable[[], datetime] = _now,
+    sleep_fn: Callable[[float], None] = _sleep,
+    node_id: int | None = None,
 ) -> dict:
     """Run every schedulable ready node to a terminal outcome, unattended,
     until there's nothing left to schedule, a driver's own budget leaves
@@ -647,16 +721,24 @@ def run(
     node needs human attention (P5 acceptance criteria 1, 2, 6)."""
     validate_parallel(config, parallel)
     repo_root = Path(repo_root)
+    validate_worktree_mode(config, repo_root)
     parallel = max(1, parallel)
     _stop_requested.clear()
     previous_handler = None
     if threading.current_thread() is threading.main_thread():
         previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+    if node_id is not None and project_id is None:
+        conn = core_db.connect(db_path)
+        try:
+            project_id = nodes_mod.get_node(conn, node_id)["project_id"]
+        finally:
+            conn.close()
     runners_mod.register(repo_root, project_id)
     try:
         return _run_loop(
             db_path, config, repo_root, agent_override=agent_override, parallel=parallel,
             project_id=project_id, invoke=invoke, max_cycles=max_cycles, now_fn=now_fn,
+            sleep_fn=sleep_fn, node_id=node_id,
         )
     finally:
         runners_mod.unregister(repo_root)
@@ -671,6 +753,7 @@ def _on_sigterm(signum, frame) -> None:
 
 def _run_loop(
     db_path, config, repo_root, *, agent_override, parallel, project_id, invoke, max_cycles, now_fn,
+    sleep_fn, node_id=None,
 ) -> dict:
 
     conn = core_db.connect(db_path)
@@ -681,6 +764,7 @@ def _run_loop(
         conn.close()
 
     processed: list[dict] = []
+    merged: list[dict] = []
     warned_drivers: set[str] = set()
     paused = None
     cycles = 0
@@ -738,7 +822,7 @@ def _run_loop(
                         )
                     warned_drivers.add(name)
 
-            ready_rows = _ready_nodes(conn, project_id)
+            ready_rows = _ready_nodes(conn, project_id, node_id)
             batch = select_batch(
                 conn, ready_rows, config, parallel=parallel, agent_override=agent_override,
                 exhausted_agents=exhausted,
@@ -753,7 +837,10 @@ def _run_loop(
             node, agent_name, agent_cfg = item
             c = core_db.connect(db_path)
             try:
-                return run_node(c, node, agent_name, agent_cfg, config, repo_root, invoke=invoke, now_fn=now_fn)
+                return run_node(
+                    c, node, agent_name, agent_cfg, config, repo_root, invoke=invoke, now_fn=now_fn,
+                    sleep_fn=sleep_fn,
+                )
             finally:
                 c.close()
 
@@ -764,6 +851,15 @@ def _run_loop(
                 results = list(ex.map(_exec, batch))
 
         processed.extend(results)
+        # "Daemon merges in dependency order" (plan section 6): merge
+        # whatever finished this cycle before scheduling the next, so a
+        # dependent node's worktree branches off its dependency's work.
+        conn = core_db.connect(db_path)
+        try:
+            merged.extend(merge_mod.merge_pending(conn, repo_root, project_id=project_id))
+            notify_mod.flush(conn, config)
+        finally:
+            conn.close()
         if _stop_requested.is_set():
             paused = {"reason": "stopped"}
             break
@@ -778,7 +874,11 @@ def _run_loop(
     conn = core_db.connect(db_path)
     try:
         final_budget = driver_budget_states(conn, config)
+        notify_mod.flush(conn, config)
     finally:
         conn.close()
 
-    return {"processed": processed, "paused": paused, "cycles": cycles, "budget": final_budget}
+    return {
+        "processed": processed, "merged": merged, "paused": paused, "cycles": cycles,
+        "budget": final_budget,
+    }

@@ -194,3 +194,28 @@ def _install_markdown_instructions(path: Path, *, vendor: str, protocol_version:
         content = block
     path.write_text(content)
     return path
+
+
+_PROTOCOL_MARKER_RE = r"protocol_version=(\d+)"
+
+
+def installed_protocol_versions(repo_root: Path) -> dict[str, int]:
+    """Every installed adapter file and the `protocol_version` it was
+    written for, keyed by path relative to the repo (plan section 7:
+    "adapter configs embed `protocol_version`; `doctor` warns on
+    mismatch")."""
+    import re
+
+    repo_root = Path(repo_root)
+    found: dict[str, int] = {}
+    claude = claude_code_protocol_version(repo_root)
+    if claude is not None:
+        found[".claude/settings.json"] = claude
+    for rel in ("AGENTS.md", "GEMINI.md", ".cursor/rules/muvue.mdc"):
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        match = re.search(_PROTOCOL_MARKER_RE, path.read_text())
+        if match:
+            found[rel] = int(match.group(1))
+    return found

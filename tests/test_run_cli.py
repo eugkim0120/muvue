@@ -80,16 +80,31 @@ def test_run_cli_refuses_parallel_2_in_default_branch_mode(tmp_path: Path):
     assert show["node"]["status"] == "ready"
 
 
-def test_run_cli_allows_parallel_2_in_per_node_worktree_mode(tmp_path: Path):
+def test_run_cli_allows_parallel_2_in_per_node_worktree_mode(tmp_path: Path, monkeypatch):
+    from conftest import git_init_with_commit
+
+    tmp_path, project, task = _setup_ready_task(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))  # per_node worktrees live under ~/.muvue
+    git_init_with_commit(tmp_path)
+    config_path = tmp_path / ".muvue" / "config.toml"
+    config_path.write_text(config_path.read_text().replace(
+        'worktree_mode = "branch"', 'worktree_mode = "per_node"',
+    ).replace('worktree_setup = "uv sync"', 'worktree_setup = ""'))
+    result = _run(tmp_path, "run", "--parallel", "2", "--path", str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert len(out["processed"]) == 1
+
+
+def test_run_cli_refuses_per_node_outside_git(tmp_path: Path):
     tmp_path, project, task = _setup_ready_task(tmp_path)
     config_path = tmp_path / ".muvue" / "config.toml"
     config_path.write_text(config_path.read_text().replace(
         'worktree_mode = "branch"', 'worktree_mode = "per_node"',
     ))
-    result = _run(tmp_path, "run", "--parallel", "2", "--path", str(tmp_path))
-    assert result.returncode == 0, result.stderr
-    out = json.loads(result.stdout)
-    assert len(out["processed"]) == 1
+    result = _run(tmp_path, "run", "--path", str(tmp_path))
+    assert result.returncode != 0
+    assert "needs a git repository" in result.stderr
 
 
 def test_run_cli_parallel_1_works_in_default_branch_mode(tmp_path: Path):

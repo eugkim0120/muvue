@@ -739,6 +739,38 @@ recorded as a `request.<verb>.completed` event.
 
 Notes dedupe by SHA-256 content hash, independent of request-id.
 
+## Notifications (`[notify] url`)
+
+`core.notify.flush` POSTs new inbox-worthy events as plain text, one
+line per event (for example `T12 review.awaiting (tier medium)`), with
+a `Title` header, which ntfy displays as-is. Other webhooks can use the
+`X-Muvue-Event-Ids` header. The events sent are:
+
+- questions;
+- reviews waiting for a human;
+- blocks, and terminal failures;
+- `awaiting_approval`;
+- merge conflicts and gated replans;
+- rate-limit escalations, driver budget warnings and start failures;
+- unattributed commits and audit signals.
+
+The daemon flushes on its drain loop and `muvue run` after each cycle.
+Delivery is at most once: the cursor advances after a failed POST too,
+recorded as `notify.failed`. The first flush after a URL is set starts
+at the end of the log instead of replaying history.
+
+## `doctor` driver and adapter checks
+
+- For every agent with an `auth_check`, `doctor` runs it. A non-zero
+  exit warns "not installed, logged out or session expired". The
+  version the check prints is compared against `pinned_version`, and a
+  mismatch also warns. Both warnings point to `docs/providers.md`.
+- An installed adapter file (`.claude/settings.json`, `AGENTS.md`,
+  `GEMINI.md`, `.cursor/rules/muvue.mdc`) written for another
+  `protocol_version` is a warning, not an error.
+- `doctor --repair` lists worktrees whose node is missing, deleted,
+  `done` or `failed`. It never removes them.
+
 ## Files outside the repo
 
 `muvue serve` writes `~/.muvue/daemon/<repo-hash>.json`. The file is
@@ -778,11 +810,33 @@ snapshot and replaying) is no longer flagged.
 
 ## Runner, drivers, merge, handoff (P5, per-driver budget/`--parallel`/rate-limit-timeout deltas v4)
 
-### `muvue run [--agent X] [--parallel N] [--project-id ID]`
+### `muvue run [--agent X] [--parallel N] [--project-id ID] [--node ID]`
 
 Unattended runner (`core.runner.run`), scoped to `task`/`subtask` nodes
 (a `ready` `spec` node means "ready for decomposition" — a distinct
 workflow this runner doesn't drive, see `docs/decisions.md`).
+
+- `--node ID` runs just that node. `POST /nodes/{id}/start?agent=X`
+  launches `muvue run --node ID --agent X` as a detached, registered
+  subprocess, logging to `.muvue/logs/run-<id>.log`.
+- A node waits until every node it `depends_on` is `done`.
+- Worktrees:
+  - With `worktree_mode = "per_node"`, every node gets its own worktree
+    on branch `node-<id>` under `~/.muvue/worktrees/<repo-hash>/`.
+    Strict mode branches off the airlock's `main`, light mode off the
+    checkout's HEAD. `per_node` needs a git repository with a commit.
+  - If worktree creation or `worktree_setup` fails, the node stays
+    `ready` and the run stops with `start_failed`.
+- After each cycle the runner:
+  - merges finished nodes in dependency order (`merge_pending`) and
+    reports them under `merged`;
+  - sends new inbox items to `[notify] url`.
+- Routing: a node pre-assigned to `runner:<agent>`, such as a conflict's
+  rebase subtask, goes back to that agent.
+- `on_rate_limit = "wait"` sleeps inside the run until `retry_at`, then
+  retries (outcome `rate_limit_waited`). Once `max_wait_minutes` is
+  used up, it escalates to `on_rate_limit_timeout`. `pause` and SIGTERM
+  wake the sleep immediately.
 
 - **`--parallel N > 1` is refused unless `worktree_mode = "per_node"`**
   (v4 section 6, changelog item 4) — `core.runner.validate_parallel`
@@ -901,15 +955,22 @@ malformed extra output around a real result line), `rate_limited`,
 
 ### `muvue merge [NODE_ID]`
 
-`core.merge.attempt_merge`/`merge_pending` (plan section 6 "Merging").
-Strict-mode only (light-mode / never-strict-started nodes: `{"status":
-"no_worktree"}`, a documented no-op). Merges a `done` node's branch onto
-the airlock's `main`, respecting `deps` order (`deferred` if a dependency
-hasn't merged yet). On conflict: `node -> blocked(conflict)`,
-`attempts + 1`, a `kind=subtask` "rebase onto main" node created under
-it, `status=ready`. Never touches `repo_root`'s own checkout or a remote
-— propagating the airlock's `main` back out is out of P5 scope (`merge
---pr` is P6).
+`core.merge.attempt_merge`/`merge_pending` (plan section 6 "Merging"),
+also run automatically by `muvue run` after each cycle. Nodes without
+their own worktree (light mode, `worktree_mode = "branch"`) have nothing
+to merge: `{"status": "no_worktree"}`.
+
+- Strict mode merges the `node-<id>` branch onto the airlock's `main`.
+  It never touches the checkout.
+- Light mode with `per_node` merges `node-<id>` into the checkout with
+  `git merge --no-ff`, and only when the checkout has no uncommitted
+  changes to tracked files. Otherwise it returns `{"status":
+  "deferred", "reason": "dirty_checkout"}` and tries again next time.
+- Dependencies merge first. The result is `deferred` with
+  `pending_deps` until they have.
+- On conflict the merge is aborted, the node becomes
+  `blocked(conflict)` with `attempts + 1`, and a `ready` "rebase onto
+  main" subtask is created under it, owned by the same owner.
 
 ### `muvue handoff NODE_ID --to OWNER`
 

@@ -1922,3 +1922,46 @@ reading here. Real `decisions` table entries start once dogfooding begins
     - **SessionStart.** The hook keeps its own short summary. The full
       renderer needs `muvue.core`, which `muvue._hook` may not import
       (section 4a).
+
+132. **Light mode can isolate nodes; merges go into the user's checkout,
+    carefully.** v4 section 6 allows `--parallel` only under
+    `worktree_mode = "per_node"`, but light mode used to ignore the
+    setting, so parallel agents still shared one checkout. Light
+    `per_node` now makes a worktree of the user's own repository (no
+    airlock) on `node-<id>` off HEAD. Light mode's trust model is "the
+    user's repo is the truth", so the branch merges into the checkout
+    itself, with `git merge --no-ff`. It merges only when there are no
+    uncommitted changes to tracked files, because merging over someone's
+    edit in progress would be worse than waiting. The runner also stops
+    scheduling a node before its `deps` are done, so a dependent node
+    branches off its dependency's merged work.
+
+133. **`wait` sleeps inside the run.** Before this, `on_rate_limit =
+    "wait"` blocked the node and ended the run, so waiting only
+    happened if someone ran `muvue run` again. The runner now sleeps
+    until `retry_at`, capped at the remaining `max_wait_minutes`, and
+    retries the node in the same run. The sleep is an `Event.wait`, so
+    `pause` and SIGTERM end it at once. Tests inject a clock whose
+    `sleep` advances `now`.
+
+134. **Notifications are sent; supersedes #97.** `core.notify` POSTs to
+    `[notify] url` with stdlib `urllib`, so there is no new dependency.
+    - **Format.** Plain-text lines, because an ntfy topic, the spec's
+      own example, displays text as-is and a webhook can still use it.
+    - **At most once.** A failed POST is recorded as `notify.failed`
+      and not retried. Otherwise an endpoint that is down would be hit
+      on every daemon tick.
+    - **No history replay.** The first flush starts at the end of the
+      log.
+    - **Idle flushes write nothing.** Recording "nothing new" would
+      itself be a new event on every tick.
+
+135. **`start?agent=X` spawns a runner; resolves the #84/threat-model
+    contradiction.** The threat model has always described this
+    endpoint as launching an agent, while the code only recorded the
+    request. It now launches `muvue run --node ID --agent X` detached
+    (`start_new_session`), and the runner takes the lease itself as
+    `runner:X`. Because the runner registers in `.muvue/runners/`,
+    `pause` stops it like any other run. The agent name must be a
+    configured `[agents.X]`: the endpoint never runs an arbitrary
+    command, only what `config.toml` already allows.

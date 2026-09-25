@@ -105,8 +105,8 @@ def test_doctor_warns_on_adapter_protocol_version_mismatch(tmp_path: Path):
     init_repo(tmp_path)
     adapters.install_claude_code(tmp_path, protocol_version=999)  # stale on purpose
     report = doctor.run_doctor(tmp_path, skip_security_probes=True)
-    assert report.ok is False
-    assert any("protocol_version" in issue for issue in report.issues)
+    assert report.ok is True  # plan section 7: a warning, not an error
+    assert any("protocol_version" in w for w in report.warnings)
 
 
 def test_doctor_ok_when_adapter_protocol_version_matches(tmp_path: Path):

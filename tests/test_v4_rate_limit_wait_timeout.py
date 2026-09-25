@@ -59,19 +59,20 @@ def project(conn):
     return projects.set_phase(conn, p["id"], "executing")
 
 
-def _clock(start: datetime, *jumps: timedelta):
-    """Returns a `now_fn` that yields `start` first, then `start + jump`
-    for each successive `jumps` entry, holding the last value forever
-    after (so extra calls beyond what a test anticipates don't raise)."""
-    values = [start] + [start + j for j in jumps]
-    state = {"i": 0}
+class FakeClock:
+    """`now` plus a `sleep` that advances it, so a wait of minutes costs
+    no real time."""
 
-    def _now():
-        i = min(state["i"], len(values) - 1)
-        state["i"] += 1
-        return values[i]
+    def __init__(self, start: datetime):
+        self.current = start
+        self.slept: list[float] = []
 
-    return _now
+    def now(self) -> datetime:
+        return self.current
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.current += timedelta(seconds=max(0.0, seconds))
 
 
 def test_rate_limit_wait_past_max_wait_minutes_escalates_to_pause(conn, project, db_path, repo_root):
@@ -82,22 +83,21 @@ def test_rate_limit_wait_past_max_wait_minutes_escalates_to_pause(conn, project,
         checks=PASSING_CHECKS,
         agents={
             "fake": AgentConfig(
-                command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
+                command="MUVUE_FAKE_BEHAVIOR=rate_limited MUVUE_FAKE_RETRY_AFTER_SECONDS=120 muvue-fake-agent",
                 usage_parser="fake", cost_model="tokens",
                 on_rate_limit="wait", max_wait_minutes=5, on_rate_limit_timeout="pause",
             ),
         },
         routing=RoutingConfig(spec="fake", task="fake", subtask="fake"),
     )
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    # run() calls now_fn() twice before run_node (reconcile, run_started_at),
-    # then once inside run_node's rate-limit path (retry_at/wait_started_at
-    # computation) -- all four must land on `start` so wait_started_at is
-    # real; the timeout check itself needs a 5th call past max_wait_minutes.
-    now_fn = _clock(start, timedelta(0), timedelta(0), timedelta(0), timedelta(minutes=10))
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
 
-    result = runner_mod.run(db_path, cfg, repo_root, now_fn=now_fn)
-    outcome = result["processed"][0]
+    result = runner_mod.run(db_path, cfg, repo_root, now_fn=clock.now, sleep_fn=clock.sleep)
+    # Waited inside the run: 120s, 120s, then the last 60s of the 5-minute
+    # budget, retrying in between, before escalating.
+    assert clock.slept == [120.0, 120.0, 60.0]
+    assert [r["outcome"] for r in result["processed"][:-1]] == ["rate_limit_waited"] * 2
+    outcome = result["processed"][-1]
     assert outcome["rate_limit_timeout_escalated"] is True
     assert outcome["on_rate_limit_timeout"] == "pause"
     assert outcome["outcome"] == "blocked_rate_limit"
@@ -121,7 +121,7 @@ def test_rate_limit_wait_past_max_wait_minutes_escalates_to_fallback(conn, proje
         checks=PASSING_CHECKS,
         agents={
             "claude": AgentConfig(
-                command="MUVUE_FAKE_BEHAVIOR=rate_limited muvue-fake-agent",
+                command="MUVUE_FAKE_BEHAVIOR=rate_limited MUVUE_FAKE_RETRY_AFTER_SECONDS=600 muvue-fake-agent",
                 usage_parser="fake", cost_model="tokens",
                 on_rate_limit="wait", max_wait_minutes=5,
                 on_rate_limit_timeout="fallback:fake",
@@ -130,10 +130,10 @@ def test_rate_limit_wait_past_max_wait_minutes_escalates_to_fallback(conn, proje
         },
         routing=RoutingConfig(spec="claude", task="claude", subtask="claude"),
     )
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    now_fn = _clock(start, timedelta(0), timedelta(0), timedelta(0), timedelta(minutes=10))
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
 
-    result = runner_mod.run(db_path, cfg, repo_root, now_fn=now_fn)
+    result = runner_mod.run(db_path, cfg, repo_root, now_fn=clock.now, sleep_fn=clock.sleep)
+    assert clock.slept == [300.0]  # retry_after 600s > the 5-minute budget
     outcome = result["processed"][0]
     assert outcome["rate_limit_timeout_escalated"] is True
     assert outcome["fallback_from"] == "claude"
@@ -194,3 +194,36 @@ def test_rate_limit_that_clears_before_max_wait_never_hits_timeout_path(conn, pr
         "SELECT * FROM events WHERE type = 'runner.rate_limit_wait_exhausted'"
     ).fetchall()
     assert notifications == []
+
+
+def test_wait_sleeps_inside_the_run_then_the_retry_succeeds(conn, project, db_path, repo_root):
+    """v4 section 6: `on_rate_limit = "wait"` waits and retries within the
+    same run instead of stopping it."""
+    from muvue.core import drivers
+
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t", status="ready",
+        criteria_mode="auto", criteria=["ok"],
+    )
+    cfg = MuvueConfig(
+        checks=PASSING_CHECKS,
+        agents={"fake": AgentConfig(command="muvue-fake-agent", usage_parser="fake",
+                                    cost_model="tokens", on_rate_limit="wait", max_wait_minutes=30)},
+        routing=RoutingConfig(spec="fake", task="fake", subtask="fake"),
+    )
+    calls = []
+
+    def once_limited(agent_name, agent_cfg, brief_text, cwd, **kw):
+        calls.append(agent_name)
+        if len(calls) == 1:
+            return drivers.DriverResult(status="rate_limited", retry_after_seconds=90)
+        return drivers.invoke_driver(agent_name, agent_cfg, brief_text, cwd, **kw)
+
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc))
+    result = runner_mod.run(
+        db_path, cfg, repo_root, invoke=once_limited, now_fn=clock.now, sleep_fn=clock.sleep,
+    )
+    assert clock.slept == [90.0]
+    assert [r["outcome"] for r in result["processed"]] == ["rate_limit_waited", "done"]
+    assert result["paused"] is None
+    assert nodes.get_node(conn, task["id"])["status"] == "done"

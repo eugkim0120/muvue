@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import socket
 import subprocess
@@ -244,6 +245,113 @@ def run_security_probes(
     return issues, notes
 
 
+PROVIDERS_DOC = "docs/providers.md"
+_VERSION_RE = re.compile(r"(\d+(?:\.\d+)+)")
+_PIN_RE = re.compile(r"^\s*(>=|<=|==|>|<|=)?\s*(\d+(?:\.\d+)*)\s*$")
+_AUTH_CHECK_TIMEOUT_S = 15
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def version_satisfies(version_output: str, pin: str) -> bool | None:
+    """Does the first dotted version in `version_output` satisfy `pin`
+    (comma-separated clauses such as `>=2.0,<3`)? None if no version
+    can be read or the pin doesn't parse."""
+    found = _VERSION_RE.search(version_output)
+    if found is None:
+        return None
+    have = _version_tuple(found.group(1))
+    for clause in pin.split(","):
+        match = _PIN_RE.match(clause)
+        if match is None:
+            return None
+        op, want_text = match.group(1) or "==", match.group(2)
+        want = _version_tuple(want_text)
+        width = max(len(have), len(want))
+        a, b = have + (0,) * (width - len(have)), want + (0,) * (width - len(want))
+        ok = {">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b, "==": a == b, "=": a == b}[op]
+        if not ok:
+            return False
+    return True
+
+
+def _check_drivers(config, report: "DoctorReport") -> None:
+    """v4 section 6: run each driver's `auth_check` (a failure usually
+    means logged out or an expired session) and compare the version it
+    prints against `pinned_version`. Warnings, not errors: another
+    driver may still be routable."""
+    for name, agent in config.agents.items():
+        if not agent.auth_check.strip():
+            continue
+        try:
+            check = subprocess.run(
+                agent.auth_check, shell=True, capture_output=True, text=True,
+                timeout=_AUTH_CHECK_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            report.warn(
+                f"agents.{name}: auth_check timed out after {_AUTH_CHECK_TIMEOUT_S}s "
+                f"(see {PROVIDERS_DOC})"
+            )
+            continue
+        output = (check.stdout + check.stderr).strip()
+        if check.returncode != 0:
+            report.warn(
+                f"agents.{name}: auth_check failed (exit {check.returncode}): "
+                f"{output[:200] or 'no output'} -- not installed, logged out or session "
+                f"expired? See {PROVIDERS_DOC}"
+            )
+            continue
+        found = _VERSION_RE.search(output)
+        version = found.group(1) if found else "unknown version"
+        if agent.pinned_version.strip():
+            ok = version_satisfies(output, agent.pinned_version)
+            if ok is not True:
+                report.warn(
+                    f"agents.{name}: {version} does not satisfy pinned_version "
+                    f"{agent.pinned_version!r}; vendor CLI output formats change between "
+                    f"versions (see {PROVIDERS_DOC})"
+                )
+                continue
+        report.info.append(
+            f"agents.{name}: {version}"
+            + (f" (pinned {agent.pinned_version})" if agent.pinned_version.strip() else "")
+        )
+
+
+def _list_orphan_worktrees(repo_root: Path, db_path: Path, report: "DoctorReport") -> None:
+    """`doctor --repair` lists worktrees no active node owns (plan
+    section 5, "Leases"). Listing only: a worktree can hold uncommitted
+    work, so removing it is left to the human."""
+    from . import strict as strict_mod
+
+    root = strict_mod.worktrees_root(repo_root)
+    if not root.exists():
+        return
+    conn = core_db.connect(db_path)
+    try:
+        for path in sorted(root.iterdir()):
+            match = re.fullmatch(r"node-(\d+)", path.name)
+            if match is None:
+                continue
+            row = core_db.query_one(
+                conn, "SELECT status, deleted_at FROM nodes WHERE id = ?", (int(match.group(1)),),
+            )
+            if row is None:
+                reason = "no such node"
+            elif row["deleted_at"] is not None:
+                reason = "node deleted"
+            elif row["status"] in ("done", "failed"):
+                reason = f"node {row['status']}"
+            else:
+                continue
+            report.info.append(f"orphan worktree: {path} ({reason})")
+    finally:
+        conn.close()
+
+
 def run_doctor(
     repo_root: Path, *, repair: bool = False,
     skip_security_probes: bool = False, daemon_port: int | None = None,
@@ -343,18 +451,19 @@ def run_doctor(
                         report.fail(f"hook shim in {path} does not use an absolute path")
                     break
 
-    # Adapter protocol_version drift (plan section 7): a `.claude/
-    # settings.json` written by an older `muvue adapter install
-    # claude-code` (a stale protocol_version embedded) needs re-running
-    # after a protocol bump -- see docs/decisions.md.
+    # Adapter protocol_version drift (plan section 7: "doctor warns on
+    # mismatch"), across every adapter file muvue writes.
     if config is not None:
-        installed = adapters_mod.claude_code_protocol_version(repo_root)
-        if installed is not None and installed != config.protocol_version:
-            report.fail(
-                f".claude/settings.json was installed for protocol_version={installed}, "
-                f"repo is now protocol_version={config.protocol_version}; "
-                "re-run `muvue adapter install claude-code`"
-            )
+        for rel, installed in adapters_mod.installed_protocol_versions(repo_root).items():
+            if installed != config.protocol_version:
+                report.warn(
+                    f"{rel} was installed for protocol_version={installed}, repo is now "
+                    f"protocol_version={config.protocol_version}; re-run `muvue adapter install`"
+                )
+        _check_drivers(config, report)
+
+    if repair and db_path.exists():
+        _list_orphan_worktrees(repo_root, db_path, report)
 
     # Strict mode (plan section 5, P4): "Agent never holds a `main`
     # checkout" -- a node actively being worked (`in_progress`/`review`)

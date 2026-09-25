@@ -74,8 +74,10 @@ def create_node(
     actor_evidence: str = "tty",
     predicted_touches: list[str] | None = None,
     depends_on: list[int] | None = None,
+    owner: str | None = None,
 ) -> sqlite3.Row:
-    """`depends_on` writes `deps` edges (plan section 3) from the new node
+    """`owner` pre-assigns a ready node to someone without a lease (the
+    runner routes it to that owner's agent). `depends_on` writes `deps` edges (plan section 3) from the new node
     to live nodes of the same project, each logged as a replayable
     `dep.added` event."""
     criteria = criteria or []
@@ -88,8 +90,8 @@ def create_node(
         # detect a post-freeze edit.
         cur = conn.execute(
             "INSERT INTO nodes (project_id, parent_id, kind, title, body_md, status, "
-            "criteria_json, criteria_mode, risk_tier, max_attempts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "criteria_json, criteria_mode, risk_tier, max_attempts, owner) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 parent_id,
@@ -101,6 +103,7 @@ def create_node(
                 criteria_mode,
                 risk_tier,
                 max_attempts,
+                owner,
             ),
         )
         node_id = cur.lastrowid
@@ -357,6 +360,16 @@ def start(
         from . import strict as strict_mod
 
         worktree_path = strict_mod.bind_worktree(node, config, repo_root)
+        if node["worktree"] is None:
+            extra_columns["worktree"] = str(worktree_path)
+    elif (
+        config is not None
+        and getattr(config, "worktree_mode", "branch") == "per_node"
+        and repo_root is not None
+    ):
+        from . import strict as strict_mod
+
+        worktree_path = strict_mod.bind_light_worktree(node, config, repo_root)
         if node["worktree"] is None:
             extra_columns["worktree"] = str(worktree_path)
 

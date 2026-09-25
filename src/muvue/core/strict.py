@@ -164,20 +164,68 @@ def bind_worktree(node, config, repo_root: Path) -> Path:
             f"failed to create worktree for node {node['id']}: {add.stderr}"
         )
 
-    setup_cmd = (config.worktree_setup or "").strip()
-    if setup_cmd:
-        setup = subprocess.run(
-            setup_cmd, shell=True, cwd=wt_path, capture_output=True, text=True,
-        )
-        if setup.returncode != 0:
-            _teardown_worktree(airlock, wt_path, branch)
-            raise StrictModeError(
-                f"worktree_setup ({setup_cmd!r}) failed for node {node['id']} "
-                f"(exit {setup.returncode}):\n"
-                f"--- stdout ---\n{setup.stdout}\n--- stderr ---\n{setup.stderr}"
-            )
-
+    _run_worktree_setup(
+        config, wt_path, node["id"], lambda: _teardown_worktree(airlock, wt_path, branch),
+    )
     return wt_path
+
+
+def _run_worktree_setup(config, wt_path: Path, node_id: int, teardown) -> None:
+    """Run `worktree_setup` once in a fresh worktree; on failure tear the
+    worktree down and raise with the command's output attached."""
+    setup_cmd = (config.worktree_setup or "").strip()
+    if not setup_cmd:
+        return
+    setup = subprocess.run(setup_cmd, shell=True, cwd=wt_path, capture_output=True, text=True)
+    if setup.returncode != 0:
+        teardown()
+        raise StrictModeError(
+            f"worktree_setup ({setup_cmd!r}) failed for node {node_id} "
+            f"(exit {setup.returncode}):\n"
+            f"--- stdout ---\n{setup.stdout}\n--- stderr ---\n{setup.stderr}"
+        )
+
+
+def bind_light_worktree(node, config, repo_root: Path) -> Path:
+    """Light mode with `worktree_mode = "per_node"` (v4 section 6): a
+    worktree of the user's own repository on branch `node-<id>`, off the
+    current HEAD, so parallel agents never share a checkout. No airlock:
+    light mode trusts the user's repo. `core.merge` merges the branch
+    back into the checkout."""
+    repo_root = Path(repo_root)
+    existing = node["worktree"]
+    if existing is not None:
+        if not Path(existing).exists():
+            raise StrictModeError(
+                f"node {node['id']} is bound to worktree {existing}, which no longer "
+                "exists on disk; run `muvue doctor --repair`"
+            )
+        return Path(existing)
+    branch = f"node-{node['id']}"
+    wt_root = worktrees_root(repo_root)
+    wt_root.mkdir(parents=True, exist_ok=True)
+    wt_path = wt_root / branch
+    if wt_path.exists():
+        raise StrictModeError(f"worktree path {wt_path} already exists for node {node['id']}")
+    add = _run_git("worktree", "add", "-q", str(wt_path), "-b", branch, "HEAD", cwd=repo_root)
+    if add.returncode != 0:
+        raise StrictModeError(f"failed to create worktree for node {node['id']}: {add.stderr}")
+
+    def teardown() -> None:
+        _run_git("worktree", "remove", "--force", str(wt_path), cwd=repo_root)
+        _run_git("branch", "-D", branch, cwd=repo_root)
+
+    _run_worktree_setup(config, wt_path, node["id"], teardown)
+    return wt_path
+
+
+def is_airlock_worktree(worktree: str | Path, repo_root: Path) -> bool:
+    """True when `worktree` belongs to the strict-mode airlock, False when
+    it is a light-mode worktree of the user's own repository."""
+    common = _run_git("rev-parse", "--git-common-dir", cwd=Path(worktree))
+    if common.returncode != 0:
+        return False
+    return (Path(worktree) / common.stdout.strip()).resolve() == airlock_path(repo_root).resolve()
 
 
 def _teardown_worktree(airlock: Path, wt_path: Path, branch: str) -> None:

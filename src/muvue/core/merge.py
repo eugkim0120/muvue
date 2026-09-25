@@ -2,14 +2,12 @@
 in dependency order. On conflict: node -> blocked(conflict), a 'rebase
 onto main' subtask is auto-created for the same owner, attempts + 1."
 
-Only meaningful in strict mode: each strict-mode node has its own git
-worktree and branch (`node-<id>`, bound at `start` -- see `core.strict`).
-Light mode has no separate per-node branch to merge -- an agent's commits
-already land directly in the single tracked checkout, and a commit
-trailer is only ever a label, never a binding (`core/trailers.py`) -- so
-`attempt_merge` on a node with no bound worktree is a documented no-op
-(see docs/decisions.md), matching `core.review.dispatch`'s own precedent
-for "strict-mode-only, no-op otherwise".
+Only nodes with their own worktree have a branch to merge: strict mode
+(airlock worktree, bound at `start`) and light mode with `worktree_mode
+= "per_node"` (a worktree of the user's repo). Light mode's default
+`branch` worktree mode has agents commit straight into the checkout, so
+`attempt_merge` on a node with no worktree is a no-op. Light-mode
+branches merge into the user's checkout, and only when it is clean.
 
 Merging here means: merge the node's branch onto the *airlock's* `main`
 (a local, muvue-owned scratch worktree of it, never `repo_root` itself --
@@ -148,6 +146,9 @@ def attempt_merge(
     if pending:
         return {"status": "deferred", "pending_deps": pending}
 
+    if not _is_strict_node(node, repo_root):
+        return _merge_into_checkout(conn, node, repo_root, actor=actor)
+
     # The airlock must already exist by the time anything is `done` and
     # mergeable (some node's `start` created it).
     airlock = strict_mod.airlock_path(repo_root)
@@ -181,18 +182,49 @@ def attempt_merge(
     return {"status": "merged", "sha": sha}
 
 
+def _is_strict_node(node: sqlite3.Row, repo_root: Path) -> bool:
+    worktree = Path(node["worktree"])
+    if worktree.exists():
+        return strict_mod.is_airlock_worktree(worktree, repo_root)
+    # Worktree gone: the branch still says where the node's work lives.
+    in_checkout = strict_mod._run_git(
+        "rev-parse", "--verify", "-q", f"refs/heads/node-{node['id']}", cwd=repo_root,
+    )
+    return in_checkout.returncode != 0
+
+
+def _merge_into_checkout(conn: sqlite3.Connection, node: sqlite3.Row, repo_root: Path, *, actor: str) -> dict:
+    """Light mode, `per_node`: merge `node-<id>` into the user's own
+    checkout. Only on a clean checkout (untracked files aside): muvue
+    never merges over someone's uncommitted edits, it waits."""
+    dirty = strict_mod._run_git("status", "--porcelain", "--untracked-files=no", cwd=repo_root)
+    if dirty.returncode != 0 or dirty.stdout.strip():
+        return {"status": "deferred", "reason": "dirty_checkout"}
+    branch = f"node-{node['id']}"
+    result = _run_git_as_muvue("merge", "--no-ff", "--no-edit", branch, cwd=repo_root)
+    if result.returncode != 0:
+        strict_mod._run_git("merge", "--abort", cwd=repo_root)
+        return _handle_conflict(conn, node, actor=actor)
+    sha = strict_mod._run_git("rev-parse", "HEAD", cwd=repo_root).stdout.strip()
+    with db_mod.write_txn(conn):
+        events_mod.record_event(
+            conn, project_id=node["project_id"], node_id=node["id"], actor=actor,
+            actor_evidence="subprocess",
+            type_="merge.completed", payload={"node_id": node["id"], "sha": sha, "branch": branch},
+        )
+    return {"status": "merged", "sha": sha}
+
+
 def _handle_conflict(conn: sqlite3.Connection, node: sqlite3.Row, *, actor: str) -> dict:
     with db_mod.write_txn(conn):
         nodes_mod.block(
             conn, node["id"], reason="conflict", actor=actor,
             bump_attempts=True, event_actor_role="daemon", actor_evidence="subprocess",
         )
-        # "for the same owner" (plan section 6): not literally forced here --
-        # the runner's own owner string is deterministic per routed agent name
-        # (`f"runner:{agent_name}"`, core/runner.py), so re-scheduling this
-        # subtask through the same `[routing]` kind naturally lands on the
-        # same owner identity without needing a separate forced-assignment
-        # mechanism (see docs/decisions.md).
+        # "a 'rebase onto main' subtask is auto-created for the same
+        # owner" (plan section 6): the subtask carries the node's owner,
+        # and `core.runner.agent_for_node` routes a `runner:<agent>`
+        # owner back to that agent.
         subtask = nodes_mod.create_node(
             conn, project_id=node["project_id"], parent_id=node["id"], kind="subtask",
             title=f"rebase onto main (node {node['id']})",
@@ -203,6 +235,7 @@ def _handle_conflict(conn: sqlite3.Connection, node: sqlite3.Row, *, actor: str)
             ),
             criteria=[f"node-{node['id']} merges onto main with no conflicts"],
             criteria_mode="auto", status="ready", actor=actor, actor_evidence="subprocess",
+            owner=node["owner"],
         )
         events_mod.record_event(
             conn, project_id=node["project_id"], node_id=node["id"], actor=actor,

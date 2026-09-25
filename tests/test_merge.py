@@ -141,6 +141,7 @@ def test_conflict_blocks_node_bumps_attempts_and_creates_rebase_subtask(conn, pr
     assert subtask["parent_id"] == t2["id"]
     assert subtask["status"] == "ready"
     assert "rebase" in subtask["title"].lower()
+    assert subtask["owner"] == row["owner"]  # "for the same owner" (plan section 6)
 
     # findable as a child of the conflicting node
     children = conn.execute(

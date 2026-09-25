@@ -58,3 +58,15 @@ def use_passing_checks(repo_root: Path) -> None:
         'lint = "ruff check ."', 'lint = "true"'
     )
     config_path.write_text(text)
+
+
+def git_init_with_commit(repo: Path) -> None:
+    """A git repo with one commit, so `worktree_mode = "per_node"` has a
+    HEAD to branch nodes off."""
+    env = {
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.com",
+        "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(repo),
+    }
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "initial"]):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=env)

@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W7: runner, merge, notify, doctor
+
+### Added
+- **Light-mode `per_node` worktrees** (#132). Each node runs in its own
+  worktree on branch `node-<id>`, so `--parallel` agents never share a
+  checkout. `merge` brings the branch into the checkout, but only when
+  the checkout is clean.
+- **`muvue run` merges finished nodes in dependency order after every
+  cycle.** It won't schedule a node before its dependencies are done.
+- **`POST /nodes/{id}/start?agent=X` launches `muvue run --node ID
+  --agent X`** as a detached, registered subprocess. It returns the
+  PID and log path, 409 if the node isn't ready, and 422 for an unknown
+  agent (#135). New `run --node ID`.
+- **`[notify] url` works** (#134, supersedes #97). Inbox-worthy events
+  are POSTed as text lines, from the daemon and the runner.
+- **`doctor` driver checks.** It runs each `auth_check`, reports the
+  version against `pinned_version`, warns on a logged-out or expired
+  CLI, and links `docs/providers.md`. `doctor --repair` lists orphan
+  worktrees.
+
+### Changed
+- **`on_rate_limit = "wait"` really waits** (#133). The runner sleeps
+  until `retry_at`, retries in the same run, and escalates after
+  `max_wait_minutes`. Pause wakes it.
+- **A merge conflict's rebase subtask keeps the original owner**, and
+  the runner routes `runner:<agent>`-owned nodes back to that agent.
+- **Adapter `protocol_version` drift is a warning** for every installed
+  adapter file, not an error for Claude Code only.
+- A failing `worktree_setup` stops the run with `start_failed` instead
+  of a traceback. `per_node` outside a git repository is refused up
+  front.
+- `docs/providers.md` records what was verified against claude 2.1.281
+  and codex-cli 0.142.5, and what wasn't. It also notes that
+  `auth_check = "codex login status"` catches a logged-out Codex.
+
 ## [Unreleased] - v4 delta closure, W6: brief
 
 ### Changed

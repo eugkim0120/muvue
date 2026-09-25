@@ -158,16 +158,44 @@ def test_done_runs_checks_by_default_and_flags_a_failure(repo):
     assert r.json()["auto_approved"] is False
 
 
-def test_start_with_agent_param_is_recorded_but_does_not_spawn(client, ready_task, conn, auth_headers):
-    node_id = ready_task["task"]["id"]
-    r = client.post(f"/nodes/{node_id}/start?agent=claude", json={"owner": "agent-1"}, headers=auth_headers)
-    assert r.status_code == 200
-    events = conn.execute(
-        "SELECT * FROM events WHERE node_id = ? AND type = 'node.agent_requested'",
-        (node_id,),
-    ).fetchall()
-    assert len(events) == 1
-    assert '"agent": "claude"' in events[0]["payload"]
+def test_start_with_agent_spawns_a_tracked_runner_that_finishes_the_node(repo):
+    """`POST /nodes/{id}/start?agent=X` (plan section 4) launches `muvue
+    run --node ID --agent X`; the fake agent completes the node."""
+    import time as _time
+
+    from conftest import use_passing_checks
+    from muvue.core import load_config
+
+    use_passing_checks(repo)
+    config = load_config(repo / ".muvue" / "config.toml")
+    app = create_app(repo, config=config)
+    client = TestClient(app, base_url=BASE_URL)
+    headers = {"Authorization": f"Bearer {app.state.session.token}"}
+    c = core_db.connect(repo / ".muvue" / "muvue.db")
+    project = projects.create_project(c, goal="spawn")
+    task = nodes.create_node(
+        c, project_id=project["id"], kind="task", title="t", criteria=["ok"],
+        criteria_mode="auto", predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(c, project["id"], config=config)
+
+    r = client.post(f"/nodes/{task['id']}/start?agent=fake", json={}, headers=headers)
+    assert r.status_code == 200, r.text
+    spawned = r.json()["spawned"]
+    assert spawned["agent"] == "fake" and spawned["pid"] > 0
+    deadline = _time.monotonic() + 30
+    while _time.monotonic() < deadline:
+        if nodes.get_node(c, task["id"])["status"] == "done":
+            break
+        _time.sleep(0.2)
+    assert nodes.get_node(c, task["id"])["status"] == "done", (repo / spawned["log"]).read_text()
+    assert nodes.get_node(c, task["id"])["owner"] == "runner:fake"
+    c.close()
+
+    again = client.post(f"/nodes/{task['id']}/start?agent=fake", json={}, headers=headers)
+    assert again.status_code == 409
+    unknown = client.post(f"/nodes/{task['id']}/start?agent=nope", json={}, headers=headers)
+    assert unknown.status_code == 422
 
 
 def test_show_node_includes_notes_and_commits(client, ready_task):

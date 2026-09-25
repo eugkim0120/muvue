@@ -1014,6 +1014,7 @@ def run(
         "agent's own max_concurrency)"
     ),
     project_id: int = typer.Option(None, "--project-id", help="scope to one project"),
+    node_id: int = typer.Option(None, "--node", help="run only this ready node"),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Unattended runner (plan section 6): spawns one configured driver
@@ -1028,8 +1029,9 @@ def run(
     try:
         result = core.runner.run(
             db_path, config, repo_root, agent_override=agent, parallel=parallel, project_id=project_id,
+            node_id=node_id,
         )
-    except core.runner.ParallelismRefused as e:
+    except core.runner.RunRefused as e:
         # v4 section 6 Delta C: refused before the runner does anything --
         # core.runner.run raises this before opening a DB connection.
         typer.echo(str(e), err=True)
