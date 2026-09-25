@@ -57,17 +57,19 @@ def record_spend(
 
 
 def get_spend(conn: sqlite3.Connection, project_id: int, agent: str, unit: str) -> float:
-    row = conn.execute(
+    row = db_mod.query_one(
+        conn,
         "SELECT spent FROM agent_spend WHERE project_id = ? AND agent = ? AND unit = ?",
         (project_id, agent, unit),
-    ).fetchone()
+    )
     return row["spent"] if row is not None else 0.0
 
 
 def project_spend(conn: sqlite3.Connection, project_id: int) -> list[sqlite3.Row]:
     """Every (agent, unit, spent) row for a project -- the dashboard's
     "spend vs budget per driver" KPI (plan section 8) reads this."""
-    return conn.execute(
+    return db_mod.query_all(
+        conn,
         "SELECT agent, unit, spent FROM agent_spend WHERE project_id = ? ORDER BY agent, unit",
         (project_id,),
-    ).fetchall()
+    )

@@ -1748,3 +1748,57 @@ reading here. Real `decisions` table entries start once dogfooding begins
     opens its own connection on the worker thread. The SSE loop only
     polls `PRAGMA data_version`.
 
+116. **`deps` and `project_links` have writers.** `create_node(depends_on=
+    [...])` (CLI `decompose`/`replan --depends-on`, repeatable) writes
+    `deps` edges and a `dep.added` event for each. Dependencies must be
+    live nodes in the same project; a new node can't be depended on yet,
+    so creation can't form a cycle. `project create --follows/
+    --supersedes` writes `project_links` plus a `project.linked` event.
+    `component_edges` and `invariants` stay schema-only: plan section 3
+    lists the tables but no verb or flow writes them, and adding one
+    would be a new, unspecified verb (working rule 8). `external_refs`
+    keeps `ext_id` for the spec's `id` column, because `id` is the
+    surrogate primary key every table here uses.
+
+117. **The v3 per-project budget columns are dropped** (schema 6).
+    `projects.budget_unit/budget_limit/spent` and `project create
+    --budget-unit/--budget-limit` contradicted v4's "no single budget"
+    rule, and nothing enforced them. `migrate` drops the columns with
+    `ALTER TABLE ... DROP COLUMN` (sqlite >= 3.35). Replay ignores the
+    keys in old `project.created` payloads.
+
+118. **Lessons are validated at the write path.** Plan section 3:
+    "lessons must carry trigger, failure, do_instead, scope." `add_note
+    (kind="lesson")` requires the JSON form `nodes.lesson_text` builds,
+    with all four fields non-empty, and `fail` builds it from `--lesson`
+    (the failure) plus the required `--trigger`, `--do-instead` and
+    `--scope` (the same fields in MCP and API). The fake agent's "lazy
+    vacuous lesson" behaviour is now refused, and the node's attempt is
+    not consumed. Lesson *quality* is still not judged.
+
+119. **Replay covers the whole section 3 replayable list; supersedes
+    #78.** The fold adds `deps` (`dep.added`), `node_commits` and
+    `actual_touches` (`commit.linked`, first link wins as on the write
+    side), plan-revision approvals (`revision.proposed`/
+    `revision.approved`) and `agent_spend` (summed `spend.recorded`).
+    Approvals compare as approved-or-not, since `approved_at` is
+    wall-clock. `rebuild --apply` backs the DB up with sqlite's online
+    backup API, then rewrites those tables from the log in one write
+    transaction and rebuilds the FTS indexes. `nodes.lease_until` comes
+    from the last snapshot. `notes.last_retrieved_at` keeps its live
+    value. Tables outside the replayable set (questions, predicted
+    touches, usage, decisions, external refs) are left untouched.
+
+120. **Every read goes through `read_txn`; supersedes #70.** Principle 2
+    ("no raw `conn.execute` outside them") is now enforced by
+    `tests/test_txn_discipline.py`, an AST check over the whole package.
+    Exempt: `core/db.py`, `core/migrate.py`, `muvue/_hook.py` and
+    `PRAGMA` statements. Single-statement reads use `db.query_one`/
+    `db.query_all`, which run inside `read_txn`. `read_txn` now raises
+    if a write happened inside it, because its closing rollback would
+    otherwise discard the write silently.
+
+121. **`export` writes the section 2 layout; supersedes #6.** Without
+    `--project-id` it writes every project's `.jsonl.gz` archive plus
+    `unscoped.jsonl.gz`, instead of a flat `events.json`.
+

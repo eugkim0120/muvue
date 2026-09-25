@@ -175,3 +175,19 @@ def test_deferred_read_then_write_upgrade_raises_busy_immediately(db_path, monke
         conn_b.rollback()
         conn_a.close()
         conn_b.close()
+
+
+def test_read_txn_refuses_a_write_made_inside_it(tmp_path):
+    """`read_txn` rolls back when it ends, so a write inside it would be
+    silently discarded -- it raises instead."""
+    from muvue.core import db as core_db
+    from muvue.core import projects
+
+    conn = core_db.init_db(tmp_path / "muvue.db")
+    try:
+        with pytest.raises(RuntimeError, match="write inside read_txn"):
+            with core_db.read_txn(conn):
+                projects.create_project(conn, goal="nope")
+        assert conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0] == 0
+    finally:
+        conn.close()

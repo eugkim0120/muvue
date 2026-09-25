@@ -65,19 +65,22 @@ def _dependencies_pending(conn: sqlite3.Connection, node: sqlite3.Row) -> list[i
     trivially "merged" -- there's no separate branch for it to merge."""
     dep_ids = [
         r["depends_on"]
-        for r in conn.execute(
-            "SELECT depends_on FROM deps WHERE node_id = ?", (node["id"],)
-        ).fetchall()
+        for r in db_mod.query_all(
+            conn,
+            "SELECT depends_on FROM deps WHERE node_id = ?",
+            (node["id"],),
+        )
     ]
     pending = []
     for dep_id in dep_ids:
         dep = nodes_mod.get_node(conn, dep_id)
         if dep["worktree"] is None:
             continue
-        merged = conn.execute(
+        merged = db_mod.query_one(
+            conn,
             "SELECT 1 FROM events WHERE node_id = ? AND type = 'merge.completed' LIMIT 1",
             (dep_id,),
-        ).fetchone()
+        )
         if merged is None:
             pending.append(dep_id)
     return pending
@@ -133,10 +136,11 @@ def attempt_merge(
     if node["status"] != "done":
         raise MergeError(f"node {node_id} is status={node['status']!r}, not done")
 
-    already = conn.execute(
+    already = db_mod.query_one(
+        conn,
         "SELECT 1 FROM events WHERE node_id = ? AND type = 'merge.completed' LIMIT 1",
         (node_id,),
-    ).fetchone()
+    )
     if already is not None:
         return {"status": "already_merged"}
 
@@ -228,7 +232,7 @@ def merge_pending(conn: sqlite3.Connection, repo_root: str | Path, *, project_id
             query += " AND project_id = ?"
             params = (project_id,)
         query += " ORDER BY id"
-        candidates = [r["id"] for r in conn.execute(query, params).fetchall()]
+        candidates = [r["id"] for r in db_mod.query_all(conn, query, params)]
         for node_id in candidates:
             if node_id in seen_final:
                 continue

@@ -55,8 +55,8 @@ def _done(conn: sqlite3.Connection, config, args: dict) -> dict:
 def _fail(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.nodes.fail(
         conn, args["node_id"], owner=args["owner"], lesson=args["lesson"],
-        trigger=args.get("trigger", ""), do_instead=args.get("do_instead", ""),
-        scope=args.get("scope", ""), request_id=args.get("request_id"),
+        trigger=args["trigger"], do_instead=args["do_instead"],
+        scope=args["scope"], request_id=args.get("request_id"),
         expected_version=args.get("version"), actor_evidence="mcp",
     )
 
@@ -99,7 +99,7 @@ TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "show": (_show, {"type": "object", "properties": {"node_id": {"type": "integer"}}, "required": ["node_id"]}, "Full detail for one node."),
     "start": (_start, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Take the lease on a ready node."),
     "done": (_done, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "summary": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Mark a node done (may stop at review)."),
-    "fail": (_fail, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "lesson": {"type": "string"}, "trigger": {"type": "string"}, "do_instead": {"type": "string"}, "scope": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner", "lesson"]}, "Fail a node, recording a lesson."),
+    "fail": (_fail, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "lesson": {"type": "string"}, "trigger": {"type": "string"}, "do_instead": {"type": "string"}, "scope": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner", "lesson", "trigger", "do_instead", "scope"]}, "Fail a node, recording a lesson (trigger, failure, do_instead, scope)."),
     "note": (_note, {"type": "object", "properties": {"node_id": {"type": "integer"}, "text": {"type": "string"}, "kind": {"type": "string"}, "pinned": {"type": "boolean"}}, "required": ["node_id", "text"]}, "Record a discovery/decision/lesson note."),
     "ask": (_ask, {"type": "object", "properties": {"node_id": {"type": "integer"}, "question": {"type": "string"}, "default": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["node_id", "question"]}, "Ask a human a question with a proposed default."),
     "wait": (_wait, {"type": "object", "properties": {"question_id": {"type": "integer"}, "default_ok": {"type": "boolean"}}, "required": ["question_id"]}, "Poll a question once."),

@@ -85,7 +85,7 @@ def test_request_id_dedupe_check_runs_inside_the_write_txn(conn, node_row, monke
     if verb == "done":
         nodes.done(conn, node_row["id"], owner="alice", request_id="r")
     elif verb == "fail":
-        nodes.fail(conn, node_row["id"], owner="alice", lesson="x", request_id="r")
+        nodes.fail(conn, node_row["id"], owner="alice", lesson="x", trigger="t", do_instead="d", scope="s", request_id="r")
     elif verb == "ask":
         asks.ask(conn, node_row["id"], question="q?", default="d", request_id="r")
     else:

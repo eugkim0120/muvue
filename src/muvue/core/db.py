@@ -113,8 +113,27 @@ def read_txn(conn: sqlite3.Connection):
     if conn.in_transaction:
         yield conn
         return
+    changes_before = conn.total_changes
     conn.execute("BEGIN DEFERRED")
     try:
         yield conn
     finally:
         conn.rollback()
+    if conn.total_changes != changes_before:
+        # The rollback above just discarded it; say so instead of losing
+        # a write silently. Writes belong in `write_txn`.
+        raise RuntimeError("write inside read_txn was rolled back; use write_txn")
+
+
+def query_all(conn: sqlite3.Connection, sql: str, params=()) -> list[sqlite3.Row]:
+    """Run one SELECT inside `read_txn` and return every row -- the read
+    path principle 2 asks for ("no raw `conn.execute` outside" the two
+    context managers) for the common single-query case."""
+    with read_txn(conn):
+        return conn.execute(sql, params).fetchall()
+
+
+def query_one(conn: sqlite3.Connection, sql: str, params=()) -> sqlite3.Row | None:
+    """`query_all`'s single-row counterpart."""
+    with read_txn(conn):
+        return conn.execute(sql, params).fetchone()

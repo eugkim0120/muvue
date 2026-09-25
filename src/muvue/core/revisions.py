@@ -32,6 +32,7 @@ def replan_add_subtask(
     title: str,
     body_md: str = "",
     criteria: list[str] | None = None,
+    depends_on: list[int] | None = None,
     actor: str = "agent",
     actor_evidence: str = "tty",
 ) -> dict:
@@ -54,6 +55,7 @@ def replan_add_subtask(
         title=title,
         body_md=body_md,
         criteria=criteria,
+        depends_on=depends_on,
         status="ready",
         actor=actor,
         actor_evidence=actor_evidence,
@@ -101,15 +103,18 @@ def _revision_snapshot(conn: sqlite3.Connection, project_id: int, n: int) -> dic
     """{node_id: criteria_hash} snapshot for revision n, or {} if n < 1."""
     if n < 1:
         return {}
-    row = conn.execute(
-        "SELECT id FROM plan_revisions WHERE project_id = ? AND n = ?", (project_id, n)
-    ).fetchone()
+    row = db_mod.query_one(
+        conn,
+        "SELECT id FROM plan_revisions WHERE project_id = ? AND n = ?",
+        (project_id, n),
+    )
     if row is None:
         return {}
-    rows = conn.execute(
+    rows = db_mod.query_all(
+        conn,
         "SELECT node_id, criteria_hash FROM plan_revision_nodes WHERE revision_id = ?",
         (row["id"],),
-    ).fetchall()
+    )
     return {r["node_id"]: r["criteria_hash"] for r in rows}
 
 

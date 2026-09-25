@@ -33,6 +33,18 @@ recently").
   the `verified_sha` *value* itself, set once by an event payload, is
   still compared normally).
 
+Beyond the row-snapshot tables (`projects`, `nodes`, `components`,
+`notes`), replay folds the keyed relations the section 3 list names:
+`deps` (`dep.added`), `node_commits` and `actual_touches`
+(`commit.linked`), plan-revision approvals (`revision.proposed`/
+`revision.approved`, compared as approved-or-not since `approved_at` is a
+wall-clock value) and `agent_spend` (summed `spend.recorded`).
+
+`apply_rebuild` writes the replayed set back over the live tables
+(`muvue rebuild --apply`) and re-derives the FTS indexes; tables outside
+the replayable set (questions, predicted touches, usage, ...) are left
+as they are.
+
 `_REPLAYABLE_NODE_COLUMNS`/`_REPLAYABLE_NOTE_COLUMNS` below are the
 column lists `diff_state`/`diff_project_from_archive` actually compare;
 `_NODE_COLUMNS`/`_NOTE_COLUMNS` (the full row shape) still exist for
@@ -45,10 +57,9 @@ from __future__ import annotations
 import json
 import sqlite3
 
-_PROJECT_COLUMNS = [
-    "id", "goal", "phase", "budget_unit", "budget_limit", "spent", "created_at", "closed_at",
-    "branch",
-]
+from . import db as db_mod
+
+_PROJECT_COLUMNS = ["id", "goal", "phase", "created_at", "closed_at", "branch"]
 _NODE_COLUMNS = [
     "id", "project_id", "parent_id", "kind", "title", "body_md", "status",
     "block_reason", "criteria_json", "criteria_hash", "criteria_mode",
@@ -94,6 +105,11 @@ def rebuild_state_from_events(events: list[dict]) -> dict:
     nodes: dict[int, dict] = {}
     components: dict[int, dict] = {}
     notes: dict[int, dict] = {}
+    deps: dict[tuple, dict] = {}
+    node_commits: dict[tuple, dict] = {}
+    actual_touches: dict[tuple, dict] = {}
+    plan_revisions: dict[tuple, dict] = {}
+    agent_spend: dict[tuple, dict] = {}
     for ev in events:
         payload = ev["payload"]
         if isinstance(payload, str):
@@ -124,34 +140,83 @@ def rebuild_state_from_events(events: list[dict]) -> dict:
             # {"note_id", "project_id"}, not a row snapshot -- it drives
             # `decay_lessons`' distinct-project count, not `notes` replay.
             notes[payload["id"]] = payload
+        elif etype == "dep.added":
+            deps[(payload["node_id"], payload["depends_on"])] = {}
+        elif etype == "commit.linked":
+            node_id = ev.get("node_id")
+            files = payload.get("files") or []
+            # INSERT OR IGNORE on the write side: the first link wins.
+            node_commits.setdefault((node_id, payload["sha"]), {"files": json.dumps(files)})
+            for path in files:
+                actual_touches[(node_id, path)] = {}
+        elif etype == "revision.proposed":
+            plan_revisions[(ev.get("project_id"), payload["n"])] = {"approved": False}
+        elif etype == "revision.approved":
+            plan_revisions[(ev.get("project_id"), payload["n"])] = {
+                "approved": True, "_approved_ts": ev.get("ts"),
+            }
+        elif etype == "spend.recorded":
+            key = (payload["project_id"], payload["agent"], payload["unit"])
+            row = agent_spend.setdefault(key, {"spent": 0.0})
+            row["spent"] += payload["amount"]
         # decision.*/external_ref.* events don't affect this replay state.
-    return {"projects": projects, "nodes": nodes, "components": components, "notes": notes}
+    return {
+        "projects": projects, "nodes": nodes, "components": components, "notes": notes,
+        "deps": deps, "node_commits": node_commits, "actual_touches": actual_touches,
+        "plan_revisions": plan_revisions, "agent_spend": agent_spend,
+    }
 
 
 def rebuild_state(conn: sqlite3.Connection) -> dict:
     """Replay `events` and return {"projects": {id: row_dict}, "nodes": {...}}."""
-    events = [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY id ASC")]
+    events = [dict(r) for r in db_mod.query_all(conn, "SELECT * FROM events ORDER BY id ASC")]
     return rebuild_state_from_events(events)
 
 
 def live_state(conn: sqlite3.Connection) -> dict:
     projects = {
         row["id"]: {c: row[c] for c in _PROJECT_COLUMNS}
-        for row in conn.execute("SELECT * FROM projects")
+        for row in db_mod.query_all(conn, "SELECT * FROM projects")
     }
     nodes = {
         row["id"]: {c: row[c] for c in _NODE_COLUMNS}
-        for row in conn.execute("SELECT * FROM nodes")
+        for row in db_mod.query_all(conn, "SELECT * FROM nodes")
     }
     components = {
         row["id"]: {c: row[c] for c in _COMPONENT_COLUMNS}
-        for row in conn.execute("SELECT * FROM components")
+        for row in db_mod.query_all(conn, "SELECT * FROM components")
     }
     notes = {
         row["id"]: {c: row[c] for c in _NOTE_COLUMNS}
-        for row in conn.execute("SELECT * FROM notes")
+        for row in db_mod.query_all(conn, "SELECT * FROM notes")
     }
-    return {"projects": projects, "nodes": nodes, "components": components, "notes": notes}
+    deps = {(r["node_id"], r["depends_on"]): {} for r in db_mod.query_all(
+        conn,
+        "SELECT * FROM deps",
+    )}
+    node_commits = {
+        (r["node_id"], r["sha"]): {"files": r["files"]}
+        for r in db_mod.query_all(conn, "SELECT * FROM node_commits")
+    }
+    actual_touches = {
+        (r["node_id"], r["path"]): {} for r in db_mod.query_all(
+            conn,
+            "SELECT * FROM actual_touches",
+        )
+    }
+    plan_revisions = {
+        (r["project_id"], r["n"]): {"approved": r["approved_at"] is not None}
+        for r in db_mod.query_all(conn, "SELECT * FROM plan_revisions")
+    }
+    agent_spend = {
+        (r["project_id"], r["agent"], r["unit"]): {"spent": r["spent"]}
+        for r in db_mod.query_all(conn, "SELECT * FROM agent_spend")
+    }
+    return {
+        "projects": projects, "nodes": nodes, "components": components, "notes": notes,
+        "deps": deps, "node_commits": node_commits, "actual_touches": actual_touches,
+        "plan_revisions": plan_revisions, "agent_spend": agent_spend,
+    }
 
 
 _TABLE_COLUMNS = {
@@ -159,7 +224,20 @@ _TABLE_COLUMNS = {
     "nodes": _REPLAYABLE_NODE_COLUMNS,
     "components": _REPLAYABLE_COMPONENT_COLUMNS,
     "notes": _REPLAYABLE_NOTE_COLUMNS,
+    "deps": [],
+    "node_commits": ["files"],
+    "actual_touches": [],
+    "plan_revisions": ["approved"],
+    "agent_spend": ["spent"],
 }
+
+ALL_REPLAYED_TABLES = tuple(_TABLE_COLUMNS)
+
+
+def _normalise(table: str, row: dict) -> dict:
+    if table == "agent_spend":
+        return {"spent": round(float(row.get("spent") or 0), 9)}
+    return row
 
 
 def _diff_tables(replayed: dict, live: dict, tables: tuple[str, ...] = ("projects", "nodes")) -> dict:
@@ -182,8 +260,8 @@ def _diff_tables(replayed: dict, live: dict, tables: tuple[str, ...] = ("project
             # non-replayable column (e.g. real wall-clock time having
             # passed between `live_state()` and `rebuild_state()`) is
             # never compared at all, not just tolerated.
-            live_row = {c: live_row_full.get(c) for c in cols}
-            replayed_row = {c: r_table[id_].get(c) for c in cols}
+            live_row = _normalise(table, {c: live_row_full.get(c) for c in cols})
+            replayed_row = _normalise(table, {c: r_table[id_].get(c) for c in cols})
             if replayed_row != live_row:
                 mismatches.setdefault(table, {})[id_] = {
                     "live": live_row,
@@ -194,11 +272,10 @@ def _diff_tables(replayed: dict, live: dict, tables: tuple[str, ...] = ("project
 
 def diff_state(conn: sqlite3.Connection) -> dict:
     """Return {} if replay-from-events equals the live DB, else a dict of
-    mismatches for debugging. Covers `components`/`notes` (P7) alongside
-    `projects`/`nodes` (P0)."""
+    mismatches for debugging. Covers every table in `ALL_REPLAYED_TABLES`."""
     replayed = rebuild_state(conn)
     live = live_state(conn)
-    return _diff_tables(replayed, live, tables=("projects", "nodes", "components", "notes"))
+    return _diff_tables(replayed, live, tables=ALL_REPLAYED_TABLES)
 
 
 def diff_project_from_archive(conn: sqlite3.Connection, project_id: int, archive_path) -> dict:
@@ -222,3 +299,99 @@ def diff_project_from_archive(conn: sqlite3.Connection, project_id: int, archive
         },
     }
     return _diff_tables(replayed, live)
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _write_rows(conn: sqlite3.Connection, table: str, replayed: dict[int, dict],
+                keep_live: tuple[str, ...] = ()) -> None:
+    """Make `table` hold exactly the replayed rows: update existing ids,
+    insert missing ones, delete extras. Snapshot keys that aren't real
+    columns (an older event's retired column) are dropped; `keep_live`
+    columns are never overwritten on an existing row."""
+    columns = _table_columns(conn, table)
+    with db_mod.write_txn(conn):
+        live_ids = {r["id"] for r in db_mod.query_all(conn, f"SELECT id FROM {table}")}
+        for id_ in live_ids - set(replayed):
+            conn.execute(f"DELETE FROM {table} WHERE id = ?", (id_,))
+        for id_, snapshot in replayed.items():
+            row = {k: v for k, v in snapshot.items() if k in columns}
+            if id_ in live_ids:
+                sets = [k for k in row if k != "id" and k not in keep_live]
+                if sets:
+                    conn.execute(
+                        f"UPDATE {table} SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
+                        [row[k] for k in sets] + [id_],
+                    )
+            else:
+                cols = list(row)
+                conn.execute(
+                    f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
+                    [row[c] for c in cols],
+                )
+
+
+def apply_rebuild(conn: sqlite3.Connection) -> dict:
+    """`muvue rebuild --apply` (v4 section 3: "`rebuild` reconstructs the
+    replayable set and re-derives the rest"). Rewrites every table in
+    `ALL_REPLAYED_TABLES` from the event log in one write transaction,
+    then rebuilds the FTS indexes. `nodes.lease_until` comes from the
+    last snapshot; `notes.last_retrieved_at` (read-side telemetry) keeps
+    its live value. Callers should back the DB up first (the CLI does).
+    Returns `{"tables": [...]}`, the tables that differed beforehand."""
+    from . import events as events_mod
+
+    before = diff_state(conn)
+    with db_mod.write_txn(conn):
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        replayed = rebuild_state(conn)
+        _write_rows(conn, "projects", replayed["projects"])
+        _write_rows(conn, "nodes", replayed["nodes"])
+        _write_rows(conn, "components", replayed["components"])
+        _write_rows(conn, "notes", replayed["notes"], keep_live=("last_retrieved_at",))
+
+        conn.execute("DELETE FROM deps")
+        conn.executemany(
+            "INSERT INTO deps (node_id, depends_on) VALUES (?, ?)", list(replayed["deps"])
+        )
+        conn.execute("DELETE FROM node_commits")
+        conn.executemany(
+            "INSERT INTO node_commits (node_id, sha, files) VALUES (?, ?, ?)",
+            [(n, sha, row["files"]) for (n, sha), row in replayed["node_commits"].items()],
+        )
+        conn.execute("DELETE FROM actual_touches")
+        conn.executemany(
+            "INSERT INTO actual_touches (node_id, path) VALUES (?, ?)",
+            list(replayed["actual_touches"]),
+        )
+        conn.execute("DELETE FROM agent_spend")
+        conn.executemany(
+            "INSERT INTO agent_spend (project_id, agent, unit, spent) VALUES (?, ?, ?, ?)",
+            [(p, a, u, row["spent"]) for (p, a, u), row in replayed["agent_spend"].items()],
+        )
+        for (project_id, n), row in replayed["plan_revisions"].items():
+            live = conn.execute(
+                "SELECT id, approved_at FROM plan_revisions WHERE project_id = ? AND n = ?",
+                (project_id, n),
+            ).fetchone()
+            approved_at = row.get("_approved_ts") if row["approved"] else None
+            if live is None:
+                conn.execute(
+                    "INSERT INTO plan_revisions (project_id, n, approved_at) VALUES (?, ?, ?)",
+                    (project_id, n, approved_at),
+                )
+            elif (live["approved_at"] is not None) != row["approved"]:
+                conn.execute(
+                    "UPDATE plan_revisions SET approved_at = ? WHERE id = ?",
+                    (approved_at, live["id"]),
+                )
+
+        for fts in ("notes_fts", "decisions_fts", "components_fts"):
+            conn.execute(f"INSERT INTO {fts}({fts}) VALUES ('rebuild')")
+        events_mod.record_event(
+            conn, project_id=None, node_id=None, actor="human", actor_evidence="tty",
+            type_="rebuild.applied", payload={"tables": sorted(before)},
+        )
+    return {"tables": sorted(before)}

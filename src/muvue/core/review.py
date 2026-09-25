@@ -42,6 +42,7 @@ import subprocess
 import sqlite3
 from typing import Callable
 
+from . import db as db_mod
 from . import risk as risk_mod
 from .config import MuvueConfig
 
@@ -104,14 +105,19 @@ def _stale_touched_component_ids(conn: sqlite3.Connection, node: sqlite3.Row) ->
     docs/decisions.md."""
     globs = [
         row["path_glob"]
-        for row in conn.execute(
-            "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (node["id"],)
+        for row in db_mod.query_all(
+            conn,
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
+            (node["id"],),
         )
     ]
     if not globs:
         return []
     hits = []
-    for row in conn.execute("SELECT id, anchors_json FROM components WHERE status = 'stale'"):
+    for row in db_mod.query_all(
+        conn,
+        "SELECT id, anchors_json FROM components WHERE status = 'stale'",
+    ):
         try:
             anchors = json.loads(row["anchors_json"] or "{}")
         except (json.JSONDecodeError, TypeError):

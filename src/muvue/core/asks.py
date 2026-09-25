@@ -53,7 +53,7 @@ def _parse(ts: str) -> datetime:
 
 
 def get_question(conn: sqlite3.Connection, question_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
+    row = db_mod.query_one(conn, "SELECT * FROM questions WHERE id = ?", (question_id,))
     if row is None:
         raise AskError(f"no such question: {question_id}")
     return row

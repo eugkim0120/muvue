@@ -318,33 +318,37 @@ def create_app(
     def inbox() -> dict:
         with _conn() as conn:
             questions = _rows_to_list(
-                conn.execute("SELECT * FROM questions WHERE status = 'open'").fetchall()
+                core.db.query_all(conn, "SELECT * FROM questions WHERE status = 'open'")
             )
             review = _rows_to_list(
-                conn.execute(
-                    "SELECT * FROM nodes WHERE status = 'review' AND deleted_at IS NULL"
-                ).fetchall()
+                core.db.query_all(
+                    conn,
+                    "SELECT * FROM nodes WHERE status = 'review' AND deleted_at IS NULL",
+                )
             )
             blocked = _rows_to_list(
-                conn.execute(
-                    "SELECT * FROM nodes WHERE status = 'blocked' AND deleted_at IS NULL"
-                ).fetchall()
+                core.db.query_all(
+                    conn,
+                    "SELECT * FROM nodes WHERE status = 'blocked' AND deleted_at IS NULL",
+                )
             )
             # P7 drift loop items 2/4: unattributed commits and audit's
             # drafted diffs are unacked `events` rows (same "unacked ==
             # still in the inbox" convention `/events/{id}/ack` already
             # established) rather than a new dedicated table.
             signals = _rows_to_list(
-                conn.execute(
+                core.db.query_all(
+                    conn,
                     "SELECT * FROM events WHERE type = 'inbox.unattributed_commit' "
-                    "AND acked_at IS NULL ORDER BY id"
-                ).fetchall()
+                    "AND acked_at IS NULL ORDER BY id",
+                )
             )
             audit_items = _rows_to_list(
-                conn.execute(
+                core.db.query_all(
+                    conn,
                     "SELECT * FROM events WHERE type = 'inbox.audit_drift_signal' "
-                    "AND acked_at IS NULL ORDER BY id"
-                ).fetchall()
+                    "AND acked_at IS NULL ORDER BY id",
+                )
             )
             # v4 section 7 / changelog item 10: the general (not
             # component-anchor-scoped) unattributed-commit detection that
@@ -356,10 +360,11 @@ def create_app(
             # have different firing conditions and a client may want to
             # distinguish them.
             unattributed_commits = _rows_to_list(
-                conn.execute(
+                core.db.query_all(
+                    conn,
                     "SELECT * FROM events WHERE type = 'unattributed_commit' "
-                    "AND acked_at IS NULL ORDER BY id"
-                ).fetchall()
+                    "AND acked_at IS NULL ORDER BY id",
+                )
             )
         return {
             "questions": questions,
@@ -381,18 +386,22 @@ def create_app(
         section 9 item 5, "% components verified within last K
         commits")."""
         with _conn() as conn:
-            total_reviewed = conn.execute(
-                "SELECT COUNT(*) c FROM events WHERE type = 'node.done'"
-            ).fetchone()["c"]
-            rubber_stamps = conn.execute(
-                "SELECT COUNT(*) c FROM events WHERE type = 'metric.rubber_stamp'"
-            ).fetchone()["c"]
-            total_tokens = conn.execute(
-                "SELECT COALESCE(SUM(in_tokens + out_tokens), 0) c FROM node_usage"
-            ).fetchone()["c"]
-            nodes_with_usage = conn.execute(
-                "SELECT COUNT(DISTINCT node_id) c FROM node_usage"
-            ).fetchone()["c"]
+            total_reviewed = core.db.query_one(
+                conn,
+                "SELECT COUNT(*) c FROM events WHERE type = 'node.done'",
+            )["c"]
+            rubber_stamps = core.db.query_one(
+                conn,
+                "SELECT COUNT(*) c FROM events WHERE type = 'metric.rubber_stamp'",
+            )["c"]
+            total_tokens = core.db.query_one(
+                conn,
+                "SELECT COALESCE(SUM(in_tokens + out_tokens), 0) c FROM node_usage",
+            )["c"]
+            nodes_with_usage = core.db.query_one(
+                conn,
+                "SELECT COUNT(DISTINCT node_id) c FROM node_usage",
+            )["c"]
             # v4 section 2: no single global budget number any more --
             # each driver has its own. `spend_vs_budget` becomes the
             # worst-case (max) pct across every driver that has a
@@ -418,7 +427,7 @@ def create_app(
     @app.get("/projects")
     def list_projects() -> list[dict]:
         with _conn() as conn:
-            rows = conn.execute("SELECT * FROM projects ORDER BY id").fetchall()
+            rows = core.db.query_all(conn, "SELECT * FROM projects ORDER BY id")
         return _rows_to_list(rows)
 
     @app.get("/projects/{project_id}")
@@ -434,10 +443,11 @@ def create_app(
     def list_revisions(project_id: int) -> list[dict]:
         """Plan-revision history (plan section 8 dashboard view)."""
         with _conn() as conn:
-            revisions = conn.execute(
+            revisions = core.db.query_all(
+                conn,
                 "SELECT * FROM plan_revisions WHERE project_id = ? ORDER BY n",
                 (project_id,),
-            ).fetchall()
+            )
             out = []
             for rev in revisions:
                 diff = core.revisions.diff_revision(conn, project_id, rev["n"])
@@ -474,10 +484,11 @@ def create_app(
             # With a cursor, page forward from it; without one, return the
             # newest `limit` events (still oldest-first in the response).
             order = "ASC" if since_id > 0 else "DESC"
-            rows = conn.execute(
+            rows = core.db.query_all(
+                conn,
                 f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY id {order} LIMIT ?",
                 params,
-            ).fetchall()
+            )
         if order == "DESC":
             rows = list(reversed(rows))
         return _rows_to_list(rows)
@@ -486,12 +497,13 @@ def create_app(
     def list_nodes(project_id: int | None = None) -> list[dict]:
         with _conn() as conn:
             if project_id is not None:
-                rows = conn.execute(
+                rows = core.db.query_all(
+                    conn,
                     "SELECT * FROM nodes WHERE project_id = ? AND deleted_at IS NULL",
                     (project_id,),
-                ).fetchall()
+                )
             else:
-                rows = conn.execute("SELECT * FROM nodes WHERE deleted_at IS NULL").fetchall()
+                rows = core.db.query_all(conn, "SELECT * FROM nodes WHERE deleted_at IS NULL")
         return _rows_to_list(rows)
 
     @app.get("/nodes/{node_id}")
@@ -502,20 +514,22 @@ def create_app(
             except LookupError as e:
                 _handle_core_error(e)
             notes = _rows_to_list(
-                conn.execute(
-                    "SELECT * FROM notes WHERE node_id = ? ORDER BY id", (node_id,)
-                ).fetchall()
+                core.db.query_all(
+                    conn,
+                    "SELECT * FROM notes WHERE node_id = ? ORDER BY id",
+                    (node_id,),
+                )
             )
             commits = _rows_to_list(
-                conn.execute(
-                    "SELECT * FROM node_commits WHERE node_id = ?", (node_id,)
-                ).fetchall()
+                core.db.query_all(conn, "SELECT * FROM node_commits WHERE node_id = ?", (node_id,))
             )
             touches = [
                 r["path_glob"]
-                for r in conn.execute(
-                    "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (node_id,)
-                ).fetchall()
+                for r in core.db.query_all(
+                    conn,
+                    "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
+                    (node_id,),
+                )
             ]
         return {
             "node": dict(node),
@@ -535,9 +549,7 @@ def create_app(
             except LookupError as e:
                 _handle_core_error(e)
             commits = _rows_to_list(
-                conn.execute(
-                    "SELECT * FROM node_commits WHERE node_id = ?", (node_id,)
-                ).fetchall()
+                core.db.query_all(conn, "SELECT * FROM node_commits WHERE node_id = ?", (node_id,))
             )
         return {"node_id": node_id, "commits": commits, "diff": None}
 
@@ -553,11 +565,12 @@ def create_app(
                     core.nodes.get_node(conn, node_id)
                 except LookupError as e:
                     _handle_core_error(e)
-                rows = conn.execute(
+                rows = core.db.query_all(
+                    conn,
                     "SELECT ts, actor, type, payload FROM events WHERE node_id = ? "
                     "ORDER BY id ASC",
                     (node_id,),
-                ).fetchall()
+                )
             for r in rows:
                 yield json.dumps(dict(r)) + "\n"
 
@@ -639,9 +652,9 @@ def create_app(
         request: Request,
         owner: str = Body(...),
         lesson: str = Body(...),
-        trigger: str = Body(default=""),
-        do_instead: str = Body(default=""),
-        scope: str = Body(default=""),
+        trigger: str = Body(...),
+        do_instead: str = Body(...),
+        scope: str = Body(...),
         request_id: str | None = Body(default=None),
         version: int | None = Body(default=None),
     ) -> dict:

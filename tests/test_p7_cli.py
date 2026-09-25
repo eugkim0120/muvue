@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from muvue.core.schema import SCHEMA_VERSION
 from muvue.core import db as core_db, drift
 from muvue.core.repo_init import init_repo
 
@@ -89,6 +90,6 @@ def test_migrate_adds_archived_at_column_to_pre_existing_db(tmp_path: Path):
         version = conn2.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()["value"]
-        assert version == "5"
+        assert version == str(SCHEMA_VERSION)
     finally:
         conn2.close()

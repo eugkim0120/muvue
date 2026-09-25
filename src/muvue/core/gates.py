@@ -83,19 +83,22 @@ def lint_task(conn: sqlite3.Connection, node: sqlite3.Row, config: MuvueConfig) 
     """Granularity lint (plan section 5, P1 acceptance #3). Warns only,
     never blocks approval."""
     warnings: list[str] = []
-    touches = conn.execute(
-        "SELECT COUNT(*) c FROM predicted_touches WHERE node_id = ?", (node["id"],)
-    ).fetchone()["c"]
+    touches = db_mod.query_one(
+        conn,
+        "SELECT COUNT(*) c FROM predicted_touches WHERE node_id = ?",
+        (node["id"],),
+    )["c"]
     if touches > config.planning.max_files_per_task:
         warnings.append(
             f"node {node['id']} predicts touching {touches} files "
             f"(max_files_per_task={config.planning.max_files_per_task})"
         )
-    subtasks = conn.execute(
+    subtasks = db_mod.query_one(
+        conn,
         "SELECT COUNT(*) c FROM nodes WHERE parent_id = ? AND kind = 'subtask' "
         "AND deleted_at IS NULL",
         (node["id"],),
-    ).fetchone()["c"]
+    )["c"]
     if subtasks > config.planning.max_subtasks:
         warnings.append(
             f"node {node['id']} has {subtasks} subtasks "

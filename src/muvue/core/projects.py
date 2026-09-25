@@ -14,11 +14,11 @@ def create_project(
     conn: sqlite3.Connection,
     *,
     goal: str,
-    budget_unit: str = "usd",
-    budget_limit: float = 0,
     actor: str = "human",
     actor_evidence: str = "tty",
     repo_root: Path | None = None,
+    follows: list[int] | None = None,
+    supersedes: list[int] | None = None,
 ) -> sqlite3.Row:
     """v4 section 5 (branch coherence): when `repo_root` is given, records
     the branch currently checked out there into `projects.branch`, the
@@ -26,13 +26,15 @@ def create_project(
     against. `None` (no `repo_root`, or `git` couldn't resolve a branch)
     means "no baseline recorded" -- the coherence check is then a no-op
     everywhere it's consulted, matching every pre-v4 call site's
-    behavior (most tests, and any caller that doesn't pass `repo_root`)."""
+    behavior (most tests, and any caller that doesn't pass `repo_root`).
+
+    `follows`/`supersedes` write `project_links` rows (plan section 3)
+    from the new project to each named existing project."""
     branch = gitutil.current_branch(repo_root) if repo_root is not None else None
     with db_mod.write_txn(conn):
         cur = conn.execute(
-            "INSERT INTO projects (goal, phase, budget_unit, budget_limit, spent, branch) "
-            "VALUES (?, 'planning', ?, ?, 0, ?)",
-            (goal, budget_unit, budget_limit, branch),
+            "INSERT INTO projects (goal, phase, branch) VALUES (?, 'planning', ?)",
+            (goal, branch),
         )
         project_id = cur.lastrowid
         row = get_project(conn, project_id)
@@ -45,11 +47,23 @@ def create_project(
             type_="project.created",
             payload=dict(row),
         )
+        for kind, targets in (("follows", follows), ("supersedes", supersedes)):
+            for dst in targets or []:
+                get_project(conn, dst)  # LookupError if it doesn't exist
+                conn.execute(
+                    "INSERT OR IGNORE INTO project_links (src, dst, kind) VALUES (?, ?, ?)",
+                    (project_id, dst, kind),
+                )
+                events.record_event(
+                    conn, project_id=project_id, node_id=None, actor=actor,
+                    actor_evidence=actor_evidence, type_="project.linked",
+                    payload={"src": project_id, "dst": dst, "kind": kind},
+                )
         return row
 
 
 def get_project(conn: sqlite3.Connection, project_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    row = db_mod.query_one(conn, "SELECT * FROM projects WHERE id = ?", (project_id,))
     if row is None:
         raise LookupError(f"no such project: {project_id}")
     return row

@@ -25,6 +25,7 @@ from __future__ import annotations
 import fnmatch
 import sqlite3
 
+from . import db as db_mod
 from .config import MuvueConfig
 
 TIERS = ("low", "medium", "high")
@@ -45,8 +46,10 @@ def max_tier(a: str, b: str) -> str:
 def _node_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
     return [
         row["path_glob"]
-        for row in conn.execute(
-            "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (node_id,)
+        for row in db_mod.query_all(
+            conn,
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
+            (node_id,),
         )
     ]
 
@@ -54,8 +57,10 @@ def _node_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
 def _actual_touches(conn: sqlite3.Connection, node_id: int) -> list[str]:
     return [
         row["path"]
-        for row in conn.execute(
-            "SELECT path FROM actual_touches WHERE node_id = ?", (node_id,)
+        for row in db_mod.query_all(
+            conn,
+            "SELECT path FROM actual_touches WHERE node_id = ?",
+            (node_id,),
         )
     ]
 

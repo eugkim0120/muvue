@@ -109,23 +109,25 @@ def _closeable_gate(conn: sqlite3.Connection, project_id: int) -> list[int]:
     transitions to `done` itself, only the tasks decomposed under it do,
     so requiring it to be `done` too would make every project permanently
     unclosable. Returns the offending node ids, empty if closeable."""
-    rows = conn.execute(
+    rows = db_mod.query_all(
+        conn,
         "SELECT id FROM nodes WHERE project_id = ? AND deleted_at IS NULL "
         "AND kind IN ('task', 'subtask') AND status != 'done' "
         "ORDER BY id",
         (project_id,),
-    ).fetchall()
+    )
     return [r["id"] for r in rows]
 
 
 def _decision_candidates(conn: sqlite3.Connection, project_id: int) -> list[dict]:
-    rows = conn.execute(
+    rows = db_mod.query_all(
+        conn,
         "SELECT n.id AS note_id, n.node_id, n.text FROM notes n "
         "JOIN nodes nd ON nd.id = n.node_id "
         "WHERE nd.project_id = ? AND nd.deleted_at IS NULL AND n.kind = 'decision' "
         "ORDER BY n.id LIMIT ?",
         (project_id, MAX_DIFF_ITEMS),
-    ).fetchall()
+    )
     out = []
     for r in rows:
         text = r["text"] or ""
@@ -146,13 +148,14 @@ def _promoted_lesson_candidates(conn: sqlite3.Connection, project_id: int) -> li
     decisions already use: title <- trigger, context <- failure, choice
     <- do_instead (see docs/decisions.md: promoted lessons land in the
     `decisions` table too, no separate structure-layer table for them)."""
-    rows = conn.execute(
+    rows = db_mod.query_all(
+        conn,
         "SELECT n.id AS note_id, n.node_id, n.text FROM notes n "
         "JOIN nodes nd ON nd.id = n.node_id "
         "WHERE nd.project_id = ? AND nd.deleted_at IS NULL AND n.kind = 'lesson' AND n.pinned = 1 "
         "ORDER BY n.id LIMIT ?",
         (project_id, MAX_DIFF_ITEMS),
-    ).fetchall()
+    )
     out = []
     for r in rows:
         try:
@@ -176,17 +179,18 @@ def _component_candidates(conn: sqlite3.Connection, project_id: int) -> list[dic
     `predicted_touches` path globs (plan section 3), so a candidate
     component is proposed per distinct glob this project touched, not
     already tracked (see docs/decisions.md)."""
-    rows = conn.execute(
+    rows = db_mod.query_all(
+        conn,
         "SELECT DISTINCT pt.path_glob, nd.title FROM predicted_touches pt "
         "JOIN nodes nd ON nd.id = pt.node_id "
         "WHERE nd.project_id = ? AND nd.deleted_at IS NULL "
         "ORDER BY pt.path_glob",
         (project_id,),
-    ).fetchall()
+    )
     by_glob: dict[str, list[str]] = {}
     for r in rows:
         by_glob.setdefault(r["path_glob"], []).append(r["title"])
-    existing = {r["name"] for r in conn.execute("SELECT name FROM components").fetchall()}
+    existing = {r["name"] for r in db_mod.query_all(conn, "SELECT name FROM components")}
     out = []
     for glob, titles in by_glob.items():
         if len(out) >= MAX_DIFF_ITEMS:
@@ -229,8 +233,8 @@ def _structure_file_contents(conn: sqlite3.Connection) -> dict[str, str]:
     out to be unsafe). `_write_structure_commit` blobs this content
     straight into git's object database instead (`git hash-object -w
     --stdin`)."""
-    components = [dict(r) for r in conn.execute("SELECT * FROM components ORDER BY id").fetchall()]
-    decisions = [dict(r) for r in conn.execute("SELECT * FROM decisions ORDER BY id").fetchall()]
+    components = [dict(r) for r in db_mod.query_all(conn, "SELECT * FROM components ORDER BY id")]
+    decisions = [dict(r) for r in db_mod.query_all(conn, "SELECT * FROM decisions ORDER BY id")]
     return {
         ".muvue/components.json": json.dumps(components, indent=2, default=str) + "\n",
         ".muvue/decisions.json": json.dumps(decisions, indent=2, default=str) + "\n",

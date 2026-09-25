@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W3: data model and replay
+
+### Added
+- `decompose`/`replan --depends-on N` (repeatable) write `deps` edges,
+  each logged as a `dep.added` event (decision #116). `project create
+  --follows/--supersedes N` writes `project_links`.
+- `muvue rebuild --apply`: backs up `.muvue/muvue.db` to
+  `muvue.db.bak-<UTC>`, then rewrites the replayable tables from the
+  event log (#119).
+- `tests/test_txn_discipline.py`: an AST check that every `execute` call
+  in the package sits inside `read_txn`/`write_txn` (#120).
+
+### Changed
+- Replay (`rebuild`, `diff_state`) now also covers `deps`,
+  `node_commits`, `actual_touches`, plan-revision approvals and
+  `agent_spend`, the rest of plan section 3's replayable list (#119).
+- `fail` requires the full lesson: `--lesson` (the failure), `--trigger`,
+  `--do-instead` and `--scope`, in the CLI, MCP and API. A `lesson` note
+  must be the structured form (#118).
+- `export` without `--project-id` writes one `.jsonl.gz` archive per
+  project plus `unscoped.jsonl.gz`, not `events.json` (#121).
+- Every read runs inside `read_txn` (new `db.query_one`/`query_all`
+  helpers), and `read_txn` raises if a write happens inside it.
+
+### Removed
+- The v3 per-project budget: `projects.budget_unit/budget_limit/spent`
+  (schema 6; `migrate` drops them) and `project create --budget-unit/
+  --budget-limit` (#117). Budgets are per driver.
+
 ## [Unreleased] - v4 delta closure, W2: hook fast path
 
 ### Changed

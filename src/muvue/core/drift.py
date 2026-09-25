@@ -46,7 +46,7 @@ DEFAULT_AUDIT_SAMPLE = 5
 
 
 def _now(conn: sqlite3.Connection) -> str:
-    return conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
+    return db_mod.query_one(conn, "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")[0]
 
 
 def _git(repo_root: str | Path, *args: str) -> subprocess.CompletedProcess:
@@ -208,9 +208,10 @@ def flag_unattributed_commit(
     if node_ids or not files:
         return None
     touched = set(files)
-    rows = conn.execute(
-        "SELECT id, anchors_json FROM components WHERE status != 'deprecated'"
-    ).fetchall()
+    rows = db_mod.query_all(
+        conn,
+        "SELECT id, anchors_json FROM components WHERE status != 'deprecated'",
+    )
     hit_components = [
         row["id"] for row in rows if touched & set(_load_anchors(row).keys())
     ]
@@ -329,9 +330,10 @@ def drift_pct(
     `verified_sha` is among `main`'s (HEAD's) last `k` commits. 0.0 when
     there are no non-deprecated components, or `repo_root` has no usable
     git history (fresh/non-git repo -- see `_git`)."""
-    components = conn.execute(
-        "SELECT verified_sha FROM components WHERE status != 'deprecated'"
-    ).fetchall()
+    components = db_mod.query_all(
+        conn,
+        "SELECT verified_sha FROM components WHERE status != 'deprecated'",
+    )
     if not components:
         return 0.0
     result = _git(repo_root, "log", f"-n{k}", "--format=%H", "HEAD")

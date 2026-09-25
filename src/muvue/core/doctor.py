@@ -369,10 +369,11 @@ def run_doctor(
     if config is not None and config.mode == "strict" and db_path.exists():
         conn = core_db.connect(db_path)
         try:
-            rows = conn.execute(
+            rows = core_db.query_all(
+                conn,
                 "SELECT id, status, worktree FROM nodes "
-                "WHERE status IN ('in_progress', 'review') AND deleted_at IS NULL"
-            ).fetchall()
+                "WHERE status IN ('in_progress', 'review') AND deleted_at IS NULL",
+            )
         finally:
             conn.close()
         for row in rows:
@@ -405,10 +406,11 @@ def run_doctor(
     if config is not None and db_path.exists():
         conn = core_db.connect(db_path)
         try:
-            coherence_rows = conn.execute(
+            coherence_rows = core_db.query_all(
+                conn,
                 "SELECT id, branch FROM projects WHERE phase IN "
-                "('planning', 'executing', 'paused') AND branch IS NOT NULL"
-            ).fetchall()
+                "('planning', 'executing', 'paused') AND branch IS NOT NULL",
+            )
         finally:
             conn.close()
         if coherence_rows:

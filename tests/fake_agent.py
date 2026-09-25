@@ -42,12 +42,11 @@ def lazy_early_done(conn: sqlite3.Connection, node_id: int, *, owner: str = "fak
 
 
 def lazy_vacuous_lesson(conn: sqlite3.Connection, node_id: int, *, owner: str = "fake-agent") -> dict:
-    """Lazy: fails a node with an empty/placeholder lesson instead of a
-    real one. Core stores whatever lesson text it's given (there is no
-    lesson-quality judgment mechanism -- that would need an LLM-graded
-    check, out of scope for muvue.core's deterministic enforcement); the
-    call itself still goes through the same fail() gating (attempts,
-    lease ownership) as a real lesson would."""
+    """Lazy: fails a node with an empty lesson instead of a real one.
+    Core refuses it (plan section 3: a lesson must carry trigger,
+    failure, do_instead and scope), so this raises ValueError and the
+    node stays `in_progress`. Lesson *quality* beyond "every field
+    present" is not judged -- that would need an LLM-graded check."""
     nodes.start(conn, node_id, owner=owner)
     return nodes.fail(conn, node_id, owner=owner, lesson="", trigger="", do_instead="", scope="")
 

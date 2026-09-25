@@ -78,10 +78,11 @@ def driver_budget_state(conn, agent_name: str, agent_cfg) -> dict | None:
     budget = getattr(agent_cfg, "budget", None)
     if budget is None:
         return None
-    spent = conn.execute(
+    spent = core_db.query_one(
+        conn,
         "SELECT COALESCE(SUM(spent), 0) c FROM agent_spend WHERE agent = ? AND unit = ?",
         (agent_name, budget.unit),
-    ).fetchone()["c"]
+    )["c"]
     limit = budget.limit
     pct = (spent / limit) if limit else 0.0
     return {
@@ -125,18 +126,20 @@ def _exhausted_agents(conn, config: MuvueConfig) -> set[str]:
 
 def reconcile_rate_limits(conn, *, now: datetime | None = None) -> list[int]:
     current = (now or _now()).strftime(TS_FORMAT)
-    rows = conn.execute(
+    rows = core_db.query_all(
+        conn,
         "SELECT id FROM nodes WHERE status = 'blocked' AND block_reason = 'rate_limit' "
-        "AND deleted_at IS NULL"
-    ).fetchall()
+        "AND deleted_at IS NULL",
+    )
     unblocked = []
     for row in rows:
         node_id = row["id"]
-        latest = conn.execute(
+        latest = core_db.query_one(
+            conn,
             "SELECT payload FROM events WHERE node_id = ? AND type = 'runner.rate_limited' "
             "ORDER BY id DESC LIMIT 1",
             (node_id,),
-        ).fetchone()
+        )
         if latest is None:
             continue
         retry_at = json.loads(latest["payload"]).get("retry_at")
@@ -179,16 +182,18 @@ def _ready_nodes(conn, project_id: int | None):
         "AND n.kind IN ('task', 'subtask') AND p.phase != 'paused'"
     )
     if project_id is not None:
-        return conn.execute(base + " AND n.project_id = ? ORDER BY n.id", (project_id,)).fetchall()
-    return conn.execute(base + " ORDER BY n.id").fetchall()
+        return core_db.query_all(conn, base + " AND n.project_id = ? ORDER BY n.id", (project_id,))
+    return core_db.query_all(conn, base + " ORDER BY n.id")
 
 
 def _touches(conn, node_id: int) -> list[str]:
     return [
         r["path_glob"]
-        for r in conn.execute(
-            "SELECT path_glob FROM predicted_touches WHERE node_id = ?", (node_id,)
-        ).fetchall()
+        for r in core_db.query_all(
+            conn,
+            "SELECT path_glob FROM predicted_touches WHERE node_id = ?",
+            (node_id,),
+        )
     ]
 
 
@@ -309,20 +314,22 @@ def _rate_limit_wait_started_at(conn, node_id: int, now: datetime) -> datetime:
     `node.start` events happened since -- anything else (a real success,
     a different block reason, a fresh start) means a new episode, so this
     falls back to `now`."""
-    latest = conn.execute(
+    latest = core_db.query_one(
+        conn,
         "SELECT id, ts, payload FROM events WHERE node_id = ? AND type = 'runner.rate_limited' "
         "ORDER BY id DESC LIMIT 1",
         (node_id,),
-    ).fetchone()
+    )
     if latest is not None:
         payload = json.loads(latest["payload"])
         started = payload.get("wait_started_at")
         if started:
-            intervening = conn.execute(
+            intervening = core_db.query_one(
+                conn,
                 "SELECT COUNT(*) c FROM events WHERE node_id = ? AND id > ? "
                 "AND type NOT IN ('node.ready', 'node.start')",
                 (node_id, latest["id"]),
-            ).fetchone()["c"]
+            )["c"]
             if intervening == 0:
                 return datetime.strptime(started, TS_FORMAT).replace(tzinfo=timezone.utc)
     return now
@@ -419,7 +426,9 @@ def run_node(
     # "failed": the driver ran and cleanly reported it could not finish.
     nodes_mod.fail(
         conn, node["id"], owner=owner, lesson=result.error or "driver reported failure",
-        trigger="driver_failed", actor_evidence="subprocess",
+        trigger=f"driver {agent_name!r} reported failure",
+        do_instead="read the driver output in the node's logs before retrying or re-routing",
+        scope=f"node {node['id']}", actor_evidence="subprocess",
     )
     after = nodes_mod.get_node(conn, node["id"])
     return {
@@ -547,16 +556,18 @@ def _handle_unavailable(
 
 def _gating_nodes(conn, project_id: int | None) -> list[dict]:
     if project_id is not None:
-        rows = conn.execute(
+        rows = core_db.query_all(
+            conn,
             "SELECT id, status, block_reason FROM nodes WHERE deleted_at IS NULL "
             "AND project_id = ? AND status IN ('awaiting_approval', 'blocked', 'failed')",
             (project_id,),
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
+        rows = core_db.query_all(
+            conn,
             "SELECT id, status, block_reason FROM nodes WHERE deleted_at IS NULL "
-            "AND status IN ('awaiting_approval', 'blocked', 'failed')"
-        ).fetchall()
+            "AND status IN ('awaiting_approval', 'blocked', 'failed')",
+        )
     return [dict(r) for r in rows]
 
 

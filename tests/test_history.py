@@ -93,3 +93,30 @@ def test_diff_project_from_archive_reports_no_mismatch(conn, repo):
 
     mismatches = rebuild.diff_project_from_archive(conn, project["id"], archive)
     assert mismatches == {}
+
+
+def test_cli_export_without_project_writes_jsonl_gz_archives(tmp_path):
+    history_read = history.read_archive
+    """v4 section 2 layout: `.muvue/history/*.jsonl.gz`. Exporting the
+    whole DB writes one archive per project plus one for events that
+    belong to no project -- not the old flat `events.json` (decision #6,
+    superseded)."""
+    import subprocess
+    import sys
+
+    from muvue.core import db as core_db
+    from muvue.core import projects
+    from muvue.core.repo_init import init_repo
+
+    init_repo(tmp_path)
+    c = core_db.connect(tmp_path / ".muvue" / "muvue.db")
+    a = projects.create_project(c, goal="a")
+    b = projects.create_project(c, goal="b")
+    c.close()
+    out = subprocess.run([sys.executable, "-m", "muvue", "export", str(tmp_path)],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    history_dir = tmp_path / ".muvue" / "history"
+    names = sorted(p.name for p in history_dir.iterdir())
+    assert names == sorted([f"{a['id']}.jsonl.gz", f"{b['id']}.jsonl.gz", "unscoped.jsonl.gz"])
+    assert history_read(history_dir / f"{a['id']}.jsonl.gz")[0]["type"] == "project.created"

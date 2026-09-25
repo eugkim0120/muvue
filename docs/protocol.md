@@ -55,7 +55,7 @@ table below marks as owner-required. See `src/muvue/core/state_machine.py`
 - `rebuild [PATH]` — replay `events` and report any mismatch against the
   **replayable projection** of the live DB (v4 section 3, narrowed from
   v3's "replay equals live DB" -- see the Events section below).
-- `export [PATH]` — minimal events dump to `.muvue/history/events.json`.
+- `export [PATH] [--project-id N]` — event export to `.muvue/history/<project-id>.jsonl.gz` (every project, plus `unscoped.jsonl.gz` for project-less events, when no id is given).
   `export --project-id ID [PATH]` (P6, see below) writes the real
   per-project `.muvue/history/<id>.jsonl.gz` archive instead.
 - `audit` — stub, ships P7.
@@ -910,13 +910,12 @@ itself is always available from `diff_committed` regardless.
 
 ### History archive: `.muvue/history/<project-id>.jsonl.gz`
 
-`core.history.export_project`/`rebuild_from_archive` (plan section 2
-file layout, section 9). The real per-project archive format — P0's
-`export [PATH]` (whole-DB flat `events.json` dump) still exists
-unchanged for that case; `export --project-id ID [PATH]` (and `close`,
-which calls this internally) now write the real format: gzip-compressed,
-one JSON event per line, every event with that `project_id`, in `id`
-order.
+`core.history.export_project`/`export_all`/`rebuild_from_archive` (plan
+section 2 file layout, section 9). Gzip-compressed, one JSON event per
+line, every event with that `project_id`, in `id` order. `export
+--project-id ID [PATH]` and `close` write one project's archive;
+`export [PATH]` writes every project's archive plus
+`unscoped.jsonl.gz` (events with no `project_id`).
 
 `core.rebuild.rebuild_state_from_events` is the single fold
 implementation both `rebuild_state(conn)` (the whole live `events`

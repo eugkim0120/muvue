@@ -44,7 +44,7 @@ def test_show_node_returns_node_notes_commits_touches(conn, project):
 def test_brief_node_surfaces_lessons_and_open_questions(conn, project):
     task = _ready_task(conn, project)
     nodes.start(conn, task["id"], owner="a1")
-    nodes.fail(conn, task["id"], owner="a1", lesson="don't do X")
+    nodes.fail(conn, task["id"], owner="a1", lesson="don't do X", trigger="t", do_instead="d", scope="s")
     task2 = nodes.get_node(conn, task["id"])
     asks.ask(conn, task["id"], question="which way?", default="A")
 

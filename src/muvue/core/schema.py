@@ -24,9 +24,13 @@ Process graph tables per plan section 3, plus empty structure-graph tables
   created with a `repo_root` (e.g. most unit tests, or a repo with no
   git branch at all). `core.nodes.start` and `core.doctor.run_doctor`
   both compare the repo's *current* branch against this recorded one.
+- SCHEMA_VERSION 5 -> 6 (v4 section 2 budget rule): drops the v3
+  per-project `projects.budget_unit/budget_limit/spent` columns. v4
+  budgets are per driver (`[agents.<x>.budget]`, `agent_spend`); nothing
+  ever enforced the old columns.
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -34,9 +38,6 @@ CREATE TABLE IF NOT EXISTS projects (
     goal TEXT NOT NULL,
     phase TEXT NOT NULL DEFAULT 'planning'
         CHECK (phase IN ('planning', 'executing', 'paused', 'closed')),
-    budget_unit TEXT NOT NULL DEFAULT 'usd',
-    budget_limit REAL NOT NULL DEFAULT 0,
-    spent REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     closed_at TEXT,
     branch TEXT

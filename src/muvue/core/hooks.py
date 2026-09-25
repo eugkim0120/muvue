@@ -214,9 +214,11 @@ def _process_queue_event(conn: sqlite3.Connection, repo_root: Path, event: dict)
         # Boundary validation: the queue file is untrusted (a hand-edit
         # or a stale node_id from a since-deleted node) -- don't pass a
         # dangling node_id into a FK'd column.
-        row = conn.execute(
-            "SELECT project_id FROM nodes WHERE id = ? AND deleted_at IS NULL", (node_id,)
-        ).fetchone()
+        row = db_mod.query_one(
+            conn,
+            "SELECT project_id FROM nodes WHERE id = ? AND deleted_at IS NULL",
+            (node_id,),
+        )
         if row is None:
             node_id = None
         else:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from . import db as db_mod
 from . import queries as queries_mod
 
 
@@ -29,9 +30,11 @@ def generate_pr_body(conn: sqlite3.Connection, node_id: int) -> str:
     query_text = f"{node['title']} {node['body_md']}"
     relevant_decisions = queries_mod.search_decisions(conn, query_text)
     external_refs = [
-        dict(r) for r in conn.execute(
-            "SELECT * FROM external_refs WHERE node_id = ?", (node_id,)
-        ).fetchall()
+        dict(r) for r in db_mod.query_all(
+            conn,
+            "SELECT * FROM external_refs WHERE node_id = ?",
+            (node_id,),
+        )
     ]
 
     lines = [f"# {node['title']}", ""]

@@ -157,6 +157,25 @@ def migrate(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
     typer.echo(f"schema_version={version}")
 
 
+def _backup_db(repo_root: Path) -> Path:
+    """Consistent copy of the live DB (sqlite's online backup API, safe
+    under WAL with other connections open)."""
+    import datetime
+    import sqlite3
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    src_path = repo_root / ".muvue" / "muvue.db"
+    dest_path = src_path.with_name(f"muvue.db.bak-{stamp}")
+    src = sqlite3.connect(str(src_path))
+    dest = sqlite3.connect(str(dest_path))
+    try:
+        src.backup(dest)
+    finally:
+        dest.close()
+        src.close()
+    return dest_path
+
+
 @app.command()
 def rebuild(
     path: Path = typer.Argument(Path("."), help="Repo root"),
@@ -168,14 +187,41 @@ def rebuild(
         help="replay this .jsonl.gz archive instead of the default "
         ".muvue/history/<project-id>.jsonl.gz (requires --project-id)",
     ),
+    apply: bool = typer.Option(
+        False, "--apply",
+        help="rewrite the replayable tables from the event log (backs the DB up first)",
+    ),
 ) -> None:
     """Replay `events` and report whether it reproduces the live DB.
+
+    With `--apply`: back up `.muvue/muvue.db` to `muvue.db.bak-<UTC time>`,
+    then rewrite the replayable set from the event log
+    (`core.rebuild.apply_rebuild`).
 
     With `--project-id` (P6 acceptance #3): replay only that project's
     exported `.jsonl.gz` history archive (`core.history`) and compare
     against that project's live state instead of the whole DB.
     """
     repo_root = _find_repo_root(path)
+    if apply:
+        if project_id is not None:
+            typer.echo(
+                "--apply rebuilds the whole DB; it can't be combined with --project-id", err=True
+            )
+            raise typer.Exit(2)
+        backup = _backup_db(repo_root)
+        conn = _db_connect(repo_root)
+        try:
+            result = core.rebuild.apply_rebuild(conn)
+            remaining = core.rebuild.diff_state(conn)
+        finally:
+            conn.close()
+        typer.echo(f"backup: {backup}")
+        typer.echo(f"rebuilt tables: {', '.join(result['tables']) or 'none (already matched)'}")
+        if remaining:
+            _echo_json(remaining)
+            raise typer.Exit(1)
+        return
     conn = _db_connect(repo_root)
     try:
         if project_id is not None:
@@ -201,24 +247,22 @@ def export(
         None, "--project-id", help="export only this project to .muvue/history/<id>.jsonl.gz"
     ),
 ) -> None:
-    """Event export. With `--project-id` (P6): the real per-project
-    `.jsonl.gz` archive (`core.history.export_project`) `close` also
-    writes. Without it: the whole-DB flat dump `export` has always done
-    (P0)."""
+    """Event export to `.muvue/history/*.jsonl.gz` (plan section 2). With
+    `--project-id`: that project's archive, the same one `close` writes.
+    Without it: every project's archive plus `unscoped.jsonl.gz` for
+    events that belong to no project."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         if project_id is not None:
             out = core.history.export_project(conn, project_id, repo_root)
-            count = len(core.history.export_project_events(conn, project_id))
+            written = [(out, len(core.history.export_project_events(conn, project_id)))]
         else:
-            rows = [dict(r) for r in core.events.all_events(conn)]
-            out = repo_root / ".muvue" / "history" / "events.json"
-            out.write_text(json.dumps(rows, default=str, indent=2))
-            count = len(rows)
+            written = core.history.export_all(conn, repo_root)
     finally:
         conn.close()
-    typer.echo(f"exported {count} events to {out}")
+    for out, count in written:
+        typer.echo(f"exported {count} events to {out}")
 
 
 @app.command()
@@ -425,18 +469,21 @@ def hook(
 @project_app.command("create")
 def project_create(
     goal: str = typer.Option(..., "--goal"),
-    budget_unit: str = typer.Option("usd", "--budget-unit"),
-    budget_limit: float = typer.Option(0, "--budget-limit"),
+    follows: list[int] = typer.Option([], "--follows", help="repeatable; project id this one follows"),
+    supersedes: list[int] = typer.Option(
+        [], "--supersedes", help="repeatable; project id this one supersedes"
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Create a new project (`core.projects.create_project`). Prints the
-    created project row, including its `id`."""
+    created project row, including its `id`. Budgets are per driver
+    (`[agents.<name>.budget]` in config.toml), not per project."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         result = core.projects.create_project(
-            conn, goal=goal, budget_unit=budget_unit, budget_limit=budget_limit,
-            repo_root=repo_root,
+            conn, goal=goal, repo_root=repo_root, follows=list(follows),
+            supersedes=list(supersedes),
         )
     finally:
         conn.close()
@@ -477,6 +524,9 @@ def decompose(
         [], "--predicted-touches", help="repeatable; path globs the task expects to touch"
     ),
     criteria_mode: str = typer.Option("manual", "--criteria-mode", help="auto|external|manual"),
+    depends_on: list[int] = typer.Option(
+        [], "--depends-on", help="repeatable; id of a node in the same project this task waits on"
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Gate 2: agent decomposes an approved spec into a task node
@@ -497,6 +547,7 @@ def decompose(
             criteria=list(criteria),
             criteria_mode=criteria_mode,
             predicted_touches=list(predicted_touches),
+            depends_on=list(depends_on),
             status="pending",
             actor="agent",
         )
@@ -568,7 +619,10 @@ def done(
 def fail(
     node_id: int = typer.Argument(...),
     owner: str = typer.Option(..., "--owner"),
-    lesson: str = typer.Option(..., "--lesson"),
+    lesson: str = typer.Option(..., "--lesson", help="what failed"),
+    trigger: str = typer.Option(..., "--trigger", help="what led to the failure"),
+    do_instead: str = typer.Option(..., "--do-instead", help="what to do next time"),
+    scope: str = typer.Option(..., "--scope", help="where the lesson applies (paths, area)"),
     request_id: str = typer.Option(None, "--request-id"),
     version: int = typer.Option(
         None, "--version", help="expected nodes.version from start; mismatch fails the call"
@@ -579,8 +633,8 @@ def fail(
     conn = _db_connect(repo_root)
     try:
         result = core.nodes.fail(
-            conn, node_id, owner=owner, lesson=lesson, request_id=request_id,
-            expected_version=version,
+            conn, node_id, owner=owner, lesson=lesson, trigger=trigger, do_instead=do_instead,
+            scope=scope, request_id=request_id, expected_version=version,
         )
     finally:
         conn.close()
@@ -697,6 +751,9 @@ def replan(
     parent_task_id: int = typer.Argument(...),
     title: str = typer.Option(..., "--title"),
     body_md: str = typer.Option("", "--body"),
+    depends_on: list[int] = typer.Option(
+        [], "--depends-on", help="repeatable; id of a node in the same project this subtask waits on"
+    ),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
     """Add a subtask within an already-approved task's stated scope. New
@@ -706,7 +763,8 @@ def replan(
     conn = _db_connect(repo_root)
     try:
         result = core.revisions.replan_add_subtask(
-            conn, parent_task_id=parent_task_id, title=title, body_md=body_md
+            conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
+            depends_on=list(depends_on),
         )
     finally:
         conn.close()

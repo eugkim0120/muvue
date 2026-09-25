@@ -69,11 +69,11 @@ def test_rebuild_matches_live_after_random_sequence(conn, seed):
                 nodes.done(conn, node_id, owner=owner)  # redundant done, no-op
         elif action == "start_fail_fail":
             nodes.start(conn, node_id, owner=owner)
-            nodes.fail(conn, node_id, owner=owner, lesson="l1")
+            nodes.fail(conn, node_id, owner=owner, lesson="l1", trigger="t", do_instead="d", scope="s")
             row = nodes.get_node(conn, node_id)
             if row["status"] == "ready":
                 nodes.start(conn, node_id, owner=owner)
-                nodes.fail(conn, node_id, owner=owner, lesson="l2")
+                nodes.fail(conn, node_id, owner=owner, lesson="l2", trigger="t", do_instead="d", scope="s")
         else:
             nodes.start(conn, node_id, owner=owner)
 

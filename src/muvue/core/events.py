@@ -50,20 +50,17 @@ def find_recent_by_request_id(
     cutoff = (datetime.now(timezone.utc) - DEDUPE_WINDOW).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
-    row = conn.execute(
+    row = db_mod.query_one(
+        conn,
         "SELECT * FROM events WHERE request_id = ? AND type = ? AND ts >= ? "
         "ORDER BY id DESC LIMIT 1",
         (request_id, type_, cutoff),
-    ).fetchone()
+    )
     return row
 
 
-def all_events(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM events ORDER BY id ASC").fetchall()
-
-
 def get_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    return db_mod.query_one(conn, "SELECT * FROM events WHERE id = ?", (event_id,))
 
 
 def ack_event(conn: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:

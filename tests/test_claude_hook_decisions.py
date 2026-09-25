@@ -137,7 +137,7 @@ def test_stop_counts_only_notes_logged_since_the_latest_start(repo, conn, projec
     task = nodes.create_node(conn, project_id=project["id"], kind="task", title="t", status="ready")
     nodes.start(conn, task["id"], owner="claude")
     nodes.add_note(conn, task["id"], kind="discovery", text="first run", actor="agent")
-    nodes.fail(conn, task["id"], owner="claude", lesson="x")
+    nodes.fail(conn, task["id"], owner="claude", lesson="x", trigger="t", do_instead="d", scope="s")
     nodes.start(conn, task["id"], owner="claude")
     assert run(repo, "stop", {"node_id": task["id"]}).exit_code == 2
 

@@ -74,7 +74,7 @@ def test_reconcile_never_moves_to_failed_no_matter_how_many_times_it_runs(conn, 
     # and still drives failed once max_attempts is hit (max_attempts=1
     # here) -- lease_expiries and attempts are independent counters.
     nodes.start(conn, task["id"], owner="agent-1", lease_minutes=60)
-    nodes.fail(conn, task["id"], owner="agent-1", lesson="genuine agent failure")
+    nodes.fail(conn, task["id"], owner="agent-1", lesson="genuine agent failure", trigger="t", do_instead="d", scope="s")
     row = nodes.get_node(conn, task["id"])
     assert row["status"] == "failed"
     assert row["attempts"] == 1

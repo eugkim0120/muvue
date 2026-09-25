@@ -52,7 +52,7 @@ def _now() -> str:
 
 
 def get_node(conn: sqlite3.Connection, node_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    row = db_mod.query_one(conn, "SELECT * FROM nodes WHERE id = ?", (node_id,))
     if row is None:
         raise LookupError(f"no such node: {node_id}")
     return row
@@ -74,7 +74,11 @@ def create_node(
     actor: str = "human",
     actor_evidence: str = "tty",
     predicted_touches: list[str] | None = None,
+    depends_on: list[int] | None = None,
 ) -> sqlite3.Row:
+    """`depends_on` writes `deps` edges (plan section 3) from the new node
+    to live nodes of the same project, each logged as a replayable
+    `dep.added` event."""
     criteria = criteria or []
     criteria_json = json.dumps(criteria)
     with db_mod.write_txn(conn):
@@ -116,6 +120,21 @@ def create_node(
             type_="node.created",
             payload=dict(row),
         )
+        for dep_id in depends_on or []:
+            dep = get_node(conn, dep_id)
+            if dep["project_id"] != project_id or dep["deleted_at"] is not None:
+                raise NodeError(
+                    f"node {node_id} cannot depend on node {dep_id}: dependencies must be "
+                    "live nodes in the same project"
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO deps (node_id, depends_on) VALUES (?, ?)", (node_id, dep_id)
+            )
+            events.record_event(
+                conn, project_id=project_id, node_id=node_id, actor=actor,
+                actor_evidence=actor_evidence, type_="dep.added",
+                payload={"node_id": node_id, "depends_on": dep_id},
+            )
         return row
 
 
@@ -202,9 +221,11 @@ def start(
     repo_root=None,
 ) -> dict:
     node = get_node(conn, node_id)
-    project = conn.execute(
-        "SELECT phase, branch FROM projects WHERE id = ?", (node["project_id"],)
-    ).fetchone()
+    project = db_mod.query_one(
+        conn,
+        "SELECT phase, branch FROM projects WHERE id = ?",
+        (node["project_id"],),
+    )
     if project is not None and project["phase"] in ("planning", "paused"):
         raise NodeError(
             f"cannot start node {node_id}: project {node['project_id']} is "
@@ -589,7 +610,11 @@ def fail(
     the one place that increments it. Crash/timeout reclaims go through
     `core.daemon.reconcile_leases` instead, which increments the
     separate `lease_expiries` counter and never routes to `failed` (see
-    that function's docstring)."""
+    that function's docstring).
+
+    The lesson is required in full (plan section 3): `lesson` is its
+    `failure`, and `trigger`, `do_instead` and `scope` must be non-empty."""
+    structured = lesson_text(trigger=trigger, failure=lesson, do_instead=do_instead, scope=scope)
     with db_mod.write_txn(conn):
         dup = events.find_recent_by_request_id(conn, request_id, "node.fail") if request_id else None
         if dup is not None:
@@ -619,10 +644,10 @@ def fail(
                 },
                 actor_evidence=actor_evidence,
             )
-            lesson_text = json.dumps(
-                {"trigger": trigger, "failure": lesson, "do_instead": do_instead, "scope": scope}
+            add_note(
+                conn, node_id, kind="lesson", text=structured, actor="agent",
+                actor_evidence=actor_evidence,
             )
-            add_note(conn, node_id, kind="lesson", text=lesson_text, actor="agent", actor_evidence=actor_evidence)
             return {"noop": False, "node": dict(row)}
 
 
@@ -750,6 +775,34 @@ def soft_delete(
         return row
 
 
+LESSON_FIELDS = ("trigger", "failure", "do_instead", "scope")
+
+
+def lesson_text(*, trigger: str, failure: str, do_instead: str, scope: str) -> str:
+    """The stored form of a lesson note: plan section 3, "lessons must
+    carry trigger, failure, do_instead, scope". Every field is required."""
+    fields = {"trigger": trigger, "failure": failure, "do_instead": do_instead, "scope": scope}
+    missing = [k for k in LESSON_FIELDS if not (fields[k] or "").strip()]
+    if missing:
+        raise ValueError(
+            f"a lesson must carry {', '.join(LESSON_FIELDS)}; missing: {', '.join(missing)}"
+        )
+    return json.dumps(fields)
+
+
+def _validate_lesson(text: str) -> None:
+    try:
+        fields = json.loads(text)
+    except ValueError:
+        fields = None
+    if not isinstance(fields, dict):
+        raise ValueError(
+            f"a lesson note must be JSON carrying {', '.join(LESSON_FIELDS)} "
+            "(see `muvue fail --lesson ... --trigger ... --do-instead ... --scope ...`)"
+        )
+    lesson_text(**{k: str(fields.get(k) or "") for k in LESSON_FIELDS})
+
+
 def add_note(
     conn: sqlite3.Connection,
     node_id: int,
@@ -760,7 +813,10 @@ def add_note(
     actor_evidence: str = "tty",
     pinned: bool = False,
 ) -> dict:
-    """Notes dedupe by content hash (plan section 4)."""
+    """Notes dedupe by content hash (plan section 4). A `lesson` note must
+    be the structured form `lesson_text` produces."""
+    if kind == "lesson":
+        _validate_lesson(text)
     content_hash = hashlib.sha256(text.encode()).hexdigest()
     with db_mod.write_txn(conn):
         existing = conn.execute(

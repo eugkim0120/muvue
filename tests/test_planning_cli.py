@@ -27,15 +27,12 @@ def _run(repo_root: Path, *args: str) -> subprocess.CompletedProcess:
 def test_project_create_via_cli(tmp_path: Path):
     init_repo(tmp_path)
     result = _run(
-        tmp_path, "project", "create", "--goal", "ship the thing",
-        "--budget-unit", "usd", "--budget-limit", "50", "--path", str(tmp_path),
+        tmp_path, "project", "create", "--goal", "ship the thing", "--path", str(tmp_path),
     )
     assert result.returncode == 0, result.stderr
     out = json.loads(result.stdout)
     assert out["goal"] == "ship the thing"
     assert out["phase"] == "planning"
-    assert out["budget_unit"] == "usd"
-    assert out["budget_limit"] == 50
 
 
 def test_spec_via_cli_creates_pending_spec_node(tmp_path: Path):

@@ -25,8 +25,8 @@ def conn(tmp_path: Path):
     c.close()
 
 
-def test_schema_version_is_5():
-    assert SCHEMA_VERSION == 5
+def test_schema_version_is_6():
+    assert SCHEMA_VERSION == 6
 
 
 def test_new_columns_and_tables_exist(conn):
@@ -63,7 +63,7 @@ def test_migrate_from_schema_version_3_adds_v4_columns(tmp_path: Path):
     conn.close()
 
     version = migrate.run_migrate(tmp_path)
-    assert version == 5
+    assert version == SCHEMA_VERSION
 
     conn2 = core_db.connect(db_path)
     try:

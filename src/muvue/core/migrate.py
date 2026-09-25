@@ -26,6 +26,12 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, dd
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+def _drop_column_if_present(conn: sqlite3.Connection, table: str, column: str) -> None:
+    cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column in cols:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
+
 def run_migrate(repo_root: Path) -> int:
     """Returns the schema_version after migration."""
     db_path = Path(repo_root) / ".muvue" / "muvue.db"
@@ -48,6 +54,10 @@ def run_migrate(repo_root: Path) -> int:
             # SCHEMA_VERSION 4 -> 5 (v4 section 5): projects.branch,
             # branch-coherence check.
             _add_column_if_missing(conn, "projects", "branch", "TEXT")
+            # SCHEMA_VERSION 5 -> 6 (v4 section 2): drop the v3
+            # per-project budget columns.
+            for column in ("budget_unit", "budget_limit", "spent"):
+                _drop_column_if_present(conn, "projects", column)
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

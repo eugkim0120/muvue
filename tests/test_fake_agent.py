@@ -66,14 +66,19 @@ def test_lazy_early_done_is_allowed_but_leaves_no_work_evidence(conn, project, c
     assert notes == 0
 
 
-def test_lazy_vacuous_lesson_is_still_recorded_as_a_lesson_note(conn, project, config):
+def test_lazy_vacuous_lesson_is_refused(conn, project, config):
+    """Blocked, not recorded: an empty lesson fails validation and the
+    node's attempt is not consumed."""
     task = _ready_task(conn, project, config)
-    result = fake_agent.lazy_vacuous_lesson(conn, task["id"])
-    assert result["node"]["status"] in ("ready", "failed")
+    with pytest.raises(ValueError, match="trigger"):
+        fake_agent.lazy_vacuous_lesson(conn, task["id"])
+    row = nodes.get_node(conn, task["id"])
+    assert row["status"] == "in_progress"
+    assert row["attempts"] == 0
     lessons = conn.execute(
         "SELECT * FROM notes WHERE node_id = ? AND kind = 'lesson'", (task["id"],)
     ).fetchall()
-    assert len(lessons) == 1
+    assert lessons == []
 
 
 # -- adversarial ------------------------------------------------------------
@@ -132,7 +137,8 @@ def test_rebuild_matches_live_after_fake_agent_scenarios(conn, project, config):
     fake_agent.lazy_early_done(conn, lazy["id"])
 
     vacuous = _ready_task(conn, project, config)
-    fake_agent.lazy_vacuous_lesson(conn, vacuous["id"])
+    with pytest.raises(ValueError):
+        fake_agent.lazy_vacuous_lesson(conn, vacuous["id"])
 
     flagged = _ready_task(conn, project, config)
     fake_agent.adversarial_edit_test_file(conn, flagged["id"], config=config)

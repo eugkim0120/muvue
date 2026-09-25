@@ -141,6 +141,8 @@ def _update_gitignore(repo_root: Path, backups: dict[str, str | None]) -> None:
         # Drain hand-off file and drainer lock (core/hooks.py drain_queue).
         ".muvue/queue.draining",
         ".muvue/queue.lock",
+        # `muvue rebuild --apply` backups.
+        ".muvue/muvue.db.bak-*",
         # Not listed in plan section 2's committed-files table (only
         # config.toml/components.json/decisions.json are meant to be
         # committed) -- gitignored so an ordinary `git add -A` mid-project
