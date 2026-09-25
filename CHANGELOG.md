@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - v4 delta closure, W6: brief
+
+### Changed
+- **`brief` prints the v4 line format** (decision #131), one fact per
+  line in priority order. It takes `--budget N` (approximate tokens,
+  characters / 4) and `--since EVENT_ID` (only the events after that
+  id). The ranking puts nodes sharing a touch path first, then FTS5
+  matches over notes, decisions and components. Lessons are filtered to
+  the node's scope. `--json` keeps the old structured output. MCP
+  `brief` accepts `budget` and `since`.
+- `muvue run` sends agents an instruction plus the line brief, not a
+  JSON dump.
+
+### Added
+- `GET /brief`, `GET /status` and `POST /nodes/{id}/note`, so the API
+  mirrors the agent verbs.
+- Golden tests for the brief at budgets of 60, 150 and 2000 tokens
+  (`tests/golden/`).
+
 ## [Unreleased] - v4 delta closure, W5: review and risk
 
 ### Changed

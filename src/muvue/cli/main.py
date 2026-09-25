@@ -690,17 +690,27 @@ def fail(
 @app.command()
 def brief(
     node_id: int = typer.Argument(...),
+    budget: int = typer.Option(
+        core.brief.DEFAULT_BUDGET_TOKENS, "--budget", help="approximate tokens (characters / 4)"
+    ),
+    since: int = typer.Option(
+        None, "--since", help="only events after this id (the header's cursor:E<id>)"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="the structured form instead of lines"),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
-    """What an agent needs to start work on a node (plan section 4):
-    the node, its lessons/pinned notes, and any open question."""
+    """What an agent needs to start work on a node, one fact per line
+    (plan section 4, "Brief"), highest priority first, cut to --budget."""
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
-        result = core.queries.brief_node(conn, node_id)
+        if as_json:
+            _echo_json(core.queries.brief_node(conn, node_id))
+            return
+        result = core.brief.render_brief(conn, node_id, budget=budget, since=since)
     finally:
         conn.close()
-    _echo_json(result)
+    typer.echo(result["text"], nl=False)
 
 
 @app.command()

@@ -1001,6 +1001,54 @@ scoped down to what that archive actually contains.
 the project's live state (filtered to its own project id and nodes) —
 `{}` means the archive reproduces it exactly.
 
+### `brief NODE_ID [--budget N] [--since EVENT_ID] [--json]`
+
+`core.brief.render_brief` prints one fact per line (v4 section 4):
+
+```
+muvue-brief v1 node:T2 project:P1 cursor:E16 budget:150
+T2 in_progress "Refactor pricing loader" deps:T1 touches:pricing/loader.py,pricing/raw.py tier:low
+criteria auto: "loader reads v2 files" | "tests pass"
+question Q1 "keep the v1 reader?" default:"yes"
+body "Split parsing from file IO so the loader can read v2 price files."
+lesson L4 scope:"pricing/*" trigger:"parsing prices" failure:"floats lost cents" do_instead:"use integer cents"
+note N1 decision "cache lives in the loader, not the caller"
+related T1 ready "Load raw prices" shared:pricing/raw.py
+omitted 1
+```
+
+- Quoted strings are JSON strings, so they can be parsed exactly.
+- The header, node line, criteria and open questions always print.
+- The remaining lines print in priority order while the budget lasts,
+  and the output stops at the first line that doesn't fit. The order
+  is: the body, then lessons in scope, then the node's own notes, then
+  `related` nodes that share a touch path, and last the lexical
+  matches.
+- Lexical matches are FTS5 over other nodes' notes, current decisions
+  and current component purposes, merged by `bm25`.
+- `omitted N` counts what was cut.
+- `--budget` is in approximate tokens: characters / 4, about 25% off
+  either way across tokenisers. The default is 1200.
+- A lesson is in scope if any of these hold:
+  - it belongs to this node;
+  - its `scope` is `node <id>`, `project <id>` or `*`;
+  - its `scope` is a glob that overlaps one of the node's predicted
+    touches.
+- `--since EVENT_ID` prints the header, the node line, and one `event`
+  line per relevant event after that id in the node's project. Relevant
+  means node, note, question, review, dep, revision and replan events,
+  plus Gate 2 and phase changes. The header's `cursor:E<id>` is the
+  value to pass next time.
+- `--json` prints the older structured form (`core.queries.brief_node`).
+
+MCP `brief` takes `budget` and `since` and returns `{"text", "cursor",
+"tokens", "omitted"}`, as does `GET /brief?node_id=&budget=&since=`.
+`GET /status[?project_id=]` mirrors `status`, and `POST
+/nodes/{id}/note` mirrors `note`. `muvue run` sends each agent a short
+instruction followed by this brief on stdin. The SessionStart hook keeps
+its own compact stdlib-only summary (it can't import `muvue.core`) and
+points at `muvue brief N`.
+
 ### `brief` reads structure (plan section 4)
 
 `core.queries.brief_node` now also returns `relevant_decisions`/

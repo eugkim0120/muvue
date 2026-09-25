@@ -29,7 +29,10 @@ PROTOCOL_VERSION_MCP = "2024-11-05"  # the MCP wire-protocol version this server
 
 
 def _brief(conn: sqlite3.Connection, config, args: dict) -> dict:
-    return core.queries.brief_node(conn, args["node_id"])
+    return core.brief.render_brief(
+        conn, args["node_id"], budget=args.get("budget", core.brief.DEFAULT_BUDGET_TOKENS),
+        since=args.get("since"),
+    )
 
 
 def _show(conn: sqlite3.Connection, config, args: dict) -> dict:
@@ -106,7 +109,7 @@ def _status(conn: sqlite3.Connection, config, args: dict) -> dict:
 
 # name -> (handler, JSON schema for its arguments, one-line description)
 TOOLS: dict[str, tuple[Callable, dict, str]] = {
-    "brief": (_brief, {"type": "object", "properties": {"node_id": {"type": "integer"}}, "required": ["node_id"]}, "What an agent needs to start work on a node."),
+    "brief": (_brief, {"type": "object", "properties": {"node_id": {"type": "integer"}, "budget": {"type": "integer"}, "since": {"type": "integer"}}, "required": ["node_id"]}, "What an agent needs to start work on a node, as lines; `text` is the brief, `cursor` the next `since`."),
     "show": (_show, {"type": "object", "properties": {"node_id": {"type": "integer"}}, "required": ["node_id"]}, "Full detail for one node."),
     "start": (_start, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Take the lease on a ready node."),
     "done": (_done, {"type": "object", "properties": {"node_id": {"type": "integer"}, "owner": {"type": "string"}, "summary": {"type": "string"}, "version": {"type": "integer"}, "request_id": {"type": "string"}}, "required": ["node_id", "owner"]}, "Mark a node done (may stop at review)."),

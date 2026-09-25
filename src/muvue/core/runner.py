@@ -34,6 +34,7 @@ from . import events as events_mod
 from . import nodes as nodes_mod
 from . import projects as projects_mod
 from . import runners as runners_mod
+from . import brief as brief_mod
 from . import queries
 from . import review as review_mod
 from . import spend as spend_mod
@@ -378,6 +379,20 @@ def _apply_rate_limit(
     return {"retry_at": retry_at, "wait_started_at": wait_started_at}
 
 
+def agent_prompt(node_id: int, brief_text: str) -> str:
+    """What a headless agent receives on stdin: a short instruction, then
+    the brief (plan section 6: "`run` spawns one agent CLI per ready node
+    with `brief` on stdin, fresh context")."""
+    return (
+        f"You are an agent working on muvue node T{node_id} in this repository.\n"
+        "Do the work the brief below describes, meeting its criteria. Commit your "
+        f"changes with the trailer `Muvue-Node: {node_id}` in the commit message. "
+        "Do not run muvue human verbs (approve, merge, close). When finished, reply "
+        "with a one-paragraph summary of what you changed.\n\n"
+        f"{brief_text}"
+    )
+
+
 def run_node(
     conn,
     node,
@@ -412,8 +427,7 @@ def run_node(
     if started["noop"]:
         return {"node_id": node["id"], "agent": agent_name, "outcome": "noop"}
     node_row = started["node"]
-    brief = queries.brief_node(conn, node["id"])
-    brief_text = json.dumps(brief, default=str)
+    brief_text = agent_prompt(node["id"], brief_mod.render_brief(conn, node["id"])["text"])
     cwd = node_row.get("worktree") or str(repo_root)
     log_path = Path(repo_root) / LOGS_RELDIR / f"{node['id']}.log"
 

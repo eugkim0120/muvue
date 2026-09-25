@@ -1,0 +1,5 @@
+muvue-brief v1 node:T2 project:P1 cursor:E16 budget:60
+T2 in_progress "Refactor pricing loader" deps:T1 touches:pricing/loader.py,pricing/raw.py tier:low
+criteria auto: "loader reads v2 files" | "tests pass"
+question Q1 "keep the v1 reader?" default:"yes"
+omitted 5

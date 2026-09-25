@@ -1900,3 +1900,25 @@ reading here. Real `decisions` table entries start once dogfooding begins
     parent's scope. Out-of-scope subtasks, or ones past `max_subtasks`,
     are created `pending` rather than refused, so the agent's plan is
     kept and a human decides.
+
+131. **The brief's line grammar and its choices.** v4 section 4 gives
+    one example line (`T3.2 in_progress "..." deps:T3.1 touches:...`)
+    and a ranking rule. What was chosen where the spec is silent:
+    - **Node ids.** They are `T<id>` for every kind: ids are flat
+      integers here, with no `3.2` hierarchy.
+    - **Quoting.** Strings are JSON-quoted so a line can be parsed
+      without ambiguity.
+    - **Always printed.** The header, node line, criteria and open
+      questions print even when they alone exceed the budget. An agent
+      that can't see its criteria can't finish the node.
+    - **Cutting.** Everything else is cut at the first line that
+      doesn't fit, not bin-packed, so the priority order holds.
+    - **Lesson scope.** Scope is matched by node id, project id, `*`, or
+      a glob overlapping the node's touches. Free-text scopes such as
+      "pricing parser" only reach their own node, because matching
+      words would be guesswork.
+    - **Lesson decay.** A retrieval is recorded only for lessons the
+      brief actually printed.
+    - **SessionStart.** The hook keeps its own short summary. The full
+      renderer needs `muvue.core`, which `muvue._hook` may not import
+      (section 4a).

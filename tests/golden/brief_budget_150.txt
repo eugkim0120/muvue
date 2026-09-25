@@ -1,0 +1,9 @@
+muvue-brief v1 node:T2 project:P1 cursor:E16 budget:150
+T2 in_progress "Refactor pricing loader" deps:T1 touches:pricing/loader.py,pricing/raw.py tier:low
+criteria auto: "loader reads v2 files" | "tests pass"
+question Q1 "keep the v1 reader?" default:"yes"
+body "Split parsing from file IO so the loader can read v2 price files."
+lesson L4 scope:"pricing/*" trigger:"parsing prices" failure:"floats lost cents" do_instead:"use integer cents"
+note N1 decision "cache lives in the loader, not the caller"
+related T1 ready "Load raw prices" shared:pricing/raw.py
+omitted 1

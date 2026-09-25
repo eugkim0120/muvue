@@ -517,6 +517,23 @@ def create_app(
                 rows = core.db.query_all(conn, "SELECT * FROM nodes WHERE deleted_at IS NULL")
         return _rows_to_list(rows)
 
+    @app.get("/brief")
+    def get_brief(
+        node_id: int, budget: int = core.brief.DEFAULT_BUDGET_TOKENS, since: int | None = None
+    ) -> dict:
+        """The agent verb `brief` (plan section 4): `{"text", "cursor",
+        "tokens", "omitted"}`."""
+        with _conn() as conn:
+            try:
+                return core.brief.render_brief(conn, node_id, budget=budget, since=since)
+            except LookupError as e:
+                _handle_core_error(e)
+
+    @app.get("/status")
+    def get_status(project_id: int | None = None) -> dict:
+        with _conn() as conn:
+            return core.queries.status_summary(conn, project_id)
+
     @app.get("/nodes/{node_id}")
     def show_node(node_id: int) -> dict:
         with _conn() as conn:
@@ -721,6 +738,30 @@ def create_app(
                     predicted_touches=predicted_touches, config=config,
                     actor_evidence="dashboard_token",
                 ), actor="agent",
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
+    @app.post("/nodes/{node_id}/note")
+    def note_on_node(
+        node_id: int,
+        request: Request,
+        text: str = Body(...),
+        kind: str = Body(default="discovery"),
+        pinned: bool = Body(default=False),
+    ) -> dict:
+        """The agent verb `note` (plan section 4), mirrored 1:1."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "note",
+                    lambda: core.nodes.add_note(
+                        conn, node_id, kind=kind, text=text, actor="agent", pinned=pinned,
+                        actor_evidence="dashboard_token",
+                    ),
+                    actor="agent",
                 )
             except Exception as e:
                 _handle_core_error(e)
