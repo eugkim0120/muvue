@@ -2161,7 +2161,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     v4 section 5 trusts the worktree binding and treats trailers as
     labels.
 
-154. **A `prepare-commit-msg` shim adds the current node's trailer.**
+154. *(Amended by #159: the trailer goes above git's comment block.)* **A `prepare-commit-msg` shim adds the current node's trailer.**
     The dogfood gate measured 2 of 63 commits carrying `Muvue-Node:`.
     The gate's own remedy is "tighten adapters". The shim appends the
     trailer when `.muvue/current_node` names a node that is
@@ -2210,3 +2210,45 @@ reading here. Real `decisions` table entries start once dogfooding begins
     was for task 17 of muvue's own project 5. Adding a spec-only edge
     to `done` would change the state machine for a display concern, so
     it is kept as is.
+
+159. **The auto trailer goes above git's comment block.** Appended at
+    the end of the message file, it landed below the scissors line of
+    `git commit -v`, and git cut it with the diff. Found by the
+    adversarial verify pass. It is now inserted above the trailing
+    comment block, and above the scissors line when there is one. The
+    comment character is read from the scissors line, or is git's
+    default `#`; with another `core.commentChar` and no scissors line
+    the trailer follows the comments, which git strips, so it survives.
+
+160. **CLI verbs report domain errors as one line.** An illegal
+    transition, an unknown node or a failing `worktree_setup` printed a
+    Python traceback. `main()` catches core's domain errors (the set the
+    API maps to 404 and 409, plus strict-mode, config and migrate
+    errors), prints `error: <message>` and exits 1. `KeyError` and
+    `IndexError` are `LookupError`s too, but from muvue they mean a bug,
+    so they keep their traceback.
+
+161. **`migrate` refuses what it can't upgrade, and backs up first.** On
+    a database written by a newer muvue it printed the version and
+    exited 0, after re-applying this version's schema to it. It now
+    refuses before touching the database, as it does for a
+    `schema_version` that isn't a number, and `doctor` reports that
+    case instead of crashing. Upgrades drop columns (#117), so the CLI
+    first copies the database to `muvue.db.bak-<time>`.
+
+162. **`uninit` takes out muvue's blocks and keeps later edits.** It
+    restored each file `init` touched to its pre-init bytes, so a line
+    the user added to `.gitignore` or a hook afterwards was silently
+    lost. It now removes only muvue's marked blocks. A file that is
+    otherwise unchanged still gets its original bytes back, so the
+    filesystem round-trip stays exact, and a file `init` created is
+    removed.
+
+163. **`doctor --repair` upgrades pre-v4 hook shims.** Shims installed
+    before the fast path run the full CLI (`-m muvue hook NAME`), and
+    `doctor` accepted them, so an older install never got the fast
+    path; muvue's own repository still had them. `doctor` now reports
+    such a shim as outdated and `--repair` rewrites its block. A shim
+    that only names another interpreter is not outdated, because a
+    `doctor` run from another environment, such as `uvx`, must not
+    repoint shims at itself.

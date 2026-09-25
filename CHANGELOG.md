@@ -39,6 +39,21 @@ Tracked through muvue itself, as project 5 in the repository's own
 - **`project create` recorded `actor = human` from an agent**, next to
   `actor_evidence = agent_parent:claude`, a slip in #152.
 
+### Fixed (found by the adversarial verify pass)
+- **`git commit -v` lost the auto trailer** below its scissors line
+  (#159).
+- **CLI verbs printed tracebacks for expected errors**, such as an
+  illegal transition or an unknown node. They now print one `error:`
+  line and exit 1 (#160).
+- **`migrate` silently accepted a database from a newer muvue.** It now
+  refuses it, and backs the database up before an upgrade (#161).
+- **`uninit` discarded edits made after `init`** to `.gitignore` and
+  hooks (#162).
+- **Pre-v4 hook shims were never upgraded** to the fast path; `doctor`
+  reports them and `--repair` upgrades them (#163).
+- The quickstart says to set `worktree_setup`, whose default (`uv sync`)
+  fails outside a Python project.
+
 ### Verified
 - `claude auth status` exits 1 when logged out, and `doctor` reports
   it (`docs/providers.md`).
