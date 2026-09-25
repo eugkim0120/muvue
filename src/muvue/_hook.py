@@ -614,11 +614,22 @@ def prepare_commit_msg(repo_root: str, msg_path: str, source: str | None) -> Non
         return
     if row is None or row["status"] != "in_progress":
         return
-    body = message.rstrip("\n")
+    # The trailer goes above git's trailing comment block (the editor
+    # template, and with `commit -v` the scissors line and the diff, all
+    # of which git cuts), or it would be cut with them. The scissors line
+    # names the comment character; otherwise it is git's default `#`.
+    lines = message.split("\n")
+    scissors = next((line for line in lines if re.match(r"^\S -{24} >8 -{24}$", line)), None)
+    comment = scissors[0] if scissors else "#"
+    cut = lines.index(scissors) if scissors is not None else len(lines)
+    while cut > 0 and (not lines[cut - 1].strip() or lines[cut - 1].startswith(comment)):
+        cut -= 1
+    body = "\n".join(lines[:cut]).rstrip("\n")
+    rest = "\n".join(lines[cut:]).lstrip("\n")
     last_line = body.rsplit("\n", 1)[-1]
     sep = "\n" if re.match(r"^[A-Za-z-]+: ", last_line) and "\n\n" in body else "\n\n"
     with open(msg_path, "w") as f:
-        f.write(f"{body}{sep}Muvue-Node: {node_id}\n")
+        f.write(f"{body}{sep}Muvue-Node: {node_id}\n" + (f"\n{rest}" if rest else ""))
 
 
 def main(argv: list[str] | None = None) -> int:

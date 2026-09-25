@@ -91,3 +91,33 @@ def test_commit_is_linked_to_the_node(repo, conn):
     hooks.drain_queue(conn, repo)
     rows = conn.execute("SELECT COUNT(*) AS n FROM node_commits WHERE node_id = ?", (node_id,)).fetchone()
     assert rows["n"] == 1
+
+
+def _editor_commit(repo: Path, tmp_path: Path, *flags: str) -> str:
+    """Commit through git's editor path: the "user" types a subject at
+    the top of the buffer git prepared (comments, and with -v the
+    scissors line and the diff)."""
+    editor = tmp_path / "editor.sh"
+    editor.write_text('#!/bin/sh\n{ echo "typed in editor"; cat "$1"; } > "$1.new" && mv "$1.new" "$1"\n')
+    editor.chmod(0o755)
+    (repo / "f.txt").write_text(str(flags))
+    _git(repo, "add", "f.txt")
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", *flags],
+        cwd=repo, check=True, capture_output=True, text=True,
+        env={**__import__("os").environ, "GIT_EDITOR": str(editor)},
+    )
+    return _git(repo, "log", "-1", "--pretty=%B")
+
+
+def test_editor_commit_keeps_the_trailer(repo, conn, tmp_path):
+    node_id = _node(conn, "in_progress")
+    adapters.set_current_node(repo, node_id)
+    assert _editor_commit(repo, tmp_path) == f"typed in editor\n\nMuvue-Node: {node_id}\n\n"
+
+
+def test_verbose_commit_keeps_the_trailer_above_the_scissors(repo, conn, tmp_path):
+    # `git commit -v` cuts everything below its scissors line.
+    node_id = _node(conn, "in_progress")
+    adapters.set_current_node(repo, node_id)
+    assert f"Muvue-Node: {node_id}" in _editor_commit(repo, tmp_path, "-v")
