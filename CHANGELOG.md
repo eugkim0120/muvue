@@ -2,7 +2,13 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased] - open items after the v4 delta closure
+## [0.2.0] - 2026-09-25
+
+Closes the deltas between the v4 plan and the code, and adds the
+`opencode_json` driver parser. Its changes are the `[0.2.0]` sections
+below, from the open items down to W1.
+
+## [0.2.0] - open items after the v4 delta closure
 
 Tracked through muvue itself, as project 5 in the repository's own
 `.muvue/`.
@@ -67,7 +73,7 @@ Tracked through muvue itself, as project 5 in the repository's own
 ### Kept
 - A spec node stays `ready` after decomposition (#158).
 
-## [Unreleased] - v4 delta closure, W12: docs honesty pass, protocol 2
+## [0.2.0] - v4 delta closure, W12: docs honesty pass, protocol 2
 
 ### Changed
 - **`protocol_version` is 2.** `core.config.PROTOCOL_VERSION` is the
@@ -96,7 +102,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   detected evidence (`agent_parent:<name>`, `tty` or `no_tty`) as human
   verbs. Found while dogfooding this workstream.
 
-## [Unreleased] - v4 delta closure, W11: live run against claude
+## [0.2.0] - v4 delta closure, W11: live run against claude
 
 ### Verified
 - **P5 against claude 2.1.281**, subscription-authenticated, in a
@@ -121,7 +127,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   the model, counts cached prompt tokens, and takes `retry_after` from
   `rate_limit_event`. It is tested against a sanitized recording.
 
-## [Unreleased] - v4 delta closure, W10: tests, coverage, CI
+## [0.2.0] - v4 delta closure, W10: tests, coverage, CI
 
 ### Added
 - **CI** (`.github/workflows/ci.yml`): the test suite with the coverage
@@ -141,7 +147,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   call `start` on its own blocked node and resume before a rate limit
   expired or a question was answered.
 
-## [Unreleased] - v4 delta closure, W9: dashboard, daemon security, VS Code
+## [0.2.0] - v4 delta closure, W9: dashboard, daemon security, VS Code
 
 ### Added
 - **Tree view is a DAG.** Inline SVG with a layered layout, parent and
@@ -181,7 +187,7 @@ Tracked through muvue itself, as project 5 in the repository's own
 - The event-history stub behind `GET /nodes/{id}/logs`; the timeline
   already shows events.
 
-## [Unreleased] - v4 delta closure, W8: structure and drift
+## [0.2.0] - v4 delta closure, W8: structure and drift
 
 ### Added
 - **`close --pr`** (#140, supersedes #105). When `main` can't be
@@ -219,7 +225,7 @@ Tracked through muvue itself, as project 5 in the repository's own
 ### Fixed
 - The docs said `approve task:ID`; the verb is `approve node:ID`.
 
-## [Unreleased] - v4 delta closure, W7: runner, merge, notify, doctor
+## [0.2.0] - v4 delta closure, W7: runner, merge, notify, doctor
 
 ### Added
 - **Light-mode `per_node` worktrees** (#132). Each node runs in its own
@@ -254,7 +260,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   and codex-cli 0.142.5, and what wasn't. It also notes that
   `auth_check = "codex login status"` catches a logged-out Codex.
 
-## [Unreleased] - v4 delta closure, W6: brief
+## [0.2.0] - v4 delta closure, W6: brief
 
 ### Changed
 - **`brief` prints the v4 line format** (decision #131), one fact per
@@ -273,7 +279,7 @@ Tracked through muvue itself, as project 5 in the repository's own
 - Golden tests for the brief at budgets of 60, 150 and 2000 tokens
   (`tests/golden/`).
 
-## [Unreleased] - v4 delta closure, W5: review and risk
+## [0.2.0] - v4 delta closure, W5: review and risk
 
 ### Changed
 - **muvue runs `auto` criteria itself** (v4 section 5; decision #128,
@@ -305,7 +311,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   `unverified` (external criteria) or `human`. `/inbox` lists nodes in
   review with external criteria under `unverified_external`.
 
-## [Unreleased] - v4 delta closure, W4: human/agent control surface
+## [0.2.0] - v4 delta closure, W4: human/agent control surface
 
 ### Added
 - **Real `pause`, `resume`, `reject` and `ack` in the CLI.** They
@@ -351,7 +357,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   "stopped_runners"}`. `resume` on a project that isn't paused returns
   409.
 
-## [Unreleased] - v4 delta closure, W3: data model and replay
+## [0.2.0] - v4 delta closure, W3: data model and replay
 
 ### Added
 - `decompose`/`replan --depends-on N` (repeatable) write `deps` edges,
@@ -380,7 +386,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   (schema 6; `migrate` drops them) and `project create --budget-unit/
   --budget-limit` (#117). Budgets are per driver.
 
-## [Unreleased] - v4 delta closure, W2: hook fast path
+## [0.2.0] - v4 delta closure, W2: hook fast path
 
 ### Changed
 - **SessionStart, Stop and PreCompact decide again** (decision #114,
@@ -415,7 +421,7 @@ Tracked through muvue itself, as project 5 in the repository's own
   worst case. Local numbers: DB path p50 21.0ms, p95 25.1ms, p99 27.0ms;
   gate median 23.8ms.
 
-## [Unreleased] - v4 delta closure, W1: confirmed bugs
+## [0.2.0] - v4 delta closure, W1: confirmed bugs
 
 A full audit of the code against the v4 handoff plan found about 100
 deltas. This section covers the ones that were outright bugs.
@@ -460,6 +466,10 @@ deltas. This section covers the ones that were outright bugs.
 - **`is_test_touch` matched any path containing "test"** (`latest.py`,
   `attestation.py`). It now matches test directory segments and
   conventional test file names only.
+
+## [0.1.0] - 2026-09-25
+
+The first PyPI release. It contains every section below.
 
 ## [Unreleased] - v4 §11 P0/gate re-verification + `uninit` acceptance tightening (changelog item 14, final v4-migration piece)
 

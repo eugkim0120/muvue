@@ -1,6 +1,6 @@
 [project]
 name = "muvue"
-version = "0.1.0"
+version = "0.2.0"
 description = "Run an AI coding agent's work as an auditable, gated state machine instead of a chat transcript"
 readme = "README.md"
 authors = [
