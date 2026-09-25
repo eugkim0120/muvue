@@ -1,6 +1,23 @@
-# muvue protocol (P0 surface)
+# muvue protocol
 
-`protocol_version = 1` (see `.muvue/config.toml`). Bump on any verb change.
+`protocol_version = 2` (`muvue.core.config.PROTOCOL_VERSION`, written to
+`.muvue/config.toml` by `init`). Bump on any verb change. `doctor` warns
+when a repo's `config.toml` or an installed adapter names another
+version.
+
+Version 2 (the v4 delta closure, W4-W11) changed:
+- `ask` requires `--default` and takes `--default-ok`.
+- `fail` requires the four-part lesson (`--lesson`, `--trigger`,
+  `--do-instead`, `--scope`).
+- `brief` prints the line format and takes `--budget` and `--since`.
+- `comment` takes a `line` anchor.
+- Every mutating verb takes `--request-id` (or `X-Request-Id`).
+- `close` takes `--pr`, and `run` takes `--node`.
+- `start` refuses a blocked node.
+- The API requires `Content-Type: application/json` on every mutating
+  request.
+- `/auth/exchange` takes a one-time `nonce`, and `/auth/nonce` and
+  `/auth/check` are new.
 
 All mutating verbs go through `muvue.core` — the CLI never issues raw SQL.
 

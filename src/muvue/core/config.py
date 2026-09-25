@@ -125,9 +125,16 @@ class RoutingConfig(StrictModel):
     subtask: str = "claude"
 
 
+# The agent/human verb protocol this muvue speaks (plan section 4). 2:
+# the W4-W11 changes to verbs and flags (ask --default, fail's four-part
+# lesson, brief --budget/--since, comment line anchors, JSON-only POSTs,
+# nonce auth).
+PROTOCOL_VERSION = 2
+
+
 class MuvueConfig(StrictModel):
     schema_version: int = 1
-    protocol_version: int = 1
+    protocol_version: int = PROTOCOL_VERSION
     mode: Literal["light", "strict"] = "light"
     worktree_mode: Literal["branch", "per_node"] = "branch"
     worktree_setup: str = "uv sync"
@@ -161,7 +168,7 @@ class MuvueConfig(StrictModel):
 
 DEFAULT_CONFIG_TOML = """\
 schema_version = 1
-protocol_version = 1
+protocol_version = 2
 mode = "light"
 worktree_mode = "branch"
 worktree_setup = "uv sync"

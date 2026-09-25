@@ -21,7 +21,7 @@ from . import db as core_db
 from . import gitutil
 from . import hooks as hooks_mod
 from . import runner as runner_mod
-from .config import ConfigError, load_config
+from .config import PROTOCOL_VERSION, ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, _install_hook_shim, init_repo
 
 
@@ -495,6 +495,12 @@ def run_doctor(
     # Adapter protocol_version drift (plan section 7: "doctor warns on
     # mismatch"), across every adapter file muvue writes.
     if config is not None:
+        if config.protocol_version != PROTOCOL_VERSION:
+            report.warn(
+                f"config.toml says protocol_version={config.protocol_version}, this muvue "
+                f"speaks protocol_version={PROTOCOL_VERSION}; see CHANGELOG.md, set it to "
+                f"{PROTOCOL_VERSION}, then re-run `muvue adapter install`"
+            )
         for rel, installed in adapters_mod.installed_protocol_versions(repo_root).items():
             if installed != config.protocol_version:
                 report.warn(

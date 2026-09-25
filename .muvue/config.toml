@@ -1,5 +1,5 @@
 schema_version = 1
-protocol_version = 1
+protocol_version = 2
 mode = "light"
 worktree_mode = "branch"
 worktree_setup = "uv sync"
