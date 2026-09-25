@@ -2252,3 +2252,12 @@ reading here. Real `decisions` table entries start once dogfooding begins
     that only names another interpreter is not outdated, because a
     `doctor` run from another environment, such as `uvx`, must not
     repoint shims at itself.
+
+164. **An `opencode_json` parser, verified before it shipped.** OpenCode
+    gives access to several providers' models with one key, so it is
+    added as a fourth vendor parser. Unlike `codex_json` and
+    `gemini_json`, it was written from recorded `opencode run --format
+    json` output and then run live through `muvue run`. Usage is summed
+    over every `step_finish`, because each model call reports its own
+    tokens and cost. Only the 429 path is reconstructed, since no live
+    rate limit was hit.

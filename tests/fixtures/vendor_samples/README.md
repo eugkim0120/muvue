@@ -11,6 +11,14 @@ was sanitized before being committed:
 - thinking text and signatures were blanked;
 - local paths were replaced with `/repo`.
 
+`opencode_json_live_1_18_32.jsonl` and
+`opencode_json_live_1_18_32_auth_error.jsonl` are **recorded** from
+`opencode run --format json` (opencode 1.18.32, model
+`opencode/deepseek-v4.1-flash`, 2026-09-25): a run that wrote a file and
+committed it, and a run with an invalid key. Session, message and part
+ids, snapshots, tool output and response headers were removed, and local
+paths were replaced with `/repo`.
+
 Every other `.jsonl` file here is **hand-constructed, not captured from a
 real vendor CLI invocation**. When they were written, this environment
 had no logged-in vendor CLI. Codex is still logged out and Gemini isn't

@@ -988,6 +988,8 @@ Real invocation, `core.drivers.invoke_driver`:
 3. Parse usage via `usage_parser`:
    - `claude_stream_json` — tested against a recorded claude 2.1.281
      session (decision #151).
+   - `opencode_json` — tested against recorded opencode 1.18.32
+     output (decision #164).
    - `codex_json` / `gemini_json` — **synthetic, unverified against a
      real vendor CLI** (see `docs/providers.md` and
      `tests/fixtures/vendor_samples/`).

@@ -18,7 +18,7 @@ a chat transcript.
   Low-risk work auto-approves. Anything touching tests, risky paths or a
   stale component goes to human review.
 - **An unattended runner** drives approved work through vendor CLIs
-  (`claude`, `codex`, `gemini`, or `fake` for testing), with per-driver
+  (`claude`, `opencode`, `codex`, `gemini`, or `fake` for testing), with per-driver
   budgets, rate-limit handling and an emergency stop.
 - **A local dashboard** shows the plan as a DAG, each node's diff and
   logs, and an inbox of everything waiting on you.
@@ -29,7 +29,8 @@ a chat transcript.
 - [`uv`](https://docs.astral.sh/uv/) (recommended), `pipx`, or `pip`
 - Optional:
   - an agent CLI, if you want muvue to run real agents; `claude` is the
-    one verified end to end (see `docs/providers.md`);
+    and `opencode` are the ones verified end to end (see
+    `docs/providers.md`);
   - an authenticated `gh`, for `close --pr`, `merge --pr --create` and
     `import --from github#N`.
 
@@ -240,7 +241,7 @@ fails with the exact key.
 
 ```bash
 uv sync
-uv run pytest -q                        # about 840 tests, about 75 s
+uv run pytest -q                        # about 855 tests, about 75 s
 uv run pytest -q --cov=muvue.core       # enforces the 85% coverage gate (currently 90%)
 cd vscode-extension && npm ci && npm test
 MUVUE_CMD="uv run --project .. muvue" xvfb-run -a npm run test:host   # real VS Code, downloads it once
@@ -253,14 +254,14 @@ hook latency benchmark against the v4 budgets.
 
 - **Dogfood gate: met on the last two projects, with caveats.** The
   plan's gate asks for 80% of state transitions to be logged without
-  prompting, across two projects. On muvue's own projects 4 and 5, 17
-  of 18 commits carry their node's trailer, and every node transition
+  prompting, across two projects. On muvue's own projects 4 and 5, 18
+  of 19 commits carry their node's trailer, and every node transition
   was logged by the agent doing the work. The agent knew it was being
   measured, and it also approved the gates, which muvue recorded as the
   agent's (`agent_parent:claude`). Before the adapter was tightened,
   only 2 of 63 commits carried a trailer.
-- **Codex and Gemini parsers are unverified.** Only the `claude` driver
-  has been run end to end; see `docs/providers.md`.
+- **Codex and Gemini parsers are unverified.** Only the `claude` and
+  `opencode` drivers have been run end to end; see `docs/providers.md`.
 - **Rate limits are tested on recorded output only.** No live run has
   hit one.
 

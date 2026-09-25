@@ -1,0 +1,1 @@
+{"type":"error","timestamp":1790374633193,"error":{"name":"APIError","data":{"message":"Upstream request failed: Invalid credential","statusCode":401,"isRetryable":false,"responseBody":"{\"error\":{\"type\":\"server_error\",\"message\":\"Upstream request failed: Invalid credential\"}}","metadata":{"url":"https://opencode.ai/zen/v1/chat/completions"}}}}

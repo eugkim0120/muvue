@@ -117,6 +117,40 @@ relying on unattended runs.
   `codex exec --json` run here, because this machine's Codex is logged
   out.
 
+## OpenCode (verified 2026-09-25 against opencode 1.18.32)
+
+OpenCode runs models from several providers behind one CLI. It was
+run live through `muvue run` with `opencode/deepseek-v4.1-flash` (two
+tasks) and `opencode/mimo-v2.6-flash-free` (one task): each edited the
+repository, committed with its `Muvue-Node:` trailer, and passed the
+node's checks.
+
+```toml
+[agents.opencode]
+command = "opencode run --format json -m opencode/deepseek-v4.1-flash"
+auth_check = "opencode --version && opencode models opencode | grep -q deepseek-v4.1-flash"
+usage_parser = "opencode_json"
+cost_model = "usd"
+```
+
+- `opencode run` reads the message from stdin when no message argument
+  is given, which is how `muvue run` passes the brief. File edits and
+  shell commands ran without `--auto` in that run.
+- `--format json` prints one JSON event per line. Every model call
+  ends with a `step_finish` carrying that call's `tokens` and `cost`,
+  so `opencode_json` sums them over the run.
+- The key comes from `OPENCODE_API_KEY` in the environment, which
+  muvue neither reads nor stores; the driver inherits it.
+- `opencode auth list` exits 0 with no credentials, so it can't be the
+  `auth_check`. `opencode models opencode` lists only free models
+  without a key, so grepping it for the configured model fails when the
+  key is missing and that model isn't free. `doctor` then warns.
+- An invalid key is a top-level `{"type": "error"}` event with
+  `statusCode: 401`, and exit 1. A rate limit was not hit; the parser
+  treats a 429 status or rate-limit text as one, taking `retry-after`
+  from the response headers when present.
+- The events don't name the model, so the node's spend row has none.
+
 ## Gemini (not verified: CLI not installed here, 2026-09-25)
 
 `muvue adapter install gemini` writes `GEMINI.md` at the repo root, the
@@ -136,7 +170,7 @@ before.
 
 `core.drivers` implements `usage_parser` dispatch for the example
 commands plan section 2 shows (`claude -p --output-format stream-json`,
-`codex exec --json`) plus a best-effort `gemini_json`.
+`codex exec --json`) plus a best-effort `gemini_json`, and `opencode_json`.
 
 - `claude_stream_json` is **verified against claude 2.1.281**
   (2026-09-25). A sanitized recording of a real session is
@@ -145,6 +179,10 @@ commands plan section 2 shows (`claude -p --output-format stream-json`,
   model is not on the `result` event (it is on `system/init` and in
   `modelUsage`), and `usage.input_tokens` excludes the cached prompt
   tokens that make up nearly all of it. Both are fixed (decision #151).
+- `opencode_json` is **verified against opencode 1.18.32**
+  (2026-09-25), from recordings in
+  `tests/fixtures/vendor_samples/opencode_json_live_1_18_32*.jsonl`
+  (see the OpenCode section above).
 
 The other two are **synthetic and unverified**. Codex here is logged
 out and Gemini isn't installed. Each was reconstructed from that

@@ -1,0 +1,12 @@
+{"type":"step_start","timestamp":1790374537503,"part":{"type":"step-start"}}
+{"type":"tool_use","timestamp":1790374539312,"part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git branch --show-current && git status --short"}}}}
+{"type":"step_finish","timestamp":1790374539345,"part":{"reason":"tool-calls","type":"step-finish","tokens":{"total":11567,"input":9592,"output":47,"reasoning":168,"cache":{"write":0,"read":1760}},"cost":0.00314616}}
+{"type":"step_start","timestamp":1790374540113,"part":{"type":"step-start"}}
+{"type":"tool_use","timestamp":1790374541500,"part":{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"/repo/hello.py","content":"print(\"hello\")\n"}}}}
+{"type":"step_finish","timestamp":1790374541535,"part":{"reason":"tool-calls","type":"step-finish","tokens":{"total":11828,"input":367,"output":108,"reasoning":131,"cache":{"write":0,"read":11222}},"cost":0.000464232}}
+{"type":"step_start","timestamp":1790374542211,"part":{"type":"step-start"}}
+{"type":"tool_use","timestamp":1790374542475,"part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git add hello.py && git commit -m 'add hello'"}}}}
+{"type":"step_finish","timestamp":1790374542504,"part":{"reason":"tool-calls","type":"step-finish","tokens":{"total":11893,"input":383,"output":50,"reasoning":0,"cache":{"write":0,"read":11460}},"cost":0.00024366}}
+{"type":"step_start","timestamp":1790374543379,"part":{"type":"step-start"}}
+{"type":"text","timestamp":1790374543403,"part":{"type":"text","text":"Done","time":{"start":1790374543398,"end":1790374543401}}}
+{"type":"step_finish","timestamp":1790374543426,"part":{"reason":"stop","type":"step-finish","tokens":{"total":11934,"input":217,"output":3,"reasoning":0,"cache":{"write":0,"read":11714}},"cost":0.000138984}}

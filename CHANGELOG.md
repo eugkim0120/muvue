@@ -8,6 +8,10 @@ Tracked through muvue itself, as project 5 in the repository's own
 `.muvue/`.
 
 ### Added
+- **An `opencode_json` usage parser** (#164), checked against recorded
+  opencode 1.18.32 output. `docs/providers.md` has a working
+  `[agents.opencode]` config; it ran real tasks through `muvue run` with
+  `deepseek-v4.1-flash` and `mimo-v2.6-flash-free`.
 - **`prepare-commit-msg` adds the current node's trailer** (#154).
   While `.muvue/current_node` names an `in_progress` node, commits get
   `Muvue-Node: <id>` without the agent having to remember it.

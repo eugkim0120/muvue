@@ -12,7 +12,8 @@ authentication token or API key; it shells out to whatever CLI
 persist in its own state, entirely outside muvue.
 
 `claude_stream_json` is tested against a recorded claude 2.1.281
-session (tests/fixtures/vendor_samples/claude_stream_json_live_2_1_281.jsonl).
+session (tests/fixtures/vendor_samples/claude_stream_json_live_2_1_281.jsonl),
+and `opencode_json` against recorded opencode 1.18.32 runs.
 `codex_json` and `gemini_json` are reconstructed from each vendor's
 documented output conventions and **not verified against a real
 install**: Codex was logged out and Gemini not installed where they
@@ -209,11 +210,58 @@ def parse_gemini_json(stdout: str) -> DriverResult:
     )
 
 
+def parse_opencode_json(stdout: str) -> DriverResult:
+    """`opencode run --format json`, checked against opencode 1.18.32
+    (tests/fixtures/vendor_samples/opencode_json_live_1_18_32*.jsonl).
+    One JSON object per line. Each model call ends with a `step_finish`
+    whose `part` carries that call's `tokens` (`input`, `output`,
+    `reasoning`, `cache.read`, `cache.write`) and `cost`, so usage is
+    the sum over every step. The run succeeded when the last step
+    finished with `reason: "stop"`; the final text is the last `text`
+    part. A failure is a top-level `{"type": "error", "error": {"name",
+    "data": {"message", "statusCode", "responseHeaders"}}}`, and a 429
+    or rate-limit text makes it `rate_limited`, with `retry-after` from
+    the response headers when present. The events don't name the model,
+    so `model` stays None."""
+    objs = _json_lines(stdout)
+    steps = [o.get("part") or {} for o in objs if o.get("type") == "step_finish"]
+    texts = [(o.get("part") or {}).get("text", "") for o in objs if o.get("type") == "text"]
+    errors = [o.get("error") or {} for o in objs if o.get("type") == "error"]
+    in_tokens = out_tokens = 0
+    cost = 0.0
+    for step in steps:
+        tokens = step.get("tokens") or {}
+        cache = tokens.get("cache") or {}
+        in_tokens += int(tokens.get("input") or 0) + int(cache.get("read") or 0) + int(cache.get("write") or 0)
+        out_tokens += int(tokens.get("output") or 0) + int(tokens.get("reasoning") or 0)
+        cost += float(step.get("cost") or 0.0)
+    result = DriverResult(
+        status="failed", in_tokens=in_tokens, out_tokens=out_tokens,
+        requests=max(1, len(steps)), cost=cost,
+    )
+    if errors:
+        data = errors[-1].get("data") or {}
+        result.error = str(data.get("message") or errors[-1].get("name") or "opencode error")
+        if data.get("statusCode") == 429 or _is_rate_limit_text(result.error):
+            result.status = "rate_limited"
+            retry_after = str((data.get("responseHeaders") or {}).get("retry-after", ""))
+            if retry_after.isdigit():
+                result.retry_after_seconds = int(retry_after)
+        return result
+    if not steps or steps[-1].get("reason") != "stop":
+        result.error = "opencode run ended without a final step"
+        return result
+    result.status = "done"
+    result.summary = texts[-1] if texts else ""
+    return result
+
+
 USAGE_PARSERS: dict[str, Callable[[str], DriverResult]] = {
     "fake": parse_fake,
     "claude_stream_json": parse_claude_stream_json,
     "codex_json": parse_codex_json,
     "gemini_json": parse_gemini_json,
+    "opencode_json": parse_opencode_json,
 }
 
 

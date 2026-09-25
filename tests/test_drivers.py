@@ -121,6 +121,53 @@ def test_parse_gemini_json_rate_limited():
     assert result.status == "rate_limited"
 
 
+# -- recorded from opencode 1.18.32 (deepseek-v4.1-flash, sanitized) ------
+
+LIVE_OPENCODE = "opencode_json_live_1_18_32.jsonl"
+
+
+def test_parse_opencode_live_success_sums_every_step():
+    result = drivers.parse_opencode_json(_read(LIVE_OPENCODE))
+    assert result.status == "done"
+    # Four model calls; each step_finish reports its own tokens and cost.
+    assert result.requests == 4
+    assert result.in_tokens == (9592 + 1760) + (367 + 11222) + (383 + 11460) + (217 + 11714)
+    assert result.out_tokens == (47 + 168) + (108 + 131) + 50 + 3
+    assert result.cost == pytest.approx(0.003993036)
+    assert result.summary == "Done"
+
+
+def test_parse_opencode_live_auth_error_is_a_failure():
+    result = drivers.parse_opencode_json(_read("opencode_json_live_1_18_32_auth_error.jsonl"))
+    assert result.status == "failed"
+    assert "Invalid credential" in result.error
+
+
+def test_parse_opencode_429_is_rate_limited_with_retry_after():
+    # Hand-constructed: the recorded APIError shape with a 429 status.
+    stdout = (
+        '{"type":"error","error":{"name":"APIError","data":{"message":"Too Many Requests",'
+        '"statusCode":429,"isRetryable":true,"responseHeaders":{"retry-after":"120"}}}}\n'
+    )
+    result = drivers.parse_opencode_json(stdout)
+    assert result.status == "rate_limited"
+    assert result.retry_after_seconds == 120
+
+
+def test_parse_opencode_error_after_steps_is_not_done():
+    lines = _read(LIVE_OPENCODE).splitlines()[:3]
+    lines.append('{"type":"error","error":{"name":"UnknownError","data":{"message":"boom"}}}')
+    result = drivers.parse_opencode_json("\n".join(lines))
+    assert result.status == "failed"
+    assert result.error == "boom"
+    assert result.in_tokens == 9592 + 1760
+
+
+def test_parse_opencode_no_final_step_is_a_failure():
+    result = drivers.parse_opencode_json(_read(LIVE_OPENCODE).splitlines()[0])
+    assert result.status == "failed"
+
+
 def test_parse_fake_takes_last_result_line():
     stdout = (
         '{"type": "progress", "message": "x"}\n'
