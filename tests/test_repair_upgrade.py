@@ -59,3 +59,17 @@ def test_uninit_after_repair_restores_the_repository(tmp_path: Path):
     doctor.run_doctor(repo, repair=True, skip_security_probes=True)
     repo_init.uninit_repo(repo)
     assert _diff_snapshots(before, _snapshot(repo)) == ""
+
+
+def test_uninit_keeps_edits_made_after_init(tmp_path: Path):
+    repo = make_git_fixture(tmp_path, "plain_python")
+    repo_init.init_repo(repo)
+    gitignore = repo / ".gitignore"
+    gitignore.write_text(gitignore.read_text() + "dist/\n")
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text(hook.read_text() + "echo my own post-commit step\n")
+    repo_init.uninit_repo(repo)
+    assert "dist/" in gitignore.read_text().split("\n")
+    assert "muvue" not in gitignore.read_text()
+    assert "echo my own post-commit step" in hook.read_text()
+    assert "muvue" not in hook.read_text()

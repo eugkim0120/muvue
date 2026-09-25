@@ -347,6 +347,46 @@ def _delete_structure_ref_if_present(repo_root: Path) -> None:
     )
 
 
+def _without_muvue_blocks(text: str) -> str:
+    """`text` minus every marker-delimited block muvue added (the
+    markers may be indented, as in `.pre-commit-config.yaml`)."""
+    kept, inside = [], False
+    for line in text.split("\n"):
+        marker = line.strip()
+        if marker.startswith("# >>> muvue"):
+            inside = True
+        elif marker.startswith("# <<< muvue") and inside:
+            inside = False
+        elif not inside:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _restore(path: Path, original: str | None) -> None:
+    """Undo `init` for one file. Unchanged since `init` (apart from
+    muvue's own blocks): back to the original bytes, or removed if `init`
+    created it. Edited since: only muvue's blocks are taken out, so the
+    user's later edits survive `uninit`."""
+    if not path.exists():
+        if original is not None:
+            path.write_text(original)
+        return
+    remaining = _without_muvue_blocks(path.read_text())
+
+    def meaningful(text: str) -> list[str]:
+        return [line for line in text.splitlines() if line.strip()]
+
+    if original is None:
+        if meaningful(remaining) in ([], ["#!/bin/sh"]):
+            path.unlink()
+        else:
+            path.write_text(remaining)
+    elif meaningful(remaining) == meaningful(original):
+        path.write_text(original)
+    else:
+        path.write_text(remaining)
+
+
 def uninit_repo(repo_root: Path) -> None:
     repo_root = Path(repo_root)
     muvue_dir = repo_root / ".muvue"
@@ -357,11 +397,7 @@ def uninit_repo(repo_root: Path) -> None:
     if manifest_path.exists():
         backups: dict[str, str | None] = json.loads(manifest_path.read_text())
         for path_str, original in backups.items():
-            path = Path(path_str)
-            if original is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_text(original)
+            _restore(Path(path_str), original)
 
     _delete_structure_ref_if_present(repo_root)
 
