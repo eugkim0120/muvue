@@ -46,7 +46,7 @@ def test_any_cli_command_drains_the_queue_first(tmp_path: Path):
     assert not queue_path.exists() or queue_path.read_text().strip() == ""
 
 
-def test_drain_callback_is_bounded_at_200(tmp_path: Path):
+def test_drain_callback_is_bounded(tmp_path: Path):
     init_repo(tmp_path)
     _spool(tmp_path, 250)
 
@@ -55,7 +55,11 @@ def test_drain_callback_is_bounded_at_200(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     queue_path = tmp_path / ".muvue" / "queue.draining"  # bounded-drain leftover
     remaining = [ln for ln in queue_path.read_text().splitlines() if ln.strip()]
-    assert len(remaining) == 50
+    # 200 items or 200 ms, whichever comes first: a slow CI runner can hit
+    # the time bound before the 200th item (it drained 99 there once), so
+    # only the item bound is certain here. test_queue_drain.py pins each
+    # bound on its own with an injected clock.
+    assert 50 <= len(remaining) < 250
 
 
 def test_drain_failure_never_breaks_the_command(tmp_path: Path):

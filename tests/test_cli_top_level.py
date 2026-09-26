@@ -6,6 +6,8 @@ import subprocess
 import sys
 from importlib.metadata import version
 
+from conftest import plain
+
 
 def _muvue(*args, cwd):
     return subprocess.run(
@@ -23,10 +25,11 @@ def test_version_prints_the_installed_version(tmp_path):
 def test_help_describes_muvue_not_the_queue_drain(tmp_path):
     result = _muvue("--help", cwd=tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "AI coding agents" in result.stdout
-    assert "v4 section" not in result.stdout
-    assert "plan section" not in result.stdout
-    assert "--version" in result.stdout
+    out = plain(result.stdout)
+    assert "AI coding agents" in out
+    assert "v4 section" not in out
+    assert "plan section" not in out
+    assert "--version" in out
 
 
 def test_no_command_or_option_help_cites_the_design_plan():
