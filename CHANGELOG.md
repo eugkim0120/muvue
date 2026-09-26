@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+- `muvue --version`.
+
+### Fixed
+- `muvue --help` showed the internal docstring of the queue-drain
+  callback as muvue's description, and each command's summary came from
+  its docstring, with references to the design plan. muvue and every
+  command now have a plain one-line help.
+
 ## [0.2.1] - 2026-09-26
 
 Documentation only. The README opens with what muvue is for and uses

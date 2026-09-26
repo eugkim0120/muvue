@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import json
 import os
 import sys
@@ -15,9 +16,9 @@ from muvue import core
 from muvue.core.config import ConfigError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
-adapter_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Vendor adapter config writers (plan section 7).")
+adapter_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Connect an agent CLI to muvue.")
 app.add_typer(adapter_app, name="adapter")
-project_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Project-level verbs.")
+project_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Create projects.")
 app.add_typer(project_app, name="project")
 
 
@@ -71,8 +72,22 @@ def _echo_json(obj) -> None:
     typer.echo(json.dumps(obj, default=str, indent=2))
 
 
-@app.callback()
-def _drain_before_every_command(ctx: typer.Context) -> None:
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"muvue {importlib.metadata.version('muvue')}")
+        raise typer.Exit()
+
+
+# `help` is given explicitly because Typer would otherwise show this
+# callback's docstring, which is about the queue drain, as muvue's own
+# description in `muvue --help`.
+@app.callback(help="Work with AI coding agents through a plan you can see and approve.")
+def _drain_before_every_command(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", callback=_print_version, is_eager=True, help="Show the version and exit.",
+    ),
+) -> None:
     """v4 section 4a: "absent a daemon, the next CLI call drains at
     most 200 items or 200 ms, whichever comes first" -- `muvue._hook`
     (the fast path) never does this itself, so any normal CLI
@@ -110,7 +125,7 @@ def _drain_before_every_command(ctx: typer.Context) -> None:
 # --------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(help="Set up muvue in a git repository.")
 def init(
     path: Path = typer.Argument(Path("."), help="Repo root to initialize"),
     sandbox: bool = typer.Option(
@@ -129,7 +144,7 @@ def init(
     typer.echo(f"initialized {muvue_dir}")
 
 
-@app.command()
+@app.command(help="Remove muvue from a repository and undo everything init changed.")
 def uninit(path: Path = typer.Argument(Path("."), help="Repo root to uninitialize")) -> None:
     """Remove .muvue/ and reverse every file it touched (hooks, .gitignore)."""
     repo_root = path.resolve()
@@ -141,7 +156,7 @@ def uninit(path: Path = typer.Argument(Path("."), help="Repo root to uninitializ
     typer.echo(f"removed .muvue from {repo_root}")
 
 
-@app.command()
+@app.command(help="Check the install, the agents and the dashboard's security controls.")
 def doctor(
     repair: bool = typer.Option(False, "--repair", help="Attempt to fix issues found"),
     path: Path = typer.Argument(Path("."), help="Repo root to check"),
@@ -175,7 +190,7 @@ def doctor(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(help="Upgrade the muvue database to the current version.")
 def migrate(path: Path = typer.Argument(Path("."), help="Repo root")) -> None:
     """Bring .muvue/muvue.db up to the current schema version."""
     repo_root = path.resolve()
@@ -206,7 +221,7 @@ def _backup_db(repo_root: Path) -> Path:
     return dest_path
 
 
-@app.command()
+@app.command(help="Replay the event log and check that it reproduces the database.")
 def rebuild(
     path: Path = typer.Argument(Path("."), help="Repo root"),
     project_id: int = typer.Option(
@@ -270,7 +285,7 @@ def rebuild(
     typer.echo("rebuild: live DB matches replayed events")
 
 
-@app.command()
+@app.command(help="Archive events to .muvue/history.")
 def export(
     path: Path = typer.Argument(Path("."), help="Repo root"),
     project_id: int = typer.Option(
@@ -295,7 +310,7 @@ def export(
         typer.echo(f"exported {count} events to {out}")
 
 
-@app.command()
+@app.command(help="Start the dashboard and API on this machine.")
 def serve(
     path: Path = typer.Argument(Path("."), help="Repo root to serve"),
     host: str | None = typer.Option(
@@ -401,7 +416,7 @@ def serve(
         daemon_mod.remove_port_file(repo_root, pid=os.getpid())
 
 
-@adapter_app.command("install")
+@adapter_app.command("install", help="Connect an agent (claude-code, codex, gemini, cursor) to muvue.")
 def adapter_install(
     name: str = typer.Argument(..., help="claude-code, codex, gemini, or cursor"),
     path: Path = typer.Option(Path("."), "--path"),
@@ -426,7 +441,7 @@ def adapter_install(
     typer.echo(f"installed {name} adapter: {written}")
 
 
-@app.command()
+@app.command(help="Run an MCP server with the agent's commands.")
 def mcp(path: Path = typer.Argument(Path("."), help="Repo root to serve")) -> None:
     """MCP stdio server (plan section 4/7): agent verbs only, never the
     human verbs -- see src/muvue/mcp_server.py."""
@@ -437,7 +452,7 @@ def mcp(path: Path = typer.Argument(Path("."), help="Repo root to serve")) -> No
     run_stdio(repo_root, config=config)
 
 
-@app.command()
+@app.command(help="Check project memory for parts that no longer match the code.")
 def audit(
     path: Path = typer.Option(Path("."), "--path"),
     n: int = typer.Option(
@@ -459,7 +474,7 @@ def audit(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Run a git or agent hook (called by the hooks init installs).")
 def hook(
     name: str = typer.Argument(...),
     path: Path = typer.Argument(Path("."), help="Repo root (default: cwd)"),
@@ -515,7 +530,7 @@ def hook(
     raise typer.Exit(outcome.exit_code)
 
 
-@project_app.command("create")
+@project_app.command("create", help="Create a project.")
 def project_create(
     goal: str = typer.Option(..., "--goal"),
     follows: list[int] = typer.Option([], "--follows", help="repeatable; project id this one follows"),
@@ -550,7 +565,7 @@ def project_create(
 # --------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(help="Write the spec for a project.")
 def spec(
     project_id: int = typer.Argument(...),
     title: str = typer.Option(..., "--title"),
@@ -576,7 +591,7 @@ def spec(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Add a task to an approved spec.")
 def decompose(
     spec_id: int = typer.Argument(..., help="the Gate-1 spec node's id (must be ready)"),
     title: str = typer.Option(..., "--title"),
@@ -625,7 +640,7 @@ def decompose(
     _echo_json(dict(result))
 
 
-@app.command()
+@app.command(help="Start work on a task.")
 def start(
     node_id: int = typer.Argument(...),
     owner: str = typer.Option(..., "--owner"),
@@ -651,7 +666,7 @@ def start(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Finish a task: muvue runs the checks and rates the risk.")
 def done(
     node_id: int = typer.Argument(...),
     owner: str = typer.Option(..., "--owner"),
@@ -681,7 +696,7 @@ def done(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Mark a task failed, optionally recording a lesson.")
 def fail(
     node_id: int = typer.Argument(...),
     owner: str = typer.Option(..., "--owner"),
@@ -710,7 +725,7 @@ def fail(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Show what an agent needs to know to work on a task.")
 def brief(
     node_id: int = typer.Argument(...),
     budget: int = typer.Option(
@@ -736,7 +751,7 @@ def brief(
     typer.echo(result["text"], nl=False)
 
 
-@app.command()
+@app.command(help="Show a task.")
 def show(
     node_id: int = typer.Argument(...),
     path: Path = typer.Option(Path("."), "--path"),
@@ -750,7 +765,7 @@ def show(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Add a note to a task.")
 def note(
     node_id: int = typer.Argument(...),
     text: str = typer.Option(..., "--text"),
@@ -775,7 +790,7 @@ def note(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Ask the human a question about a task.")
 def ask(
     node_id: int = typer.Argument(...),
     question: str = typer.Option(..., "--question"),
@@ -798,7 +813,7 @@ def ask(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Wait for an answer to a question.")
 def wait(
     question_id: int = typer.Argument(...),
     timeout: int = typer.Option(None, "--timeout", help="seconds to poll before giving up"),
@@ -836,7 +851,7 @@ def wait(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Add a subtask within an approved task's scope.")
 def replan(
     parent_task_id: int = typer.Argument(...),
     title: str = typer.Option(..., "--title"),
@@ -872,7 +887,7 @@ def replan(
     _echo_json(result)
 
 
-@app.command(name="propose-revision")
+@app.command(name="propose-revision", help="Propose a change to an approved plan.")
 def propose_revision(
     project_id: int = typer.Argument(...),
     node_ids: str = typer.Option(..., "--node-ids", help="comma-separated node IDs"),
@@ -894,7 +909,7 @@ def propose_revision(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Count tasks by status.")
 def status(
     project_id: int = typer.Option(None, "--project-id"),
     path: Path = typer.Option(Path("."), "--path"),
@@ -913,7 +928,7 @@ def status(
 # --------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(help="Approve a spec, a task list, a plan revision or a finished task.")
 def approve(
     target: str = typer.Argument(
         ..., help="'spec:ID', 'node:ID', 'gate2:PROJECT_ID', 'revision:PROJECT_ID:N', "
@@ -958,7 +973,7 @@ def approve(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Answer an agent's question.")
 def answer(
     question_id: int = typer.Argument(...),
     text: str = typer.Option(..., "--text"),
@@ -981,7 +996,7 @@ def answer(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Send a task in review back to its owner with feedback.")
 def reject(
     target: str = typer.Argument(..., help="'review:NODE_ID' -- a node sitting in review"),
     feedback: str = typer.Option(..., "--feedback", help="why, recorded as a feedback note"),
@@ -1007,7 +1022,7 @@ def reject(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Acknowledge an inbox item.")
 def ack(
     event_id: int = typer.Argument(..., help="inbox item (event) id"),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
@@ -1031,7 +1046,7 @@ def ack(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Have agents work every ready task, unattended.")
 def run(
     agent: str = typer.Option(
         None, "--agent", help="override [routing]: use this agent for every scheduled node"
@@ -1066,7 +1081,7 @@ def run(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Merge finished task branches onto main.")
 def merge(
     node_id: int = typer.Argument(
         None, help="merge this done node's branch (onto the airlock's main in strict mode, "
@@ -1131,7 +1146,7 @@ def merge(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Close a project and save what it leaves behind to project memory.")
 def close(
     project_id: int = typer.Argument(...),
     yes: bool = typer.Option(
@@ -1167,7 +1182,7 @@ def close(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Emergency stop: stop agents and block new work on a project.")
 def pause(
     project_id: int = typer.Argument(...),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
@@ -1191,7 +1206,7 @@ def pause(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Let a paused project continue.")
 def resume(
     project_id: int = typer.Argument(...),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
@@ -1214,7 +1229,7 @@ def resume(
     _echo_json(result)
 
 
-@app.command()
+@app.command(help="Hand a task over to a different owner.")
 def handoff(
     node_id: int = typer.Argument(...),
     to: str = typer.Option(
@@ -1243,7 +1258,7 @@ def handoff(
     _echo_json(result)
 
 
-@app.command(name="import")
+@app.command(name="import", help="Link a task to a GitHub issue or pull request.")
 def import_(
     from_: str = typer.Option(
         ..., "--from", help="'github#N', e.g. 'github#123'",
