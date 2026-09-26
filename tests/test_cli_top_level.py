@@ -27,3 +27,23 @@ def test_help_describes_muvue_not_the_queue_drain(tmp_path):
     assert "v4 section" not in result.stdout
     assert "plan section" not in result.stdout
     assert "--version" in result.stdout
+
+
+def test_no_command_or_option_help_cites_the_design_plan():
+    import re
+
+    import typer.main
+
+    from muvue.cli.main import app
+
+    cites_plan = re.compile(r"plan section|v4 section|\bP\d\b", re.I)
+    found = []
+
+    def walk(group, prefix=""):
+        for name, command in getattr(group, "commands", {}).items():
+            texts = [command.help or ""] + [getattr(p, "help", "") or "" for p in command.params]
+            found.extend(f"{prefix}{name}: {t}" for t in texts if cites_plan.search(t))
+            walk(command, prefix + name + " ")
+
+    walk(typer.main.get_command(app))
+    assert found == []

@@ -131,7 +131,7 @@ def init(
     sandbox: bool = typer.Option(
         False, "--sandbox",
         help="Also emit .muvue/sandbox-compose.yml, a documented container-isolation "
-        "scaffold (plan section 5: '(later)') -- muvue does not run it.",
+        "scaffold; muvue does not run it.",
     ),
 ) -> None:
     """Scaffold .muvue/ in the given repo (default: cwd)."""
@@ -162,7 +162,7 @@ def doctor(
     path: Path = typer.Argument(Path("."), help="Repo root to check"),
     skip_security_probes: bool = typer.Option(
         False, "--skip-security-probes",
-        help="skip the live daemon-security probes (v4 section 8a control 7)",
+        help="skip the live daemon-security probes",
     ),
     daemon_port: int = typer.Option(
         None, "--daemon-port",
@@ -319,7 +319,7 @@ def serve(
     port: int = typer.Option(8765, "--port"),
     i_know_this_is_exposed: bool = typer.Option(
         False, "--i-know-this-is-exposed",
-        help="required to bind anything other than 127.0.0.1/localhost (v4 section 8a control 1)",
+        help="required to bind anything other than 127.0.0.1/localhost",
     ),
 ) -> None:
     """One daemon per repo (plan section 8): HTTP API + SSE dashboard.
@@ -1089,7 +1089,7 @@ def merge(
         "in dependency order"
     ),
     pr: bool = typer.Option(
-        False, "--pr", help="also generate a PR description body (plan section 6/11, P6) -- "
+        False, "--pr", help="also generate a PR description body: "
         "criteria + relevant decisions/notes/linked issues; requires a single NODE_ID",
     ),
     create: bool = typer.Option(
