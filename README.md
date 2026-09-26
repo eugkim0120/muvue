@@ -2,10 +2,9 @@
 
 [![ci](https://github.com/eugkim0120/muvue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugkim0120/muvue/actions/workflows/ci.yml)
 
-Tired of vibecoding, where an agent works through a plan you can only
-find by scrolling back through a wall of chat? muvue is a CLI and a
-live dashboard for working with AI coding agents through a plan you
-can see and approve, instead of a chat transcript.
+Tired of vibecoding with text only? muvue is a CLI and a live
+dashboard for working with AI coding agents through a plan you can see
+and approve, instead of a chat transcript.
 
 You and the agent agree on a spec and break it into tasks, each with
 acceptance criteria. You approve both, then the agent does the work,
