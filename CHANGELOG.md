@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.2] - 2026-09-26
 
 ### Added
 - `muvue --version`.
@@ -12,6 +12,8 @@ All notable changes to this project are documented here.
   callback as muvue's description, and each command's summary came from
   its docstring, with references to the design plan. muvue and every
   command now have a plain one-line help.
+- The package summary on PyPI mentions the flow diagram, matching the
+  README's opening line.
 
 ## [0.2.1] - 2026-09-26
 
