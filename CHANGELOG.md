@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.1] - 2026-09-26
+
+Documentation only. The README opens with what muvue is for and uses
+plain terms (tasks, the spec and task-list approvals, project memory)
+instead of the design documents' vocabulary, and a broken sentence in
+Requirements is fixed. The package description matches the new opening.
+
 ## [0.2.0] - 2026-09-25
 
 Closes the deltas between the v4 plan and the code, and adds the

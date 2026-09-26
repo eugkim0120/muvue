@@ -1,6 +1,6 @@
 [project]
 name = "muvue"
-version = "0.2.0"
+version = "0.2.1"
 description = "A CLI and live dashboard for working with AI coding agents through a plan you can see and approve, instead of a chat transcript"
 readme = "README.md"
 authors = [
