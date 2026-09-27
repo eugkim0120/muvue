@@ -12,6 +12,7 @@ import { SpecPage } from "./spec/SpecPage";
 import { InboxPage } from "./inbox/InboxPage";
 import { NodeSheet } from "./node/NodeSheet";
 import { ActivityPage } from "./activity/ActivityPage";
+import { SpendPage } from "./spend/SpendPage";
 
 // Pages register here; Tasks 8-13 add their entries.
 export const PAGES: Record<string, () => JSX.Element> = {
@@ -19,6 +20,7 @@ export const PAGES: Record<string, () => JSX.Element> = {
   spec: SpecPage,
   inbox: InboxPage,
   activity: ActivityPage,
+  spend: SpendPage,
 };
 
 export function App() {

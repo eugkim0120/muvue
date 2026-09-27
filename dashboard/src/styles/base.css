@@ -49,3 +49,4 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
 .list-row:disabled:hover { background: none; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
 .kv dt { color: var(--text-2); margin: 0; } .kv dd { margin: 0; font-family: var(--mono); word-break: break-word; }
+.kpi { text-align: center; } .kpi-value { font-size: 28px; font-weight: 600; }
