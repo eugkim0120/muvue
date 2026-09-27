@@ -203,6 +203,11 @@ The views:
 - Pause, resume and close buttons, which act on the project chosen in
   the selector.
 
+To use the dashboard from another device on your tailnet, bind the
+machine's Tailscale address: `muvue serve --host 100.x.y.z
+--i-know-this-is-exposed`. Anyone who can reach that address can try
+the API, so only do this on a network you control.
+
 Every mutating request must be `Content-Type: application/json` with a
 valid session, and foreign `Host` or `Origin` headers are refused;
 `muvue doctor` probes all of this live. See `docs/threat-model.md`.

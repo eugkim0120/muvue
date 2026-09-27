@@ -57,6 +57,12 @@ web-page-originated**, not local:
    lands on `127.0.0.1`, the HTTP request it sends carries the
    attacker's chosen `Host:` value, which this check rejects with 403
    before any handler runs.
+   When `serve` binds a specific non-loopback address behind the
+   escape hatch (for example a Tailscale IP), that exact address is
+   accepted in `Host` and `Origin` as well, because it is how clients
+   reach the daemon (decision #165). A rebound name still arrives as a
+   foreign `Host`. A wildcard bind (`0.0.0.0`, `::`) names no address
+   and adds nothing.
 3. **`Origin` header validation, before auth, no CORS ever emitted.**
    Defends against CSRF in (1) — both the "preflighted" kind (blocked
    anyway by never emitting `Access-Control-Allow-Origin`) and, more

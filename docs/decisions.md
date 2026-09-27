@@ -2261,3 +2261,14 @@ reading here. Real `decisions` table entries start once dogfooding begins
     over every `step_finish`, because each model call reports its own
     tokens and cost. Only the 429 path is reconstructed, since no live
     rate limit was hit.
+
+165. **An exposed bind address is accepted as `Host` and `Origin`.**
+    `serve --host 100.x.y.z --i-know-this-is-exposed` bound the
+    address, but every request to it failed the loopback-only `Host`
+    check, so the escape hatch could not be used from a phone on a
+    tailnet without a proxy that rewrote headers. The daemon now also
+    accepts the exact address it was told to bind. That keeps the
+    rebinding defence, which relies on the attacker's name arriving in
+    `Host`; an IP literal the user chose is not such a name. Wildcard
+    binds widen nothing. The session token, the one-time link and the
+    JSON-only rule still apply to every request.

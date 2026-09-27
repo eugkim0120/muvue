@@ -386,7 +386,7 @@ def serve(
         "It lives only in this process: do not paste it into files or logs.)"
     )
 
-    app_instance = create_app(repo_root, config=config, session=session, port=port)
+    app_instance = create_app(repo_root, config=config, session=session, port=port, bind_host=hostname)
 
     # Bind the socket ourselves and start listening *before* printing
     # the readiness line, so a caller that waits for "listening on"

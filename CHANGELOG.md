@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+- `serve --host <address> --i-know-this-is-exposed` refused every
+  request with "invalid Host header", because only loopback names were
+  accepted. The bound address is now accepted in `Host` and `Origin`,
+  so the dashboard works over Tailscale (decision #165).
+
 ## [0.2.2] - 2026-09-26
 
 ### Added

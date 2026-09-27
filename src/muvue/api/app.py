@@ -45,6 +45,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 SESSION_COOKIE_NAME = "muvue_session"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost"})
+_WILDCARD_BINDS = frozenset({"0.0.0.0", "::", ""})
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
@@ -61,6 +62,7 @@ def create_app(
     *,
     session: SessionManager | None = None,
     port: int | None = None,
+    bind_host: str | None = None,
     drain_interval_s: float = 0.5,
 ) -> FastAPI:
     repo_root = Path(repo_root)
@@ -109,11 +111,19 @@ def create_app(
     # specifically (control 3: "rejected with 403 *before* auth").
     # ------------------------------------------------------------------
 
+    # An address `serve` was explicitly told to bind (behind
+    # `--i-know-this-is-exposed`, e.g. a Tailscale IP) is how clients
+    # reach it, so it is accepted in Host/Origin too. A wildcard bind
+    # names no address and so widens nothing.
+    allowed_hostnames = set(_LOOPBACK_HOSTNAMES)
+    if bind_host and bind_host.strip().lower() not in _WILDCARD_BINDS:
+        allowed_hostnames.add(bind_host.strip().lower())
+
     def _host_ok(host_header: str) -> bool:
         if not host_header:
             return False
         hostname = host_header.split(":", 1)[0].strip().lower()
-        if hostname not in _LOOPBACK_HOSTNAMES:
+        if hostname not in allowed_hostnames:
             return False
         if port is not None and ":" in host_header:
             try:
@@ -134,7 +144,7 @@ def create_app(
         if parts.scheme != "http":
             return False
         hostname = (parts.hostname or "").lower()
-        if hostname not in _LOOPBACK_HOSTNAMES:
+        if hostname not in allowed_hostnames:
             return False
         if port is not None:
             # Default the implicit port for a bare "http://127.0.0.1"

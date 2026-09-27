@@ -253,3 +253,71 @@ def test_allowed_origins_config_admits_an_extra_origin(tmp_path: Path):
     client = TestClient(create_app(tmp_path, config=cfg), base_url="http://127.0.0.1")
     assert client.get("/healthz", headers={"Origin": "http://tools.local:9000"}).status_code == 200
     assert client.get("/healthz", headers={"Origin": "http://tools.local:9001"}).status_code == 403
+
+
+def test_exposed_bind_host_is_accepted_as_host_and_origin(tmp_path: Path):
+    """A daemon started with `--host 100.64.0.5 --i-know-this-is-exposed`
+    (for example a Tailscale address) is reached with that address in
+    `Host` and `Origin`. Accepting exactly the bound address keeps the
+    rebinding defence: a rebound name still arrives as a foreign Host."""
+    from fastapi.testclient import TestClient
+
+    from muvue.api import create_app
+
+    init_repo(tmp_path)
+    app = create_app(tmp_path, port=9000, bind_host="100.64.0.5")
+    client = TestClient(app, base_url="http://100.64.0.5:9000")
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/healthz", headers={"Origin": "http://100.64.0.5:9000"}).status_code == 200
+    assert client.get("/healthz", headers={"Host": "100.64.0.5:9001"}).status_code == 403
+    assert client.get("/healthz", headers={"Host": "evil.example.com:9000"}).status_code == 403
+    assert client.get("/healthz", headers={"Origin": "http://100.64.0.5:9001"}).status_code == 403
+    assert client.get("/healthz", headers={"Origin": "https://100.64.0.5:9000"}).status_code == 403
+
+
+def test_wildcard_bind_does_not_widen_the_host_check(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from muvue.api import create_app
+
+    init_repo(tmp_path)
+    client = TestClient(create_app(tmp_path, port=9000, bind_host="0.0.0.0"),
+                        base_url="http://0.0.0.0:9000")
+    assert client.get("/healthz").status_code == 403
+    assert client.get("/healthz", headers={"Host": "127.0.0.1:9000"}).status_code == 200
+
+
+def test_serve_on_an_exposed_address_answers_requests_to_that_address(tmp_path: Path):
+    """End to end through `muvue serve`: 127.0.0.2 is a loopback address
+    on Linux that muvue treats as non-loopback, so it stands in for a
+    tailnet address without leaving the machine."""
+    init_repo(tmp_path)
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "muvue", "serve", str(tmp_path), "--host", "127.0.0.2",
+         "--port", str(port), "--i-know-this-is-exposed"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        lines: list[str] = []
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            lines.append(line)
+            if "listening on" in line:
+                break
+        assert any("listening on" in line for line in lines), lines
+        assert any(f"http://127.0.0.2:{port}/#n=" in line for line in lines), lines
+        r = httpx.get(f"http://127.0.0.2:{port}/healthz")
+        assert r.status_code == 200, r.text
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
