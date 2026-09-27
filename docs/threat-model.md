@@ -108,7 +108,10 @@ web-page-originated**, not local:
    the token (`"header": true`, only when it is framed) and keeps it in
    a JS variable. An XSS payload in that framed page could read it; it
    could equally act through the page, so this adds no capability. The
-   extension keeps its copy in memory too, not in `SecretStorage`.
+   extension keeps its copy in memory too, not in `SecretStorage`. The
+   page is built from `dashboard/` and committed;
+   `tests/test_dashboard_static.py` checks the built file, not the
+   source.
 6. **Token rotates every `serve` restart; 8h idle expiry.** Bounds the
    blast radius of a token that *does* leak (over-the-shoulder, a
    screen share, a copy-pasted log) to, at most, one `serve` session's

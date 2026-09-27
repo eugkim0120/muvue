@@ -341,7 +341,7 @@ Routes, by auth requirement:
   /projects`, `GET /projects/{id}`, `GET /projects/{id}/revisions`,
   `GET /events`, `GET /nodes`, `GET /graph[?project_id=]`, `GET
   /nodes/{id}`, `GET /nodes/{id}/diff`, `GET /nodes/{id}/logs[?lines=N]`,
-  `GET /brief`, `GET /status`.
+  `GET /brief`, `GET /status`, `GET /agents` (names under `[agents.*]`).
   - `/graph` returns `{"nodes", "edges"}`; each edge is `{"from", "to",
     "kind"}` with `kind` `parent` (parent to child) or `dep`
     (dependency to dependent).

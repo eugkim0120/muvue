@@ -353,3 +353,16 @@ def test_events_with_cursor_pages_forward_oldest_first(client, conn):
                                 type_="test.tick", payload={})
     rows = client.get(f"/events?since_id={first}&limit=2").json()
     assert [r["id"] for r in rows] == [first + 1, first + 2]
+
+
+def test_agents_lists_configured_names_without_a_session(repo):
+    from muvue.core.config import AgentConfig
+
+    config = MuvueConfig(
+        checks=ChecksConfig(test="true", lint="true"),
+        agents={"zed": AgentConfig(command="zed", cost_model="usd"), "claude": AgentConfig(command="claude", cost_model="usd")},
+    )
+    c = TestClient(create_app(repo, config=config), base_url=BASE_URL)
+    r = c.get("/agents")
+    assert r.status_code == 200
+    assert r.json() == {"agents": ["claude", "zed"]}

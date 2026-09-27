@@ -188,20 +188,20 @@ muvue serve        # loopback only, port 8765
   `Authorization: Bearer <token>`). It exists only in the daemon's memory
   and changes on every restart.
 
-The views:
-- **tree**: the plan as a diagram, with each task's parent and
-  dependencies, colored by status.
-- **task panel**: criteria, notes, commits, the real diff and a live log
-  tail.
-- **spec**: click a line to comment on it; the agent sees the comment in
-  its brief.
-- **inbox**: answer the agent's questions, approve reviews, and
-  acknowledge warnings, audit drafts and project-memory updates.
-- **timeline**, **revisions**, and **KPIs**: how far work drifted from
-  the plan, how often risky work was approved within 10 seconds, and
-  spend per agent.
-- Pause, resume and close buttons, which act on the project chosen in
-  the selector.
+The dashboard is organised around what you do next:
+- **Plan**: the spec with its approve button, then the tasks as a
+  diagram (parent and dependency edges, coloured by status) or a list
+  grouped by status. Tap a task for its sheet: actions first, then
+  overview, diff and live logs.
+- **Inbox**: everything waiting on you, with the answer, approve and
+  acknowledge buttons inline.
+- **Activity**: the timeline grouped by day, and plan revisions.
+- **Spend**: KPIs and each agent's spend against its budget.
+- The project menu (top left) switches projects and holds pause,
+  resume and close. `⌘K` opens a jump-to palette.
+
+It follows the system light or dark setting and is laid out for a
+phone as well as a desktop.
 
 To use the dashboard from another device on your tailnet, bind the
 machine's Tailscale address: `muvue serve --host 100.x.y.z
@@ -262,9 +262,13 @@ fails with the exact key.
 uv sync
 uv run pytest -q                        # about 855 tests, about 75 s
 uv run pytest -q --cov=muvue.core       # enforces the 85% coverage gate (currently 90%)
+cd dashboard && npm ci && npm test && npm run build   # rebuilds src/muvue/api/static/index.html; commit it
 cd vscode-extension && npm ci && npm test
 MUVUE_CMD="uv run --project .. muvue" xvfb-run -a npm run test:host   # real VS Code, downloads it once
 ```
+
+The dashboard source is `dashboard/`; the built page is committed, and
+CI checks it matches.
 
 CI (`.github/workflows/ci.yml`) runs all of this on every push, plus the
 hook latency benchmark against the v4 budgets.
