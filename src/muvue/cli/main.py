@@ -911,6 +911,82 @@ def replan(
     _echo_json(result)
 
 
+@app.command(name="_breakdown", hidden=True, help="Internal: an agent decomposes a spec or task into children.")
+def breakdown(
+    node_id: int = typer.Option(..., "--node"),
+    agent: str = typer.Option(..., "--agent"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    conn = _db_connect(repo_root)
+    try:
+        node = core.nodes.get_node(conn, node_id)
+        core_runners = core.runners
+        core_runners.register(repo_root, node["project_id"])
+        try:
+            agent_cfg = config.agents[agent]
+            criteria_text = "\n".join(f"- {c}" for c in json.loads(node["criteria_json"]))
+            brief = (
+                f"Break down this {node['kind']} into 2-5 child tasks, each with a "
+                f"title, a one-line body, acceptance criteria, and which earlier "
+                f"sibling (by 0-based index) it depends on and what that dependency "
+                f"carries. Do not write code.\n\n"
+                f"Title: {node['title']}\n\n{node['body_md']}\n\n{criteria_text}\n\n"
+                'Reply with exactly one line: {"type": "breakdown", "children": '
+                '[{"title": ..., "body_md": ..., "criteria": [...], '
+                '"depends_on": [{"id": <sibling index>, "carries": "..."}], '
+                '"predicted_touches": [...]}]}'
+            )
+            log_path = repo_root / core.runner.LOGS_RELDIR / f"breakdown-{node_id}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            core.events.record_event(
+                conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                actor_evidence="tty", type_="breakdown.started", payload={"agent": agent},
+            )
+            conn.commit()
+            result = core.drivers.invoke_driver(agent, agent_cfg, brief, repo_root, log_path=log_path)
+            if result.status != "done":
+                core.events.record_event(
+                    conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                    actor_evidence="tty", type_="breakdown.failed",
+                    payload={"reason": result.error or result.status},
+                )
+                conn.commit()
+                raise typer.Exit(code=1)
+            children_spec = core.drivers.parse_breakdown(result.raw_stdout)
+            created_ids: list[int] = []
+            for child in children_spec:
+                resolved_deps = [
+                    {"id": created_ids[d["id"]], "carries": d.get("carries")}
+                    for d in child.get("depends_on", [])
+                ]
+                if node["kind"] == "spec":
+                    row = core.nodes.create_node(
+                        conn, project_id=node["project_id"], parent_id=node_id, kind="task",
+                        title=child["title"], body_md=child.get("body_md", ""),
+                        criteria=child.get("criteria", []), predicted_touches=child.get("predicted_touches", []),
+                        depends_on=resolved_deps, status="pending", actor="agent", actor_evidence="tty",
+                    )
+                else:
+                    row = core.revisions.replan_add_subtask(
+                        conn, parent_task_id=node_id, title=child["title"],
+                        body_md=child.get("body_md", ""), criteria=child.get("criteria", []),
+                        depends_on=resolved_deps, predicted_touches=child.get("predicted_touches", []),
+                        config=config, actor="agent", actor_evidence="tty",
+                    )
+                created_ids.append(row["id"] if isinstance(row, dict) else row["id"])
+            core.events.record_event(
+                conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                actor_evidence="tty", type_="breakdown.finished", payload={"created": created_ids},
+            )
+            conn.commit()
+        finally:
+            core_runners.unregister(repo_root)
+    finally:
+        conn.close()
+
+
 @app.command(name="propose-revision", help="Propose a change to an approved plan.")
 def propose_revision(
     project_id: int = typer.Argument(...),
