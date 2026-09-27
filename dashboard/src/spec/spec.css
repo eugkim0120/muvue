@@ -1,5 +1,5 @@
 .spec-body { padding: 8px 0; }
-.spec-line { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
+.spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
 .spec-line:hover { background: var(--surface-2); }
 .spec-line .ln { color: var(--text-2); min-width: 28px; text-align: right; user-select: none; }
 .spec-line .tx { white-space: pre-wrap; flex: 1; }

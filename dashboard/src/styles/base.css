@@ -42,7 +42,7 @@ pre.scroll-x { white-space: pre; overflow-x: auto; }
 ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh; overflow: auto; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
-.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 36px; }
+.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .group-head.sticky { position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 1; }
 .list-row:disabled { cursor: default; }
