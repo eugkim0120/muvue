@@ -2272,3 +2272,15 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `Host`; an IP literal the user chose is not such a name. Wildcard
     binds widen nothing. The session token, the one-time link and the
     JSON-only rule still apply to every request.
+
+166. **The dashboard is built with Preact; the build output is committed.**
+    The hand-written single-file page had grown to 800 lines of DOM
+    calls, dark-only, with a modal that phones could not scroll to the
+    bottom of. It is now a Preact and TypeScript app in `dashboard/`,
+    built by Vite into one self-contained `index.html` and copied to
+    `src/muvue/api/static/`. The runtime contract does not change: the
+    daemon serves one file, the page fetches nothing but the daemon's
+    API, and the token never reaches web storage. Tests hold the
+    contract on the built file, `routes.ts` is the one place an API
+    path may be spelled, and CI fails when the committed page is not
+    the build of the committed source. Python users never need node.

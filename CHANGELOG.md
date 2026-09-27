@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+- The dashboard is rebuilt as a Preact app (`dashboard/`), organised
+  as Plan, Inbox, Activity and Spend, with a task sheet whose actions
+  sit at the top, light and dark modes in the Claude palette, a phone
+  layout with a tab bar, and a `⌘K` palette. The runtime contract is
+  unchanged: one self-contained file, no network fetches beyond the
+  daemon (decision #166).
+
+### Added
+- `GET /agents`: the names under `[agents.*]`, for the dashboard's
+  start-with-agent picker.
+
 ### Fixed
 - `serve --host <address> --i-know-this-is-exposed` refused every
   request with "invalid Host header", because only loopback names were
