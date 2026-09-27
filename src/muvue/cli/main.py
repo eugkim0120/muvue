@@ -1023,20 +1023,20 @@ def breakdown(
                         {"id": created_ids[dep["id"]], "carries": dep.get("carries")}
                         for dep in child.get("depends_on", [])
                     ]
-                    if node["kind"] == "spec":
-                        row = core.nodes.create_node(
-                            conn, project_id=node["project_id"], parent_id=node_id, kind="task",
-                            title=child["title"], body_md=child.get("body_md", ""),
-                            criteria=child.get("criteria", []), predicted_touches=child.get("predicted_touches", []),
-                            depends_on=resolved_deps, status="pending", actor="agent", actor_evidence="tty",
-                        )
-                    else:
-                        row = core.revisions.replan_add_subtask(
-                            conn, parent_task_id=node_id, title=child["title"],
-                            body_md=child.get("body_md", ""), criteria=child.get("criteria", []),
-                            depends_on=resolved_deps, predicted_touches=child.get("predicted_touches", []),
-                            config=config, actor="agent", actor_evidence="tty",
-                        )
+                    # `core.revisions.add_child` (final review Important #3): a
+                    # `spec` parent gets a new task, an unapproved `task` parent
+                    # gets a new subtask directly, and an approved `task` parent
+                    # goes through `replan_add_subtask`'s in-scope/out-of-scope
+                    # gating -- the same branching `POST /nodes/{id}/children`
+                    # uses, instead of always calling `replan_add_subtask` (which
+                    # raised `GateError` for the common case: breaking down a task
+                    # *before* Gate 2).
+                    row = core.revisions.add_child(
+                        conn, node_id, title=child["title"], body_md=child.get("body_md", ""),
+                        criteria=child.get("criteria", []), depends_on=resolved_deps,
+                        predicted_touches=child.get("predicted_touches", []), config=config,
+                        actor="agent", actor_evidence="tty",
+                    )
                     created_ids.append(row["id"])
             except Exception as e:
                 _fail(str(e))

@@ -225,6 +225,7 @@ def create_app(
             exc,
             (
                 core.nodes.NodeError,
+                core.nodes.EditError,
                 core.gates.GateError,
                 core.asks.AskError,
                 core.state_machine.InvalidTransition,
@@ -639,7 +640,14 @@ def create_app(
             ]
         nodes = _rows_to_list(rows)
         for node in nodes:
-            node["agent"] = node["owner"] or getattr(config.routing, node["kind"], None)
+            # `core.runner.run_node` leases a node to `f"runner:{agent}"`;
+            # strip that prefix so `/graph` agrees with `agent_status`'s
+            # plain agent names (final review Important #6) instead of
+            # showing "runner:claude" here and "claude" there.
+            owner = node["owner"]
+            if owner and owner.startswith("runner:"):
+                owner = owner.split(":", 1)[1]
+            node["agent"] = owner or getattr(config.routing, node["kind"], None)
         return {"nodes": nodes, "edges": edges}
 
     @app.get("/brief")
@@ -691,9 +699,12 @@ def create_app(
     @app.get("/nodes/{node_id}/runs")
     def node_runs(request: Request, node_id: int) -> dict:
         """A read view over the node's `node.start`/`node.done`/
-        `node.fail` events (plan section 3's append-only event log) --
-        there is no separate runs/attempts table; `nodes.attempts` only
-        counts failures, it doesn't record run history."""
+        `node.fail`/`breakdown.*` events (plan section 3's append-only
+        event log) -- there is no separate runs/attempts table;
+        `nodes.attempts` only counts failures, it doesn't record run
+        history. Breakdown events are included (final review Important
+        #7) since the design spec wants breakdowns shown in a node's Runs
+        section too."""
         _require_session(request)
         with _conn() as conn:
             try:
@@ -701,7 +712,8 @@ def create_app(
                 rows = core.db.query_all(
                     conn,
                     "SELECT * FROM events WHERE node_id = ? AND type IN "
-                    "('node.start', 'node.done', 'node.fail') ORDER BY id",
+                    "('node.start', 'node.done', 'node.fail', 'breakdown.started', "
+                    "'breakdown.finished', 'breakdown.failed') ORDER BY id",
                     (node_id,),
                 )
             except Exception as e:
@@ -746,6 +758,13 @@ def create_app(
         return result
 
     def _spawn_runner(node_id: int, agent: str) -> dict:
+        # No "already active on the project" 409 check here, unlike
+        # `/breakdown` below (docs/decisions.md #168): a second concurrent
+        # `muvue run` process racing this one is already safe because
+        # `core.nodes.start`'s own `write_txn`-based lease claim (nodes.py)
+        # atomically refuses a second `start` on the same node -- the
+        # `node["status"] != "ready"` check right below simply finds the
+        # node no longer ready and 409s per-node, not project-wide.
         if agent not in config.agents:
             raise HTTPException(
                 status_code=422,
@@ -792,10 +811,19 @@ def create_app(
                 node = core.nodes.get_node(conn, node_id)
             except Exception as e:
                 _handle_core_error(e)
+        if node["deleted_at"] is not None:
+            raise HTTPException(status_code=409, detail=f"node {node_id} is deleted; cannot break it down")
         if node["kind"] not in ("spec", "task"):
             raise HTTPException(status_code=409, detail=f"node {node_id} is kind={node['kind']!r}; breakdown only applies to a spec or a task")
         resolved_agent = agent or getattr(config.routing, "spec" if node["kind"] == "spec" else "task")
-        if config.agents and resolved_agent not in config.agents:
+        # Strict, matching `_spawn_runner`'s check for `start?agent=X` (final
+        # review Important #4): an `if config.agents and ...` guard used to
+        # skip this entirely for an empty/misconfigured `config.agents`, so
+        # the endpoint returned 200 with a pid while the subprocess exited
+        # immediately with no event ever recorded (`muvue _breakdown` itself
+        # does the strict check *before* `register()`/`breakdown.started`) --
+        # the frontend's "breakdown in progress" UI would spin forever.
+        if resolved_agent not in config.agents:
             raise HTTPException(status_code=422, detail=f"unknown agent {resolved_agent!r} (configured: {sorted(config.agents)})")
         already_running = any(r["project_id"] in (None, node["project_id"]) for r in core.runners.live(repo_root))
         if already_running:
@@ -815,7 +843,11 @@ def create_app(
     @app.post("/projects/{project_id}/run")
     def start_run(project_id: int, request: Request, parallel: int | None = Body(default=None, embed=True)) -> dict:
         """`POST /projects/{id}/run` launches `muvue run --project-id ID`
-        (whole-project unattended runner) as a detached subprocess."""
+        (whole-project unattended runner) as a detached subprocess. No
+        "already active" 409 check (see `_spawn_runner`'s comment and
+        docs/decisions.md #168): `core.nodes.start`'s transactional lease
+        claim already makes running several `muvue run` processes against
+        the same project concurrently safe."""
         _require_session(request)
         with _conn() as conn:
             try:
@@ -969,36 +1001,22 @@ def create_app(
         subtask under a `task` node. A subtask under a Gate-2-approved task
         (`criteria_hash is not None`) goes through `replan_add_subtask`
         (plan section 6's in-scope/out-of-scope gating); a subtask under an
-        unapproved task is created directly, same as a task under a spec."""
+        unapproved task is created directly, same as a task under a spec.
+        The branching itself lives in `core.revisions.add_child`, shared
+        with `muvue _breakdown` (final review Important #3)."""
         _require_session(request)
         with _conn() as conn:
             try:
                 def _apply():
                     parent = core.nodes.get_node(conn, node_id)
-                    if parent["kind"] == "spec":
-                        return core.nodes.create_node(
-                            conn, project_id=parent["project_id"], parent_id=node_id,
-                            kind="task", title=title, body_md=body_md, criteria=criteria,
-                            predicted_touches=predicted_touches, depends_on=depends_on,
-                            status="pending", actor="human", actor_evidence="dashboard_token",
-                        )
-                    if parent["kind"] != "task":
+                    if parent["deleted_at"] is not None:
                         raise core.nodes.NodeError(
-                            f"node {node_id} is kind={parent['kind']!r}; children can only "
-                            "be added to a spec or a task"
+                            f"node {node_id} is deleted; cannot add children to it"
                         )
-                    if parent["criteria_hash"] is not None:
-                        return core.revisions.replan_add_subtask(
-                            conn, parent_task_id=node_id, title=title, body_md=body_md,
-                            criteria=criteria, depends_on=depends_on,
-                            predicted_touches=predicted_touches, config=config,
-                            actor="human", actor_evidence="dashboard_token",
-                        )
-                    return core.nodes.create_node(
-                        conn, project_id=parent["project_id"], parent_id=node_id,
-                        kind="subtask", title=title, body_md=body_md, criteria=criteria,
-                        predicted_touches=predicted_touches, depends_on=depends_on,
-                        status="pending", actor="human", actor_evidence="dashboard_token",
+                    return core.revisions.add_child(
+                        conn, node_id, title=title, body_md=body_md, criteria=criteria,
+                        depends_on=depends_on, predicted_touches=predicted_touches,
+                        config=config, actor="human", actor_evidence="dashboard_token",
                     )
 
                 result = core.idempotency.once(conn, _request_id(request), "children", _apply)
@@ -1026,33 +1044,25 @@ def create_app(
         request: Request, node_id: int, title: str | None = Body(default=None),
         body_md: str | None = Body(default=None), criteria: list[str] | None = Body(default=None),
     ) -> dict:
-        """Edit title/body_md/criteria before Gate 2. Criteria edits go
-        through `core.gates.edit_criteria`; after Gate 2 (`criteria_hash`
-        set) this refuses -- use `propose-revision` instead."""
+        """Edit title/body_md/criteria before Gate 2. Routes through
+        `core.nodes.edit_node` (title/body_md) and `core.gates.edit_criteria`
+        (criteria) -- no raw SQL in the API layer (final review Important
+        #9: decision #167 claims every human verb routes through the same
+        `core` functions the CLI calls; this endpoint used to bypass that
+        with an inline `UPDATE`). After Gate 2 (`criteria_hash` set) this
+        refuses -- use `propose-revision` instead."""
         _require_session(request)
         with _conn() as conn:
             try:
                 def _apply():
                     node = core.nodes.get_node(conn, node_id)
-                    if node["criteria_hash"] is not None:
-                        raise core.removal.RemovalError(
-                            f"node {node_id} is already Gate-2 approved; use propose-revision instead of editing directly"
-                        )
+                    if node["deleted_at"] is not None:
+                        raise core.nodes.NodeError(f"node {node_id} is deleted; cannot edit it")
                     with core.db.write_txn(conn):
-                        if title is not None or body_md is not None:
-                            fields = []
-                            params: list[object] = []
-                            if title is not None:
-                                fields.append("title = ?")
-                                params.append(title)
-                            if body_md is not None:
-                                fields.append("body_md = ?")
-                                params.append(body_md)
-                            params.append(node_id)
-                            conn.execute(f"UPDATE nodes SET {', '.join(fields)} WHERE id = ?", params)
-                            core.nodes.bump_version(
-                                conn, node_id, actor="human", actor_evidence="dashboard_token"
-                            )
+                        core.nodes.edit_node(
+                            conn, node_id, title=title, body_md=body_md,
+                            actor="human", actor_evidence="dashboard_token",
+                        )
                         if criteria is not None:
                             core.gates.edit_criteria(
                                 conn, node_id, criteria_json=json.dumps(criteria),
