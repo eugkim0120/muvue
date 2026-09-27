@@ -2284,3 +2284,60 @@ reading here. Real `decisions` table entries start once dogfooding begins
     contract on the built file, `routes.ts` is the one place an API
     path may be spelled, and CI fails when the committed page is not
     the build of the committed source. Python users never need node.
+
+167. **Human-verb parity: every CLI verb gets a dashboard endpoint.**
+    The dashboard could drive `start`, `done`, `fail` and the other
+    agent verbs, but a person still had to drop to the CLI for
+    `new`, `spec`, `decompose`, `remove`, `edit`, `breakdown` and
+    `run` -- the verbs a human, not an agent, uses to actually build
+    out a project's canvas. The project canvas rebuild adds a
+    session-gated `POST` endpoint for each of them (`/projects`,
+    `/projects/{id}/spec`, `/nodes/{id}/children`, `/nodes/{id}/remove`,
+    `/nodes/{id}/edit`, `/nodes/{id}/breakdown`, `/projects/{id}/run`),
+    so the dashboard is a complete substitute for the CLI on the human
+    side, not just the agent side. All of them route through the same
+    `core` functions the CLI calls, so there is no second
+    implementation of any verb's rules to drift out of sync.
+
+168. **Agent breakdown is spawned as its own detached subprocess.**
+    `POST /nodes/{id}/breakdown` needed a way to run `muvue _breakdown`
+    (Task 8's internal CLI verb) against a spec or task node from the
+    dashboard. `core/runner.py`'s existing ready-node loop was the
+    obvious place to hang this, but that loop deliberately never picks
+    up spec nodes -- decomposition happens before a node is "ready" in
+    the runner's sense, not after. Rather than bend the loop's
+    invariant to fit one more caller, `breakdown` spawns `muvue
+    _breakdown` as its own detached, SIGTERM-safe subprocess, the same
+    pattern `start?agent=X` already uses to spawn `muvue run`. It logs
+    to `.muvue/logs/breakdown-<id>.log`, registers so `pause` can stop
+    it, and a second breakdown or run already active on the project is
+    refused with `409` rather than silently queued.
+
+169. **`deps.carries` labels what a dependency edge carries.**
+    The graph view could show that one node depends on another, but not
+    *what* passes between them, so a reviewer had to open both nodes'
+    bodies to guess why the edge existed. `deps` gains a nullable
+    `carries TEXT` column (`SCHEMA_VERSION` 7 -> 8) holding a short
+    free-text label such as "audio frames", set through the CLI's
+    `decompose`/`replan --carries` option or the API's dict-shaped
+    `depends_on` (`{"id": int, "carries": str|None}`, now the shape
+    accepted everywhere a dependency is named). `GET /graph` surfaces it
+    on each `dep` edge, and the dashboard's flow diagram draws it as an
+    arrow label. Existing deps rows and callers that omit `carries` keep
+    working unlabeled; `rebuild`'s existing `deps` replay now also
+    replays `carries` and flags drift on it, the same as any other
+    replayable column.
+
+170. **`POST /projects` takes no budget parameter.** The API design
+    draft for the project canvas assumed a project-level budget field
+    to mirror `goal`, but no such field exists anywhere in this
+    codebase -- v4 section 2 (decision #117, `SCHEMA_VERSION` 5 -> 6)
+    already removed the v3 per-project `budget_unit`/`budget_limit`/
+    `spent` columns in favor of purely per-driver budgets
+    (`[agents.<name>.budget]`, `agent_spend`). Adding a project-level
+    budget parameter to `POST /projects` with nothing behind it would
+    either silently discard the value or require reintroducing columns
+    the v4 rewrite deliberately dropped. `POST /projects` therefore
+    takes only `{goal}`, matching `muvue new`; a project's spend is
+    still read by summing its nodes' `agent_spend` rows, same as
+    everywhere else.

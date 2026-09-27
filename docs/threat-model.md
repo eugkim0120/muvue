@@ -88,6 +88,11 @@ web-page-originated**, not local:
    POSTs such as `pause` need the JSON content type too (decision
    #143): an empty form submitted cross-site to one would otherwise
    still carry the session cookie wherever SameSite doesn't stop it.
+   `POST /nodes/{id}/breakdown` and `POST /projects/{id}/run` spawn
+   agent/runner subprocesses from the API the same way `start?agent=X`
+   does, so they sit under these same controls -- session auth,
+   JSON-only, no query-string token -- rather than any weaker rule for
+   being "just" dashboard convenience endpoints.
 5. **In-memory-only token, one-time URL fragment, `HttpOnly`
    `SameSite=Strict` cookie exchange.** Defends against (2) directly:
    there is no file to read. The dashboard link's `#n=` fragment is a

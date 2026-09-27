@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+- Project canvas backend (`protocol_version` 2 -> 3): a session-gated
+  dashboard endpoint for every human-verb CLI command -- `POST
+  /projects`, `POST /projects/{id}/spec`, `POST /nodes/{id}/children`,
+  `POST /nodes/{id}/remove`, `POST /nodes/{id}/edit`, `POST
+  /nodes/{id}/breakdown`, `POST /projects/{id}/run`.
+- `GET /agents/status` and `GET /nodes/{id}/runs`.
+- `GET /graph` returns `carries` on dependency edges and a resolved
+  `agent` field on each node.
+- `deps.carries` (`SCHEMA_VERSION` 7 -> 8): labels what a dependency
+  edge carries, set via the CLI's `decompose`/`replan --carries` or the
+  API's dict-shaped `depends_on`. Shown as an arrow label on the
+  dashboard's flow diagram; replayed and drift-checked by `rebuild`.
+- Agent breakdown (`muvue _breakdown`) is now reachable from the API,
+  spawned as its own detached, SIGTERM-safe subprocess.
+
 ## [0.2.3] - 2026-09-27
 
 ### Changed
