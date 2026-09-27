@@ -380,6 +380,49 @@ def test_create_spec_endpoint(client, conn, auth_headers):
     assert node["status"] == "pending"
 
 
+def test_add_task_under_pending_spec(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "S", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "Record voice", "body_md": "capture mic"}, headers=auth_headers)
+    assert r.status_code == 200
+    child = r.json()["node"]
+    assert child["kind"] == "task"
+    assert child["parent_id"] == spec_id
+
+
+def test_add_task_with_carries_dependency(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "S", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "Record voice"}, headers=auth_headers)
+    upstream_id = r.json()["node"]["id"]
+
+    r = client.post(
+        f"/nodes/{spec_id}/children",
+        json={"title": "Detect pitch", "depends_on": [{"id": upstream_id, "carries": "audio frames"}]},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    downstream_id = r.json()["node"]["id"]
+    row = conn.execute(
+        "SELECT carries FROM deps WHERE node_id = ? AND depends_on = ?", (downstream_id, upstream_id)
+    ).fetchone()
+    assert row["carries"] == "audio frames"
+
+
+def test_add_subtask_under_approved_task_uses_replan(client, ready_task, auth_headers):
+    task_id = ready_task["task"]["id"]
+    r = client.post(f"/nodes/{task_id}/children", json={"title": "sub 1", "predicted_touches": ["a.py"]}, headers=auth_headers)
+    assert r.status_code == 200
+    child = r.json()["node"]
+    assert child["kind"] == "subtask"
+    assert child["parent_id"] == task_id
+
+
 def test_create_project_requires_auth(client):
     r = client.post("/projects", json={"goal": "g"})
     assert r.status_code == 403

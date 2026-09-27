@@ -864,6 +864,57 @@ def create_app(
                 _handle_core_error(e)
         return result
 
+    @app.post("/nodes/{node_id}/children")
+    def add_child_node(
+        node_id: int,
+        request: Request,
+        title: str = Body(...),
+        body_md: str = Body(default=""),
+        criteria: list[str] = Body(default=[]),
+        predicted_touches: list[str] = Body(default=[]),
+        depends_on: list[dict] = Body(default=[]),
+    ) -> dict:
+        """`decompose`-adjacent verb: adds a task under a `spec` node, or a
+        subtask under a `task` node. A subtask under a Gate-2-approved task
+        (`criteria_hash is not None`) goes through `replan_add_subtask`
+        (plan section 6's in-scope/out-of-scope gating); a subtask under an
+        unapproved task is created directly, same as a task under a spec."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                def _apply():
+                    parent = core.nodes.get_node(conn, node_id)
+                    if parent["kind"] == "spec":
+                        return core.nodes.create_node(
+                            conn, project_id=parent["project_id"], parent_id=node_id,
+                            kind="task", title=title, body_md=body_md, criteria=criteria,
+                            predicted_touches=predicted_touches, depends_on=depends_on,
+                            status="pending", actor="human", actor_evidence="dashboard_token",
+                        )
+                    if parent["kind"] != "task":
+                        raise core.nodes.NodeError(
+                            f"node {node_id} is kind={parent['kind']!r}; children can only "
+                            "be added to a spec or a task"
+                        )
+                    if parent["criteria_hash"] is not None:
+                        return core.revisions.replan_add_subtask(
+                            conn, parent_task_id=node_id, title=title, body_md=body_md,
+                            criteria=criteria, depends_on=depends_on,
+                            predicted_touches=predicted_touches, config=config,
+                            actor="human", actor_evidence="dashboard_token",
+                        )
+                    return core.nodes.create_node(
+                        conn, project_id=parent["project_id"], parent_id=node_id,
+                        kind="subtask", title=title, body_md=body_md, criteria=criteria,
+                        predicted_touches=predicted_touches, depends_on=depends_on,
+                        status="pending", actor="human", actor_evidence="dashboard_token",
+                    )
+
+                result = core.idempotency.once(conn, _request_id(request), "children", _apply)
+            except Exception as e:
+                _handle_core_error(e)
+        return {"node": dict(result)}
+
     @app.post("/nodes/{node_id}/note")
     def note_on_node(
         node_id: int,
