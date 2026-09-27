@@ -224,8 +224,13 @@ a task directly, and the result arrives as a card to approve.
 - The agent is the `agent` given, else `[routing].spec` for a spec node,
   else `[routing].task` for a task node. The `spec` routing entry
   already exists for this purpose (`runner.py:207-213`).
-- The daemon spawns the agent as a tracked subprocess, as `start?agent`
-  does. It records `breakdown.started {node_id, agent, pid}`. When the
+- Breakdown does not run through `core/runner.py`'s ready-node loop
+  (spec nodes are excluded there on purpose, and its loop only handles
+  `task`/`subtask` work, not decomposition). Instead the daemon spawns a
+  new internal CLI verb (`muvue _breakdown --node ID --agent X`) as a
+  detached subprocess, the same shape as `start?agent`'s `_spawn_runner`
+  helper: its own process, its own log file, killable by `pause`. It
+  records `breakdown.started {node_id, agent, pid}`. When the
   process exits, it records `breakdown.finished {node_id, created: [ids]}`
   or `breakdown.failed {node_id, reason}`. Output goes to
   `.muvue/logs/breakdown-<node>.log`.
@@ -324,7 +329,7 @@ All new mutating endpoints require a session, JSON bodies and
 
 | Endpoint | Does | Core path |
 |---|---|---|
-| `POST /projects {goal, budget?}` | create a project | `projects.create_project` |
+| `POST /projects {goal}` | create a project | `projects.create_project` (no project-level budget field exists; budgets are per-agent in `config.toml`, unchanged) |
 | `POST /projects/{id}/spec {title, body_md}` | submit spec | same as `muvue spec` |
 | `POST /nodes/{id}/children {title, body_md, criteria[], depends_on: [{id, carries?}]}` | task under spec / subtask under task | `create_node` before Gate 2; `replan_add_subtask` after |
 | `POST /nodes/{id}/remove` | soft-delete before Gate 2 | new `nodes.remove_node` (sets `deleted_at` on node + subtasks, event `node.removed`) |
@@ -338,8 +343,14 @@ All new mutating endpoints require a session, JSON bodies and
 `owner`/routing-resolved `agent` on each node.
 
 **Schema:** `deps` gains a nullable column, `carries TEXT`. This bumps
-`SCHEMA_VERSION` from 7 to 8 and adds a `migrate` step. `dep.added`
-events carry `carries`, and `rebuild` replays it. The CLI gains
+`SCHEMA_VERSION` from 7 to 8 and adds a `migrate` step. No `dep.added`
+event exists today (`deps` rows are written silently inside
+`create_node`/`replan_add_subtask`), and `rebuild` does not replay
+`deps` at all currently — this is a pre-existing gap, not something
+already working. This plan adds a `dep.added` event (carrying
+`carries`) at both write sites, and adds `deps` replay to `rebuild`, so
+the schema's history becomes reconstructible the way every other table
+already is. The CLI gains
 `--carries` alongside `--depends-on` on `decompose` and `replan`. The
 MCP tool gets the same field.
 
