@@ -12,7 +12,14 @@ const pct = (x: number) => (x * 100).toFixed(1) + "%";
 export function SpendPage() {
   const [k, setK] = useState<Kpis | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { api<Kpis>(routes.kpis()).then((d) => { setK(d); setError(null); }, (e) => setError(e.message)); }, [refreshTick.value]);
+  useEffect(() => {
+    let alive = true;
+    api<Kpis>(routes.kpis()).then(
+      (d) => { if (!alive) return; setK(d); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [refreshTick.value]);
   if (error) return <div class="page"><div class="callout danger">{error}</div></div>;
   if (!k) return <div class="page"><p class="muted">loading…</p></div>;
   const cards: [string, string, string?][] = [

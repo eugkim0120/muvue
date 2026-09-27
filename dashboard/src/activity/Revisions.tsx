@@ -24,7 +24,12 @@ export function Revisions() {
   const pid = projectId.value;
   useEffect(() => {
     if (pid === null) { setRevs([]); return; }
-    api<Rev[]>(routes.revisions(pid)).then((r) => { setRevs(r); setError(null); }, (e) => setError(e.message));
+    let alive = true;
+    api<Rev[]>(routes.revisions(pid)).then(
+      (r) => { if (!alive) return; setRevs(r); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
   }, [pid, refreshTick.value]);
   async function approve(n: number) {
     if (pid === null) return;

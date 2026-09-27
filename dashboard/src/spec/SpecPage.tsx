@@ -16,7 +16,14 @@ export function SpecPage() {
   const [draft, setDraft] = useState("");
   const [general, setGeneral] = useState("");
 
-  useEffect(() => { api<NodeDetail>(routes.node(id)).then((d) => { setDetail(d); setError(null); }, (e) => setError(e.message)); }, [id, refreshTick.value]);
+  useEffect(() => {
+    let alive = true;
+    api<NodeDetail>(routes.node(id)).then(
+      (d) => { if (!alive) return; setDetail(d); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [id, refreshTick.value]);
 
   async function send(text: string, line?: number) {
     if (!text.trim()) return;

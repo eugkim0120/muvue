@@ -32,7 +32,15 @@ export function Timeline() {
   const [events, setEvents] = useState<Ev[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chip, setChip] = useState<Family | "all">("all");
-  useEffect(() => { api<Ev[]>(routes.events(projectId.value)).then((e) => { setEvents(e); setError(null); }, (e) => setError(e.message)); }, [projectId.value, refreshTick.value]);
+  useEffect(() => {
+    if (projectId.value == null) { setEvents([]); return; }
+    let alive = true;
+    api<Ev[]>(routes.events(projectId.value)).then(
+      (e) => { if (!alive) return; setEvents(e); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [projectId.value, refreshTick.value]);
   if (error) return <div class="callout danger">{error}</div>;
   if (!events) return <p class="muted">loading…</p>;
   const shown = chip === "all" ? events : events.filter((e) => familyOf(e.type) === chip);

@@ -25,7 +25,14 @@ export function NodeSheet() {
   const [error, setError] = useState<string | null>(null);
   const [seg, setSeg] = useState("overview");
   // The sheet re-fetches on every SSE tick instead of closing under the reader.
-  useEffect(() => { api<NodeDetail>(routes.node(id)).then((d) => { setDetail(d); setError(null); }, (e) => setError(e.message)); }, [id, refreshTick.value]);
+  useEffect(() => {
+    let alive = true;
+    api<NodeDetail>(routes.node(id)).then(
+      (d) => { if (!alive) return; setDetail(d); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [id, refreshTick.value]);
   const title = detail ? `#${detail.node.id} ${detail.node.title}` : `#${id}`;
   return (
     <Sheet title={title} onClose={closeNode}>
