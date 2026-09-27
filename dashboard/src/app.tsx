@@ -8,13 +8,12 @@ import { TopBar } from "./shell/TopBar";
 import { TokenBanner } from "./shell/TokenBanner";
 import { Toasts } from "./ui/Toasts";
 import { PlanPage } from "./plan/PlanPage";
+import { NodeSheet } from "./node/NodeSheet";
 
 // Pages register here; Tasks 8-13 add their entries.
 export const PAGES: Record<string, () => JSX.Element> = {
   plan: PlanPage,
 };
-
-function NodeSheetPlaceholder() { return null; }
 
 export function App() {
   const [palette, setPalette] = useState(false);
@@ -34,7 +33,7 @@ export function App() {
         <main><Page /></main>
       </div>
       <TabBar />
-      {nodeId ? <NodeSheetPlaceholder /> : null}
+      {nodeId ? <NodeSheet /> : null}
       {palette ? null : null}
       <Toasts />
     </div>

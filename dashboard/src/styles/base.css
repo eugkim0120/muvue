@@ -39,4 +39,5 @@ pre.scroll-x { white-space: pre; overflow-x: auto; }
 .progress.warn > span { background: var(--tier-medium); }
 .progress.exhausted > span { background: var(--danger); }
 .d-add { color: var(--st-done); } .d-del { color: var(--danger); } .d-hunk { color: var(--st-ready); } .d-meta { color: var(--text-2); }
+ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh; overflow: auto; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
