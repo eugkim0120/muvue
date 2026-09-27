@@ -13,6 +13,7 @@ import { InboxPage } from "./inbox/InboxPage";
 import { NodeSheet } from "./node/NodeSheet";
 import { ActivityPage } from "./activity/ActivityPage";
 import { SpendPage } from "./spend/SpendPage";
+import { CommandPalette } from "./shell/CommandPalette";
 
 // Pages register here; Tasks 8-13 add their entries.
 export const PAGES: Record<string, () => JSX.Element> = {
@@ -42,7 +43,7 @@ export function App() {
       </div>
       <TabBar />
       {nodeId ? <NodeSheet /> : null}
-      {palette ? null : null}
+      {palette ? <CommandPalette onClose={() => setPalette(false)} /> : null}
       <Toasts />
     </div>
   );
