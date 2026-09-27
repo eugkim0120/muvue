@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.3] - 2026-09-27
 
 ### Changed
 - The dashboard is rebuilt as a Preact app (`dashboard/`), organised
