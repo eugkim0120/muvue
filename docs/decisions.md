@@ -2310,8 +2310,15 @@ reading here. Real `decisions` table entries start once dogfooding begins
     _breakdown` as its own detached, SIGTERM-safe subprocess, the same
     pattern `start?agent=X` already uses to spawn `muvue run`. It logs
     to `.muvue/logs/breakdown-<id>.log`, registers so `pause` can stop
-    it, and a second breakdown or run already active on the project is
-    refused with `409` rather than silently queued.
+    it, and a second breakdown *already active on the project* is
+    refused with `409` rather than silently queued. `/run` (both
+    `start?agent=X` and `POST /projects/{id}/run`) has no equivalent
+    "already active" check, by design: `core.nodes.start`'s own
+    transactional lease claim already makes a second concurrent `muvue
+    run` process safe -- it simply finds the node no longer `ready` and
+    moves on -- so there is no "silently queued" failure mode for `/run`
+    the way there is for `/breakdown`, which has no per-node lease to
+    race over.
 
 169. **`deps.carries` labels what a dependency edge carries.**
     The graph view could show that one node depends on another, but not
