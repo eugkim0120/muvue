@@ -17,3 +17,5 @@ __pycache__/
 .muvue/logs/
 .muvue/.init_manifest.json
 # <<< muvue <<<
+
+.worktrees/
