@@ -206,7 +206,18 @@ def test_breakdown_sigterm_before_agent_starts_is_not_lost(tmp_path):
     events = _events(repo_root, spec["id"])
     assert ("breakdown.failed", {"reason": "stopped"}) in events
     assert list(_runners_dir(repo_root).glob("*")) == []
-    # The point of N1: the agent must never have been started at all.
+    # The point of N1: the agent must never have been started at all. A
+    # log file only ever gets created by `invoke_driver` actually spawning
+    # the agent process (core/drivers.py) -- its absence, not merely the
+    # process being gone afterward, is what discriminates a real fix from
+    # one that only kills the agent after the fact (final review Task 8's
+    # parked gap: this test used to pass even without the fix, since
+    # "process no longer running" is also true if it started and finished
+    # before being checked).
+    from muvue.core.runner import LOGS_RELDIR
+
+    log_path = repo_root / LOGS_RELDIR / f"breakdown-{spec['id']}.log"
+    assert not log_path.exists(), f"agent must never have been started, found log at {log_path}"
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
     children = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (spec["id"],)).fetchall()
     conn.close()
@@ -435,7 +446,15 @@ def test_breakdown_on_approved_task_creates_subtasks(tmp_path, monkeypatch):
     assert list(_runners_dir(repo_root).glob("*")) == []
 
 
-def test_breakdown_on_unapproved_task_fails_cleanly(tmp_path, monkeypatch):
+def test_breakdown_on_unapproved_task_creates_subtasks_directly(tmp_path, monkeypatch):
+    """Final review Important #3: `_breakdown` used to always call
+    `replan_add_subtask` for a task parent, which raises `GateError` on an
+    unapproved task -- backwards for the canvas flow (spec -> tasks ->
+    subtasks -> approve), where breaking down a task *before* Gate 2 is
+    the common case. This test used to lock in the wrong (always-fails)
+    behavior under the name `..._fails_cleanly`; corrected behavior is
+    that it now succeeds, creating subtasks the same way a human's
+    `/children` call would (via the shared `core.revisions.add_child`)."""
     repo_root = _init_repo(tmp_path)
     monkeypatch.setenv("MUVUE_FAKE_BEHAVIOR", "breakdown")
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
@@ -449,17 +468,17 @@ def test_breakdown_on_unapproved_task_fails_cleanly(tmp_path, monkeypatch):
 
     result = _invoke(repo_root, task["id"])
 
-    assert result.exit_code == 1
-    assert "Traceback" not in result.output, "an unapproved task's GateError must be caught, not leak as a traceback"
-    failed_events = [(t, p) for t, p in _events(repo_root, task["id"]) if t == "breakdown.failed"]
-    assert len(failed_events) == 1
-    # The actual GateError message from replan_add_subtask (revisions.py),
-    # not just that some breakdown.failed event happened.
-    assert "not been Gate 2 approved" in failed_events[0][1]["reason"]
+    assert result.exit_code == 0, result.output
+    types = [t for t, _ in _events(repo_root, task["id"])]
+    assert "breakdown.finished" in types
+    assert "breakdown.failed" not in types
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
-    subtasks = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (task["id"],)).fetchall()
+    subtasks = conn.execute(
+        "SELECT * FROM nodes WHERE parent_id = ? ORDER BY id", (task["id"],)
+    ).fetchall()
     conn.close()
-    assert subtasks == []
+    assert len(subtasks) == 3
+    assert all(r["kind"] == "subtask" for r in subtasks)
     assert list(_runners_dir(repo_root).glob("*")) == []
 
 

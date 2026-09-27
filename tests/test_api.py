@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muvue.api import create_app
-from muvue.core import asks, db as core_db, gates, nodes, projects
+from muvue.core import asks, db as core_db, events, gates, nodes, projects
 from muvue.core.config import ChecksConfig, MuvueConfig
 from muvue.core.repo_init import init_repo
 
@@ -423,6 +423,94 @@ def test_add_subtask_under_approved_task_uses_replan(client, ready_task, auth_he
     assert child["parent_id"] == task_id
 
 
+def test_add_subtask_under_unapproved_task_uses_create_node(client, conn, auth_headers):
+    """Task 5's parked Case C, covered now that Important #3 extracted the
+    shared `core.revisions.add_child` helper: a subtask under a task that
+    has NOT yet been Gate-2 approved is created directly (`create_node`),
+    same as a task under a spec, not routed through `replan_add_subtask`
+    (which would refuse it with a GateError)."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "t"}, headers=auth_headers)
+    task_id = r.json()["node"]["id"]
+    assert conn.execute("SELECT criteria_hash FROM nodes WHERE id = ?", (task_id,)).fetchone()["criteria_hash"] is None
+
+    r = client.post(f"/nodes/{task_id}/children", json={"title": "sub 1"}, headers=auth_headers)
+
+    assert r.status_code == 200, r.text
+    child = r.json()["node"]
+    assert child["kind"] == "subtask"
+    assert child["parent_id"] == task_id
+    assert child["status"] == "pending"
+
+
+def test_add_child_under_subtask_kind_is_refused(client, ready_task, auth_headers):
+    """Task 5's parked Case D: an invalid parent kind (a subtask, which
+    can never itself have children) is refused, not silently accepted."""
+    task_id = ready_task["task"]["id"]
+    r = client.post(f"/nodes/{task_id}/children", json={"title": "sub 1", "predicted_touches": ["a.py"]}, headers=auth_headers)
+    subtask_id = r.json()["node"]["id"]
+
+    r = client.post(f"/nodes/{subtask_id}/children", json={"title": "grandchild"}, headers=auth_headers)
+
+    assert r.status_code == 409
+    assert "subtask" in r.json()["detail"]
+
+
+def test_add_child_under_removed_spec_is_refused(client, conn, auth_headers):
+    """Important #2 (second half): a soft-deleted node stays fully
+    actionable via `get_node`, which doesn't filter `deleted_at` -- adding
+    a child under an already-removed spec must not silently create a live
+    orphan under a deleted parent."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/remove", headers={**auth_headers, "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "t"}, headers=auth_headers)
+
+    assert r.status_code == 409
+    assert conn.execute("SELECT COUNT(*) c FROM nodes WHERE parent_id = ?", (spec_id,)).fetchone()["c"] == 0
+
+
+def test_edit_removed_node_is_refused(client, auth_headers):
+    """Important #2 (second half): a removed node stays fully actionable
+    via `get_node`, which doesn't filter `deleted_at` -- `/edit` on an
+    already-removed node must refuse, not silently rewrite a deleted
+    node's title/body."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/remove", headers={**auth_headers, "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+    r = client.post(f"/nodes/{spec_id}/edit", json={"title": "renamed"}, headers=auth_headers)
+
+    assert r.status_code == 409
+
+
+def test_breakdown_removed_node_is_refused(client, conn, auth_headers):
+    """Important #2 (second half): `/breakdown` on an already-removed node
+    must refuse before ever spawning a subprocess against it."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    conn.execute("UPDATE nodes SET status = 'ready' WHERE id = ?", (spec_id,))
+    conn.commit()
+    r = client.post(f"/nodes/{spec_id}/remove", headers={**auth_headers, "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
+
+    assert r.status_code == 409
+
+
 def test_create_project_requires_auth(client):
     r = client.post("/projects", json={"goal": "g"})
     assert r.status_code == 403
@@ -531,7 +619,76 @@ def test_node_runs_endpoint_lists_start_and_done_events(client, ready_task, auth
     assert types == ["node.start", "node.done"]
 
 
-def test_breakdown_endpoint_spawns_process(client, conn, auth_headers, tmp_path):
+def test_node_runs_endpoint_includes_breakdown_events(client, conn, ready_task, auth_headers):
+    """Important #7: the design spec wants breakdowns shown in a node's
+    Runs section too, not just node.start/done/fail."""
+    node_id = ready_task["task"]["id"]
+    events.record_event(
+        conn, project_id=ready_task["project"]["id"], node_id=node_id, actor="agent",
+        actor_evidence="tty", type_="breakdown.started", payload={"agent": "claude"},
+    )
+    events.record_event(
+        conn, project_id=ready_task["project"]["id"], node_id=node_id, actor="agent",
+        actor_evidence="tty", type_="breakdown.finished", payload={"created": []},
+    )
+    r = client.get(f"/nodes/{node_id}/runs", headers=auth_headers)
+    assert r.status_code == 200
+    types = [run["type"] for run in r.json()["runs"]]
+    assert "breakdown.started" in types
+    assert "breakdown.finished" in types
+
+
+def _fake_agent_client(repo):
+    """A client backed by `repo`'s own `config.toml` (routes spec/task to
+    the `fake` agent -- `DEFAULT_CONFIG_TOML`), instead of the module-level
+    `config` fixture, which declares no `[agents.*]` at all. Needed for
+    `/breakdown` since Important #4's fix makes the agent check strict."""
+    from muvue.core import load_config
+
+    config = load_config(repo / ".muvue" / "config.toml")
+    app = create_app(repo, config=config)
+    return TestClient(app, base_url=BASE_URL), {"Authorization": f"Bearer {app.state.session.token}"}
+
+
+def test_breakdown_endpoint_spawns_process_and_records_finished(repo, conn, monkeypatch):
+    """Important #4 regression: with the agent check now strict, a properly
+    configured agent must actually run to completion and record a real
+    `breakdown.finished` event -- not just return a pid (a bare pid was the
+    exact shape of "success" that hid the old bug: an empty `config.agents`
+    let the endpoint return 200 while the subprocess exited immediately
+    with nothing ever recorded)."""
+    monkeypatch.setenv("MUVUE_FAKE_BEHAVIOR", "breakdown")
+    client, headers = _fake_agent_client(repo)
+    r = client.post("/projects", json={"goal": "g"}, headers=headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=headers)
+    spec_id = r.json()["node"]["id"]
+    conn.execute("UPDATE nodes SET status = 'ready' WHERE id = ?", (spec_id,))
+    conn.commit()
+
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=headers)
+    assert r.status_code == 200, r.text
+    spawned = r.json()["spawned"]
+    assert "pid" in spawned
+
+    deadline = time.monotonic() + 30
+    types: list[str] = []
+    while time.monotonic() < deadline:
+        types = [
+            r["type"] for r in conn.execute(
+                "SELECT type FROM events WHERE node_id = ? AND type LIKE 'breakdown.%'", (spec_id,)
+            ).fetchall()
+        ]
+        if "breakdown.finished" in types:
+            break
+        time.sleep(0.2)
+    assert "breakdown.finished" in types, (repo / spawned["log"]).read_text()
+
+
+def test_breakdown_endpoint_422_for_unconfigured_agent(client, conn, auth_headers):
+    """Important #4: an empty/misconfigured `config.agents` must refuse
+    up front (422), not silently spawn a subprocess doomed to exit with
+    nothing ever recorded."""
     r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
     project_id = r.json()["project"]["id"]
     r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
@@ -540,19 +697,20 @@ def test_breakdown_endpoint_spawns_process(client, conn, auth_headers, tmp_path)
     conn.commit()
 
     r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
-    assert r.status_code == 200
-    assert "pid" in r.json()["spawned"]
+    assert r.status_code == 422
 
 
-def test_breakdown_endpoint_409_if_already_running(client, conn, auth_headers, monkeypatch):
+def test_breakdown_endpoint_409_if_already_running(repo, conn, monkeypatch):
     import muvue.core.runners as runners_mod
-    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+
+    client, headers = _fake_agent_client(repo)
+    r = client.post("/projects", json={"goal": "g"}, headers=headers)
     project_id = r.json()["project"]["id"]
-    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=headers)
     spec_id = r.json()["node"]["id"]
     monkeypatch.setattr(runners_mod, "live", lambda repo_root: [{"pid": 1, "project_id": project_id, "started_at": "now"}])
 
-    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=headers)
     assert r.status_code == 409
 
 
@@ -579,3 +737,23 @@ def test_graph_endpoint_includes_carries_and_agent(client, conn, auth_headers):
     assert "agent" in node_a
     edge = next(e for e in body["edges"] if e["from"] == a_id)
     assert edge["carries"] == "audio"
+
+
+def test_graph_endpoint_strips_runner_prefix_from_agent_field(client, conn, auth_headers):
+    """Important #6: `/graph`'s `agent` field used the raw `owner` value
+    directly, showing "runner:claude" for a node the runner leased
+    (`owner=f"runner:{agent}"`) instead of the plain agent name
+    `agent_status` shows for the same work -- the two endpoints must
+    agree."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "t"}, headers=auth_headers)
+    task_id = r.json()["node"]["id"]
+    conn.execute("UPDATE nodes SET owner = 'runner:claude', status = 'in_progress' WHERE id = ?", (task_id,))
+    conn.commit()
+
+    r = client.get(f"/graph?project_id={project_id}", headers=auth_headers)
+    node = next(n for n in r.json()["nodes"] if n["id"] == task_id)
+    assert node["agent"] == "claude"
