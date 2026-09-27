@@ -107,6 +107,18 @@ def parse_fake(stdout: str) -> DriverResult:
     )
 
 
+def parse_breakdown(stdout: str) -> list[dict]:
+    """A breakdown agent's line protocol: JSON lines, the last
+    `{"type": "breakdown", "children": [...]}` line wins. Each child's
+    `depends_on` entries refer to the 0-based index of an earlier
+    sibling in the same list (children have no node id yet), resolved
+    to real ids by whichever core code creates them in order."""
+    objs = [o for o in _json_lines(stdout) if o.get("type") == "breakdown"]
+    if not objs:
+        return []
+    return objs[-1].get("children", [])
+
+
 def parse_claude_stream_json(stdout: str) -> DriverResult:
     """`claude -p --output-format stream-json --verbose`, checked against
     claude 2.1.281 (tests/fixtures/vendor_samples/
