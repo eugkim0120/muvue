@@ -301,6 +301,12 @@ def create_app(
     def healthz() -> dict:
         return {"status": "ok", "protocol_version": config.protocol_version}
 
+    @app.get("/agents")
+    def list_agents() -> dict:
+        """Names under `[agents.*]`, for the dashboard's start-with-agent
+        picker. Names only: a command line may embed local paths."""
+        return {"agents": sorted(config.agents)}
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         index = STATIC_DIR / "index.html"
