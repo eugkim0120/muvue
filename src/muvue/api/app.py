@@ -491,6 +491,40 @@ def create_app(
             rows = core.db.query_all(conn, "SELECT * FROM projects ORDER BY id")
         return _rows_to_list(rows)
 
+    @app.post("/projects")
+    def create_project(request: Request, goal: str = Body(..., embed=True)) -> dict:
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "project-create",
+                    lambda: core.projects.create_project(
+                        conn, goal=goal, actor="human", actor_evidence="dashboard_token",
+                        repo_root=repo_root,
+                    ),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"project": _row_to_dict(result)}
+
+    @app.post("/projects/{project_id}/spec")
+    def create_spec(
+        project_id: int, request: Request, title: str = Body(...), body_md: str = Body(...)
+    ) -> dict:
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "spec",
+                    lambda: core.gates.submit_spec(
+                        conn, project_id=project_id, title=title, body_md=body_md,
+                        actor_evidence="dashboard_token",
+                    ),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"node": result}
+
     @app.get("/projects/{project_id}")
     def show_project(project_id: int) -> dict:
         with _conn() as conn:

@@ -355,6 +355,45 @@ def test_events_with_cursor_pages_forward_oldest_first(client, conn):
     assert [r["id"] for r in rows] == [first + 1, first + 2]
 
 
+def test_create_project_endpoint(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "voxscore: voice to sheet music"}, headers=auth_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["project"]["goal"] == "voxscore: voice to sheet music"
+    assert body["project"]["phase"] == "planning"
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (body["project"]["id"],)).fetchone()
+    assert row is not None
+
+
+def test_create_spec_endpoint(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(
+        f"/projects/{project_id}/spec",
+        json={"title": "Voxscore", "body_md": "Record voice.\nDetect pitch."},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    node = r.json()["node"] if "node" in r.json() else r.json()
+    assert node["kind"] == "spec"
+    assert node["title"] == "Voxscore"
+    assert node["status"] == "pending"
+
+
+def test_create_project_requires_auth(client):
+    r = client.post("/projects", json={"goal": "g"})
+    assert r.status_code == 403
+
+
+def test_create_project_requires_json(client, auth_headers):
+    # SecurityMiddleware's control 4 (JSON-only) rejects non-JSON
+    # Content-Type for every mutating route before the handler runs --
+    # see test_daemon_security.py::test_form_encoded_post_403s_before_any_side_effect
+    # for the same 403 against an existing route.
+    r = client.post("/projects", data="goal=g", headers={**auth_headers, "content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code in (400, 403, 415, 422)
+
+
 def test_agents_lists_configured_names_without_a_session(repo):
     from muvue.core.config import AgentConfig
 
