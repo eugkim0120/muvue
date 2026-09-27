@@ -1628,10 +1628,21 @@ function SpecPage() {
   const [draft, setDraft] = d$2("");
   const [general, setGeneral] = d$2("");
   h$2(() => {
-    api(routes.node(id)).then((d2) => {
-      setDetail(d2);
-      setError(null);
-    }, (e2) => setError(e2.message));
+    let alive = true;
+    api(routes.node(id)).then(
+      (d2) => {
+        if (!alive) return;
+        setDetail(d2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [id, refreshTick.value]);
   async function send(text, line) {
     if (!text.trim()) return;
@@ -1756,6 +1767,7 @@ function QuestionCard({ q: q2 }) {
     try {
       await post(routes.questionAnswer(q2.id), { text: answer });
       toast("answered");
+      setAnswer("");
       refresh();
     } catch (e2) {
       toastError(e2);
@@ -1783,11 +1795,22 @@ function InboxPage() {
   const [data, setData] = d$2(null);
   const [error, setError] = d$2(null);
   h$2(() => {
-    api(routes.inbox()).then((d2) => {
-      setData(d2);
-      setError(null);
-      inboxCount.value = countInbox(d2);
-    }, (e2) => setError(e2.message));
+    let alive = true;
+    api(routes.inbox()).then(
+      (d2) => {
+        if (!alive) return;
+        setData(d2);
+        setError(null);
+        inboxCount.value = countInbox(d2);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [refreshTick.value]);
   if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
   if (!data) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
@@ -1795,7 +1818,7 @@ function InboxPage() {
   return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
     /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Inbox" }),
     countInbox(data) === 0 ? /* @__PURE__ */ u$1(Empty, { text: "Nothing waiting on you.", check: true }) : null,
-    /* @__PURE__ */ u$1(Section, { title: "Questions", count: data.questions.length, children: data.questions.map((q2) => /* @__PURE__ */ u$1(QuestionCard, { q: q2 })) }),
+    /* @__PURE__ */ u$1(Section, { title: "Questions", count: data.questions.length, children: data.questions.map((q2) => /* @__PURE__ */ u$1(QuestionCard, { q: q2 }, q2.id)) }),
     /* @__PURE__ */ u$1(Section, { title: "Awaiting review", count: data.review.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.review.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2, right: /* @__PURE__ */ u$1(Tier, { tier: n2.risk_tier }) })) }) }),
     /* @__PURE__ */ u$1(Section, { title: "Unverified external criteria", count: data.unverified_external.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.unverified_external.map((u2) => /* @__PURE__ */ u$1(NodeRowItem, { node: rowOf(u2), sub: "muvue could not run these checks; verify before approving" })) }) }),
     /* @__PURE__ */ u$1(Section, { title: "Criteria changed, awaiting approval", count: data.awaiting_approval.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.awaiting_approval.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2 })) }) }),
@@ -1928,10 +1951,21 @@ function NodeSheet() {
   const [error, setError] = d$2(null);
   const [seg, setSeg] = d$2("overview");
   h$2(() => {
-    api(routes.node(id)).then((d2) => {
-      setDetail(d2);
-      setError(null);
-    }, (e2) => setError(e2.message));
+    let alive = true;
+    api(routes.node(id)).then(
+      (d2) => {
+        if (!alive) return;
+        setDetail(d2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [id, refreshTick.value]);
   const title = detail ? `#${detail.node.id} ${detail.node.title}` : `#${id}`;
   return /* @__PURE__ */ u$1(Sheet, { title, onClose: closeNode, children: error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : !detail ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : /* @__PURE__ */ u$1("div", { class: "stack", children: [
@@ -1979,10 +2013,25 @@ function Timeline() {
   const [error, setError] = d$2(null);
   const [chip, setChip] = d$2("all");
   h$2(() => {
-    api(routes.events(projectId.value)).then((e2) => {
-      setEvents(e2);
-      setError(null);
-    }, (e2) => setError(e2.message));
+    if (projectId.value == null) {
+      setEvents([]);
+      return;
+    }
+    let alive = true;
+    api(routes.events(projectId.value)).then(
+      (e2) => {
+        if (!alive) return;
+        setEvents(e2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [projectId.value, refreshTick.value]);
   if (error) return /* @__PURE__ */ u$1("div", { class: "callout danger", children: error });
   if (!events) return /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" });
@@ -2025,10 +2074,21 @@ function Revisions() {
       setRevs([]);
       return;
     }
-    api(routes.revisions(pid)).then((r2) => {
-      setRevs(r2);
-      setError(null);
-    }, (e2) => setError(e2.message));
+    let alive = true;
+    api(routes.revisions(pid)).then(
+      (r2) => {
+        if (!alive) return;
+        setRevs(r2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [pid, refreshTick.value]);
   async function approve(n2) {
     if (pid === null) return;
@@ -2070,10 +2130,21 @@ function SpendPage() {
   const [k2, setK] = d$2(null);
   const [error, setError] = d$2(null);
   h$2(() => {
-    api(routes.kpis()).then((d2) => {
-      setK(d2);
-      setError(null);
-    }, (e2) => setError(e2.message));
+    let alive = true;
+    api(routes.kpis()).then(
+      (d2) => {
+        if (!alive) return;
+        setK(d2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
   }, [refreshTick.value]);
   if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
   if (!k2) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
@@ -2116,7 +2187,7 @@ function paletteItems(query, nodes, projs, actions) {
   const q2 = query.trim().toLowerCase();
   const hit = (s2) => !q2 || s2.toLowerCase().includes(q2);
   const items = [];
-  for (const a2 of actions) if (hit(a2.label)) items.push({ label: a2.label, hint: "action", run: a2.run });
+  for (const a2 of actions) if (hit(a2.label)) items.push({ label: a2.label, hint: "action", run: a2.run, keepOpen: a2.keepOpen });
   for (const n2 of nodes) {
     const label = `#${n2.id} ${n2.title}`;
     if (!q2 || String(n2.id) === q2 || hit(n2.title)) items.push({ label, hint: n2.status.replace(/_/g, " "), run: () => openNode(n2.id) });
@@ -2135,10 +2206,43 @@ function CommandPalette({ onClose }) {
   const [query, setQuery] = d$2("");
   const [nodes, setNodes] = d$2([]);
   const [cursor, setCursor] = d$2(0);
+  const [confirmPause, setConfirmPause] = d$2(false);
+  const [closing, setClosing] = d$2(false);
   h$2(() => {
-    api(routes.nodes(projectId.value)).then(setNodes, toastError);
+    if (projectId.value == null) {
+      setNodes([]);
+      return;
+    }
+    let alive = true;
+    api(routes.nodes(projectId.value)).then((n2) => {
+      if (alive) setNodes(n2);
+    }, (e2) => {
+      if (alive) toastError(e2);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
   const p2 = currentProject.value;
+  async function pause() {
+    if (!p2) return;
+    try {
+      const r2 = await post(routes.projectPause(p2.id));
+      const stopped = (r2.result ?? r2).stopped_runners ?? [];
+      toast(`paused; stopped ${stopped.length} runner process(es)`);
+      refresh();
+      onClose();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  if (closing && p2) return /* @__PURE__ */ u$1(CloseSheet, { projectId: p2.id, onClose: () => {
+    setClosing(false);
+    onClose();
+  } });
+  if (confirmPause) {
+    return /* @__PURE__ */ u$1(Confirm, { title: "Pause project?", body: "Running agents are stopped and their tasks go back to ready.", confirmLabel: "Pause", danger: true, onConfirm: pause, onCancel: () => setConfirmPause(false) });
+  }
   const actions = [];
   if (authed.value && p2) {
     const act = (label, path, body) => actions.push({ label, run: () => {
@@ -2148,8 +2252,9 @@ function CommandPalette({ onClose }) {
       }, toastError);
       onClose();
     } });
-    if (p2.phase !== "paused" && p2.phase !== "closed") act("Pause", routes.projectPause(p2.id));
+    if (p2.phase !== "paused" && p2.phase !== "closed") actions.push({ label: "Pause", run: () => setConfirmPause(true), keepOpen: true });
     if (p2.phase === "paused") act("Resume", routes.projectResume(p2.id));
+    if (p2.phase !== "closed") actions.push({ label: "Close project…", run: () => setClosing(true), keepOpen: true });
     const spec = nodes.find((n2) => n2.kind === "spec" && n2.status === "pending");
     if (spec) act("Approve spec", routes.nodeApprove(spec.id), { target: "spec" });
     if (p2.phase === "planning" && !spec && nodes.some((n2) => n2.kind !== "spec")) act("Approve task list", routes.nodeApprove(p2.id), { target: "gate2" });
@@ -2167,7 +2272,7 @@ function CommandPalette({ onClose }) {
       const it = items[cursor];
       if (it) {
         it.run();
-        onClose();
+        if (!it.keepOpen) onClose();
       }
     }
   }
@@ -2179,7 +2284,7 @@ function CommandPalette({ onClose }) {
     /* @__PURE__ */ u$1("div", { class: "list", children: [
       items.map((it, i2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row" + (i2 === cursor ? " on" : ""), onClick: () => {
         it.run();
-        onClose();
+        if (!it.keepOpen) onClose();
       }, children: [
         /* @__PURE__ */ u$1("span", { class: "grow title", children: it.label }),
         it.hint ? /* @__PURE__ */ u$1("span", { class: "caption", children: it.hint }) : null
@@ -2217,7 +2322,7 @@ function App() {
       /* @__PURE__ */ u$1("main", { children: /* @__PURE__ */ u$1(Page, {}) })
     ] }),
     /* @__PURE__ */ u$1(TabBar, {}),
-    nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}) : null,
+    nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}, nodeId) : null,
     palette ? /* @__PURE__ */ u$1(CommandPalette, { onClose: () => setPalette(false) }) : null,
     /* @__PURE__ */ u$1(Toasts, {})
   ] });
@@ -2333,7 +2438,7 @@ pre.scroll-x { white-space: pre; overflow-x: auto; }
 ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh; overflow: auto; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
-.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 36px; }
+.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .group-head.sticky { position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 1; }
 .list-row:disabled { cursor: default; }
@@ -2424,7 +2529,7 @@ svg.dag path.edge.dep { stroke: var(--accent); stroke-dasharray: 5 4; }
 .group-head { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 6px; }
 .spec-preview { max-height: 80px; overflow: hidden; }
 .spec-body { padding: 8px 0; }
-.spec-line { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
+.spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
 .spec-line:hover { background: var(--surface-2); }
 .spec-line .ln { color: var(--text-2); min-width: 28px; text-align: right; user-select: none; }
 .spec-line .tx { white-space: pre-wrap; flex: 1; }
