@@ -266,6 +266,43 @@ def test_apply_rebuild_restores_the_replayable_set_and_keeps_other_tables(conn, 
     assert conn.execute("SELECT COUNT(*) c FROM questions").fetchone()["c"] == 1
 
 
+def test_apply_rebuild_reconstructs_carries(conn, project):
+    upstream = nodes.create_node(conn, project_id=project["id"], kind="task", title="a")
+    downstream = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="b",
+        depends_on=[{"id": upstream["id"], "carries": "audio frames"}],
+    )
+    conn.commit()
+
+    rebuild.apply_rebuild(conn)
+
+    row = conn.execute(
+        "SELECT carries FROM deps WHERE node_id = ? AND depends_on = ?",
+        (downstream["id"], upstream["id"]),
+    ).fetchone()
+    assert row["carries"] == "audio frames"
+
+
+def test_diff_state_detects_carries_drift(conn, project):
+    upstream = nodes.create_node(conn, project_id=project["id"], kind="task", title="a")
+    downstream = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="b",
+        depends_on=[{"id": upstream["id"], "carries": "audio frames"}],
+    )
+    conn.commit()
+
+    # Simulate live drift: someone hand-edited the live carries value
+    # without a matching event.
+    conn.execute(
+        "UPDATE deps SET carries = 'something else' WHERE node_id = ? AND depends_on = ?",
+        (downstream["id"], upstream["id"]),
+    )
+    conn.commit()
+
+    mismatches = rebuild.diff_state(conn)
+    assert "deps" in mismatches
+
+
 def test_cli_rebuild_apply_keeps_a_backup(tmp_path: Path):
     init_repo(tmp_path)
     c = core_db.connect(tmp_path / ".muvue" / "muvue.db")
