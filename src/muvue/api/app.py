@@ -308,6 +308,19 @@ def create_app(
         picker. Names only: a command line may embed local paths."""
         return {"agents": sorted(config.agents)}
 
+    @app.get("/agents/status")
+    def agents_status(request: Request, project_id: int) -> dict:
+        """Dashboard's Agents panel: each agent's routed roles, current
+        lease (if any) and accumulated spend (`core.agent_status`)."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+                result = core.agent_status.agent_status(conn, project_id, config)
+            except Exception as e:
+                _handle_core_error(e)
+        return {"agents": result}
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
         index = STATIC_DIR / "index.html"
@@ -671,6 +684,26 @@ def create_app(
             except LookupError as e:
                 _handle_core_error(e)
         return core.queries.tail_log(repo_root, node_id, min(max(lines, 1), 5000))
+
+    @app.get("/nodes/{node_id}/runs")
+    def node_runs(request: Request, node_id: int) -> dict:
+        """A read view over the node's `node.start`/`node.done`/
+        `node.fail` events (plan section 3's append-only event log) --
+        there is no separate runs/attempts table; `nodes.attempts` only
+        counts failures, it doesn't record run history."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.nodes.get_node(conn, node_id)  # 404s if the node doesn't exist
+                rows = core.db.query_all(
+                    conn,
+                    "SELECT * FROM events WHERE node_id = ? AND type IN "
+                    "('node.start', 'node.done', 'node.fail') ORDER BY id",
+                    (node_id,),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"runs": _rows_to_list(rows)}
 
     @app.post("/nodes/{node_id}/start")
     def start_node(

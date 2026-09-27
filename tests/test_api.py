@@ -494,6 +494,43 @@ def test_agents_lists_configured_names_without_a_session(repo):
 # -- Task 9: POST /nodes/{id}/breakdown and POST /projects/{id}/run --------
 
 
+# -- Task 10: GET /agents/status and GET /nodes/{id}/runs -----------------
+
+
+def test_agent_status_endpoint(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.get(f"/agents/status?project_id={project_id}", headers=auth_headers)
+    assert r.status_code == 200
+    assert "agents" in r.json()
+    # The `config` fixture has no `[agents.*]` entries, so the only agent
+    # that shows up is the one `RoutingConfig`'s defaults route every
+    # role to: "claude".
+    assert any(a["agent"] == "claude" for a in r.json()["agents"])
+
+
+def test_node_runs_endpoint(client, ready_task, auth_headers):
+    node_id = ready_task["task"]["id"]
+    r = client.get(f"/nodes/{node_id}/runs", headers=auth_headers)
+    assert r.status_code == 200
+    assert "runs" in r.json()
+
+
+def test_node_runs_endpoint_404s_for_missing_node(client, auth_headers):
+    r = client.get("/nodes/999999/runs", headers=auth_headers)
+    assert r.status_code == 404
+
+
+def test_node_runs_endpoint_lists_start_and_done_events(client, ready_task, auth_headers):
+    node_id = ready_task["task"]["id"]
+    client.post(f"/nodes/{node_id}/start", json={"owner": "agent-1"}, headers=auth_headers)
+    client.post(f"/nodes/{node_id}/done", json={"owner": "agent-1"}, headers=auth_headers)
+    r = client.get(f"/nodes/{node_id}/runs", headers=auth_headers)
+    assert r.status_code == 200
+    types = [run["type"] for run in r.json()["runs"]]
+    assert types == ["node.start", "node.done"]
+
+
 def test_breakdown_endpoint_spawns_process(client, conn, auth_headers, tmp_path):
     r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
     project_id = r.json()["project"]["id"]
