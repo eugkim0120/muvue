@@ -7,10 +7,11 @@ import { TabBar } from "./shell/TabBar";
 import { TopBar } from "./shell/TopBar";
 import { TokenBanner } from "./shell/TokenBanner";
 import { Toasts } from "./ui/Toasts";
+import { PlanPage } from "./plan/PlanPage";
 
 // Pages register here; Tasks 8-13 add their entries.
 export const PAGES: Record<string, () => JSX.Element> = {
-  plan: () => <div class="page"><h1 class="page-title">Plan</h1></div>,
+  plan: PlanPage,
 };
 
 function NodeSheetPlaceholder() { return null; }

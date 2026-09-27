@@ -1,0 +1,10 @@
+.dag-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px; -webkit-overflow-scrolling: touch; }
+svg.dag .node rect { fill: var(--surface-2); stroke: var(--border); cursor: pointer; }
+svg.dag .node rect.bar { stroke: none; }
+svg.dag .node:hover rect:first-of-type, svg.dag .node:focus rect:first-of-type { stroke: var(--accent); outline: none; }
+svg.dag .node text { fill: var(--text); font-size: 12px; font-family: var(--font); pointer-events: none; }
+svg.dag .node text.sub { fill: var(--text-2); font-size: 10px; }
+svg.dag path.edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+svg.dag path.edge.dep { stroke: var(--accent); stroke-dasharray: 5 4; }
+.group-head { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 6px; }
+.spec-preview { max-height: 80px; overflow: hidden; }
