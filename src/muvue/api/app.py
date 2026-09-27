@@ -233,6 +233,7 @@ def create_app(
                 core.close.CloseError,
                 core.imports.ImportError_,
                 core.actor.HumanOnly,
+                core.removal.RemovalError,
                 ValueError,
             ),
         ):
@@ -914,6 +915,65 @@ def create_app(
             except Exception as e:
                 _handle_core_error(e)
         return {"node": dict(result)}
+
+    @app.post("/nodes/{node_id}/remove")
+    def remove_node(request: Request, node_id: int) -> dict:
+        """Soft-delete a node and its descendants (`core.removal.remove_node`);
+        refused once the node is Gate-2 approved -- see `RemovalError`."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "remove",
+                    lambda: core.removal.remove_node(conn, node_id, actor="human", actor_evidence="dashboard_token"),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
+    @app.post("/nodes/{node_id}/edit")
+    def edit_node(
+        request: Request, node_id: int, title: str | None = Body(default=None),
+        body_md: str | None = Body(default=None), criteria: list[str] | None = Body(default=None),
+    ) -> dict:
+        """Edit title/body_md/criteria before Gate 2. Criteria edits go
+        through `core.gates.edit_criteria`; after Gate 2 (`criteria_hash`
+        set) this refuses -- use `propose-revision` instead."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                def _apply():
+                    node = core.nodes.get_node(conn, node_id)
+                    if node["criteria_hash"] is not None:
+                        raise core.removal.RemovalError(
+                            f"node {node_id} is already Gate-2 approved; use propose-revision instead of editing directly"
+                        )
+                    with core.db.write_txn(conn):
+                        if title is not None or body_md is not None:
+                            fields = []
+                            params: list[object] = []
+                            if title is not None:
+                                fields.append("title = ?")
+                                params.append(title)
+                            if body_md is not None:
+                                fields.append("body_md = ?")
+                                params.append(body_md)
+                            params.append(node_id)
+                            conn.execute(f"UPDATE nodes SET {', '.join(fields)} WHERE id = ?", params)
+                            core.nodes.bump_version(
+                                conn, node_id, actor="human", actor_evidence="dashboard_token"
+                            )
+                        if criteria is not None:
+                            core.gates.edit_criteria(
+                                conn, node_id, criteria_json=json.dumps(criteria),
+                                actor="human", actor_evidence="dashboard_token",
+                            )
+                        return {"node": dict(core.nodes.get_node(conn, node_id))}
+
+                result = core.idempotency.once(conn, _request_id(request), "edit", _apply)
+            except Exception as e:
+                _handle_core_error(e)
+        return result
 
     @app.post("/nodes/{node_id}/note")
     def note_on_node(

@@ -437,6 +437,47 @@ def test_create_project_requires_json(client, auth_headers):
     assert r.status_code in (400, 403, 415, 422)
 
 
+def test_remove_endpoint(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "t"}, headers=auth_headers)
+    task_id = r.json()["node"]["id"]
+
+    # /remove is a body-less POST, so it needs the explicit
+    # Content-Type: application/json header the same as /pause (control 4,
+    # see test_pause_refuses_start_then_resume_allows_it above).
+    r = client.post(f"/nodes/{task_id}/remove", headers={**auth_headers, "Content-Type": "application/json"})
+    assert r.status_code == 200
+    assert conn.execute("SELECT deleted_at FROM nodes WHERE id = ?", (task_id,)).fetchone()["deleted_at"] is not None
+
+
+def test_remove_endpoint_refuses_after_gate2(client, ready_task, auth_headers):
+    task_id = ready_task["task"]["id"]
+    r = client.post(f"/nodes/{task_id}/remove", headers={**auth_headers, "Content-Type": "application/json"})
+    assert r.status_code == 409
+
+
+def test_edit_endpoint_before_gate2(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "t"}, headers=auth_headers)
+    task_id = r.json()["node"]["id"]
+
+    r = client.post(f"/nodes/{task_id}/edit", json={"title": "renamed"}, headers=auth_headers)
+    assert r.status_code == 200
+    assert conn.execute("SELECT title FROM nodes WHERE id = ?", (task_id,)).fetchone()["title"] == "renamed"
+
+
+def test_edit_endpoint_refuses_after_gate2(client, ready_task, auth_headers):
+    task_id = ready_task["task"]["id"]
+    r = client.post(f"/nodes/{task_id}/edit", json={"title": "x"}, headers=auth_headers)
+    assert r.status_code == 409
+
+
 def test_agents_lists_configured_names_without_a_session(repo):
     from muvue.core.config import AgentConfig
 
