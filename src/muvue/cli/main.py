@@ -6,7 +6,9 @@ import functools
 import importlib.metadata
 import json
 import os
+import signal
 import sys
+import threading
 from pathlib import Path
 
 import typer
@@ -922,10 +924,34 @@ def breakdown(
     conn = _db_connect(repo_root)
     try:
         node = core.nodes.get_node(conn, node_id)
+        if node["kind"] not in ("spec", "task"):
+            raise typer.BadParameter(
+                f"node {node_id} is kind={node['kind']!r}; _breakdown only accepts a spec or a task"
+            )
+        if agent not in config.agents:
+            raise typer.BadParameter(f"unknown agent {agent!r}; known agents: {sorted(config.agents)}")
+        agent_cfg = config.agents[agent]
+
+        # Mirrors core.runner.run's SIGTERM handling exactly: install a
+        # handler that stops the in-flight driver subprocess (`pause` ->
+        # core.runners.stop() sends SIGTERM here), so `invoke_driver`
+        # unblocks and returns instead of leaving an orphaned agent
+        # process running under Python's default SIGTERM action. The
+        # `finally` below still runs afterward to record a terminal
+        # event and unregister.
+        stopped = threading.Event()
+
+        def _on_sigterm(signum, frame) -> None:
+            stopped.set()
+            core.drivers.stop_all()
+
+        previous_handler = None
+        if threading.current_thread() is threading.main_thread():
+            previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+
         core_runners = core.runners
         core_runners.register(repo_root, node["project_id"])
         try:
-            agent_cfg = config.agents[agent]
             criteria_text = "\n".join(f"- {c}" for c in json.loads(node["criteria_json"]))
             brief = (
                 f"Break down this {node['kind']} into 2-5 child tasks, each with a "
@@ -944,45 +970,75 @@ def breakdown(
                 conn, project_id=node["project_id"], node_id=node_id, actor="agent",
                 actor_evidence="tty", type_="breakdown.started", payload={"agent": agent},
             )
-            conn.commit()
-            result = core.drivers.invoke_driver(agent, agent_cfg, brief, repo_root, log_path=log_path)
-            if result.status != "done":
+
+            def _fail(reason: str) -> None:
                 core.events.record_event(
                     conn, project_id=node["project_id"], node_id=node_id, actor="agent",
-                    actor_evidence="tty", type_="breakdown.failed",
-                    payload={"reason": result.error or result.status},
+                    actor_evidence="tty", type_="breakdown.failed", payload={"reason": reason},
                 )
-                conn.commit()
                 raise typer.Exit(code=1)
-            children_spec = core.drivers.parse_breakdown(result.raw_stdout)
+
+            result = core.drivers.invoke_driver(agent, agent_cfg, brief, repo_root, log_path=log_path)
+            if stopped.is_set():
+                _fail("stopped")
+            if result.status != "done":
+                _fail(result.error or result.status)
+
+            # A real agent's usage parser (e.g. claude_stream_json) puts
+            # its final text in `summary`, not verbatim in `raw_stdout` --
+            # only the fake agent's line protocol lands unparsed there.
+            # Try the parsed summary first, fall back to raw stdout.
+            children_spec = core.drivers.parse_breakdown(result.summary) or core.drivers.parse_breakdown(
+                result.raw_stdout
+            )
+            if not children_spec:
+                _fail("agent produced no parseable breakdown")
+
             created_ids: list[int] = []
-            for child in children_spec:
-                resolved_deps = [
-                    {"id": created_ids[d["id"]], "carries": d.get("carries")}
-                    for d in child.get("depends_on", [])
-                ]
-                if node["kind"] == "spec":
-                    row = core.nodes.create_node(
-                        conn, project_id=node["project_id"], parent_id=node_id, kind="task",
-                        title=child["title"], body_md=child.get("body_md", ""),
-                        criteria=child.get("criteria", []), predicted_touches=child.get("predicted_touches", []),
-                        depends_on=resolved_deps, status="pending", actor="agent", actor_evidence="tty",
-                    )
-                else:
-                    row = core.revisions.replan_add_subtask(
-                        conn, parent_task_id=node_id, title=child["title"],
-                        body_md=child.get("body_md", ""), criteria=child.get("criteria", []),
-                        depends_on=resolved_deps, predicted_touches=child.get("predicted_touches", []),
-                        config=config, actor="agent", actor_evidence="tty",
-                    )
-                created_ids.append(row["id"] if isinstance(row, dict) else row["id"])
+            try:
+                for i, child in enumerate(children_spec):
+                    if "title" not in child:
+                        raise ValueError(f"child at index {i} is missing a title")
+                    for dep in child.get("depends_on", []):
+                        dep_id = dep.get("id")
+                        if not isinstance(dep_id, int) or isinstance(dep_id, bool) or not (
+                            0 <= dep_id < len(created_ids)
+                        ):
+                            raise ValueError(
+                                f"child {child['title']!r} has an invalid depends_on index "
+                                f"{dep_id!r} (must be an int naming an earlier sibling, "
+                                f"0 <= id < {len(created_ids)})"
+                            )
+                    resolved_deps = [
+                        {"id": created_ids[dep["id"]], "carries": dep.get("carries")}
+                        for dep in child.get("depends_on", [])
+                    ]
+                    if node["kind"] == "spec":
+                        row = core.nodes.create_node(
+                            conn, project_id=node["project_id"], parent_id=node_id, kind="task",
+                            title=child["title"], body_md=child.get("body_md", ""),
+                            criteria=child.get("criteria", []), predicted_touches=child.get("predicted_touches", []),
+                            depends_on=resolved_deps, status="pending", actor="agent", actor_evidence="tty",
+                        )
+                    else:
+                        row = core.revisions.replan_add_subtask(
+                            conn, parent_task_id=node_id, title=child["title"],
+                            body_md=child.get("body_md", ""), criteria=child.get("criteria", []),
+                            depends_on=resolved_deps, predicted_touches=child.get("predicted_touches", []),
+                            config=config, actor="agent", actor_evidence="tty",
+                        )
+                    created_ids.append(row["id"])
+            except Exception as e:
+                _fail(str(e))
+
             core.events.record_event(
                 conn, project_id=node["project_id"], node_id=node_id, actor="agent",
                 actor_evidence="tty", type_="breakdown.finished", payload={"created": created_ids},
             )
-            conn.commit()
         finally:
             core_runners.unregister(repo_root)
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)
     finally:
         conn.close()
 
