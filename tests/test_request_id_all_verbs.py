@@ -139,6 +139,59 @@ def test_mcp_note_and_replan_dedupe_on_request_id(repo):
     assert _count(repo, "SELECT COUNT(*) FROM events WHERE type = 'note.added'") == 1
 
 
+def test_once_replays_a_row_result_as_a_real_dict_not_stringified(tmp_path):
+    """Important #5 regression: `core.projects.create_project`/
+    `core.nodes.create_node` return `sqlite3.Row` objects, and `once()`
+    used to `json.dumps(result, default=str)` them straight into the
+    stored replay payload -- `default=str` stringifies a `sqlite3.Row` to
+    `"<sqlite3.Row object at 0x...>"` instead of its fields, so a retried
+    request lost the created project/node id entirely."""
+    conn = core_db.init_db(tmp_path / "m.db")
+    try:
+        project = projects.create_project(conn, goal="g")
+        first = idempotency.once(conn, "r1", "project-create", lambda: project)
+        again = idempotency.once(conn, "r1", "project-create", lambda: (_ for _ in ()).throw(AssertionError("must not re-run")))
+    finally:
+        conn.close()
+    assert first["id"] == project["id"]
+    assert again == {"noop": True, "result": dict(project)}
+    assert isinstance(again["result"], dict)
+    assert again["result"]["id"] == project["id"]
+    assert again["result"]["goal"] == "g"
+
+
+def test_api_duplicate_request_id_replays_the_real_project_not_a_stringified_row(repo):
+    """Important #5, at the API surface: `POST /projects` twice with the
+    same `X-Request-Id` must return the same real project id/fields the
+    second time too, not `"<sqlite3.Row object at 0x...>"`. The replay
+    comes back `once()`-shaped (`{"noop": true, "result": {...}}`, same
+    contract `test_once_runs_first_call_and_replays_the_result` locks in
+    at the core level) -- what matters here is that `result` is the real
+    project dict, not a stringified `sqlite3.Row`."""
+    from fastapi.testclient import TestClient
+
+    from muvue.api import create_app
+
+    app = create_app(repo)
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = {
+        "Authorization": f"Bearer {app.state.session.token}", "X-Request-Id": "proj-1",
+        "Content-Type": "application/json",
+    }
+
+    first = client.post("/projects", json={"goal": "canvas"}, headers=headers)
+    second = client.post("/projects", json={"goal": "canvas"}, headers=headers)
+
+    assert first.status_code == 200 and second.status_code == 200, second.text
+    first_project = first.json()["project"]
+    replayed = second.json()["project"]
+    assert replayed["noop"] is True
+    assert isinstance(replayed["result"], dict), f"expected a real dict, got {replayed['result']!r}"
+    assert replayed["result"]["id"] == first_project["id"]
+    assert replayed["result"]["goal"] == "canvas"
+    assert _count(repo, "SELECT COUNT(*) FROM projects") == 1
+
+
 def test_api_mutations_dedupe_on_x_request_id_header(repo):
     from fastapi.testclient import TestClient
 
