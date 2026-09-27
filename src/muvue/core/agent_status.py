@@ -27,11 +27,18 @@ def agent_status(conn: sqlite3.Connection, project_id: int, config: MuvueConfig)
     out = []
     for name in sorted(names):
         roles = [r for r in ROLES if getattr(config.routing, r) == name]
+        # `core.runner.run_node` leases a node to `f"runner:{agent_name}"`,
+        # not the bare agent name (`owner = agent_name` only matches a
+        # human-driven lease, e.g. `POST /nodes/{id}/start` without
+        # `?agent=`) -- match both forms, or every runner-driven node
+        # showed up as no agent's "current work" (final review Important
+        # #6).
         current_row = db_mod.query_one(
             conn,
-            "SELECT id, title, lease_until FROM nodes WHERE project_id = ? AND owner = ? "
+            "SELECT id, title, lease_until FROM nodes WHERE project_id = ? "
+            "AND owner IN (?, 'runner:' || ?) "
             "AND status = 'in_progress' AND deleted_at IS NULL LIMIT 1",
-            (project_id, name),
+            (project_id, name, name),
         )
         current = (
             {"node_id": current_row["id"], "title": current_row["title"], "lease_until": current_row["lease_until"]}

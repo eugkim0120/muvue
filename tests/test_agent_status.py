@@ -43,3 +43,21 @@ def test_agent_status_shows_current_work(conn):
     rows = agent_status.agent_status(conn, project["id"], config)
     claude_row = next(r for r in rows if r["agent"] == "claude")
     assert claude_row["current"]["node_id"] == task["id"]
+
+
+def test_agent_status_shows_runner_driven_current_work(conn):
+    """Important #6: `core.runner.run_node` leases a node as
+    `owner=f"runner:{agent_name}"`, not the bare agent name -- before the
+    fix, `agent_status`'s `WHERE owner = ?` never matched that, so any
+    node actually run through `muvue run`/`start?agent` always showed
+    `current: None`."""
+    config = MuvueConfig()
+    project = projects_mod.create_project(conn, goal="g")
+    task = nodes_mod.create_node(
+        conn, project_id=project["id"], kind="task", title="t", status="in_progress",
+        owner="runner:claude",
+    )
+    rows = agent_status.agent_status(conn, project["id"], config)
+    claude_row = next(r for r in rows if r["agent"] == "claude")
+    assert claude_row["current"] is not None
+    assert claude_row["current"]["node_id"] == task["id"]
