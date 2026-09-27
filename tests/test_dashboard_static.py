@@ -45,3 +45,19 @@ def test_every_called_endpoint_is_served(tmp_path):
     assert called, "found no endpoint calls; the pattern is stale"
     missing = sorted(c for c in called if not any(p.match(c) for p in patterns))
     assert missing == []
+
+
+def test_node_panel_actions_come_before_the_long_sections():
+    """On a phone the panel's bottom sat under Safari's toolbar, so an
+    "approve spec" button placed after body, diff and logs could not be
+    reached. The actions are appended right after the status row."""
+    html = INDEX.read_text()
+    panel = html[html.index("function openPanel("):]
+    assert panel.index("panel.appendChild(actions)") < panel.index('el("h3", {text: "body"})')
+
+
+def test_panel_height_uses_the_dynamic_viewport():
+    """`vh` on iOS Safari is the viewport without its toolbars, so an
+    88vh panel runs under them; `dvh` tracks the visible area."""
+    html = INDEX.read_text()
+    assert re.search(r"#panel \{[^}]*max-height: calc\(100dvh", html)

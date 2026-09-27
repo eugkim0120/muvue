@@ -9,6 +9,10 @@ All notable changes to this project are documented here.
   request with "invalid Host header", because only loopback names were
   accepted. The bound address is now accepted in `Host` and `Origin`,
   so the dashboard works over Tailscale (decision #165).
+- On a phone, a task's "approve" buttons sat at the bottom of its
+  panel, under Safari's toolbar, so a spec could not be approved there.
+  The buttons now come right after the status line, and the panel fits
+  the visible screen.
 
 ## [0.2.2] - 2026-09-26
 
