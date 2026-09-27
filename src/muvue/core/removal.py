@@ -9,7 +9,6 @@ from __future__ import annotations
 import sqlite3
 
 from . import db as db_mod
-from . import events
 from . import nodes as nodes_mod
 
 
