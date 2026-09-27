@@ -9,12 +9,14 @@ import { TokenBanner } from "./shell/TokenBanner";
 import { Toasts } from "./ui/Toasts";
 import { PlanPage } from "./plan/PlanPage";
 import { SpecPage } from "./spec/SpecPage";
+import { InboxPage } from "./inbox/InboxPage";
 import { NodeSheet } from "./node/NodeSheet";
 
 // Pages register here; Tasks 8-13 add their entries.
 export const PAGES: Record<string, () => JSX.Element> = {
   plan: PlanPage,
   spec: SpecPage,
+  inbox: InboxPage,
 };
 
 export function App() {

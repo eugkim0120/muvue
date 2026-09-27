@@ -11,7 +11,8 @@ import { onForbidden, api } from "./api/client";
 import { routes } from "./api/routes";
 import { connectStream } from "./api/stream";
 import { resetRouteFromLocation } from "./router";
-import { setAuthed, loadProjects, protocolVersion, refreshTick, toastError } from "./state";
+import { setAuthed, loadProjects, protocolVersion, refreshTick, inboxCount, toastError } from "./state";
+import { countInbox, type Inbox } from "./inbox/InboxPage";
 import { effect } from "@preact/signals";
 
 onForbidden(() => setAuthed(false));
@@ -21,7 +22,11 @@ async function boot() {
   resetRouteFromLocation();
   const h = await api<{ protocol_version: number }>(routes.healthz());
   protocolVersion.value = h.protocol_version;
-  effect(() => { void refreshTick.value; loadProjects().catch(toastError); });
+  effect(() => {
+    void refreshTick.value;
+    loadProjects().catch(toastError);
+    api<Inbox>(routes.inbox()).then((d) => { inboxCount.value = countInbox(d); }, toastError);
+  });
   connectStream();
   render(<App />, document.getElementById("root")!);
 }
