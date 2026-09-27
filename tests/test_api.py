@@ -562,3 +562,20 @@ def test_run_endpoint_spawns_process(client, conn, auth_headers):
     r = client.post(f"/projects/{project_id}/run", json={}, headers=auth_headers)
     assert r.status_code == 200
     assert "pid" in r.json()["spawned"]
+
+
+def test_graph_endpoint_includes_carries_and_agent(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "A"}, headers=auth_headers)
+    a_id = r.json()["node"]["id"]
+    r = client.post(f"/nodes/{spec_id}/children", json={"title": "B", "depends_on": [{"id": a_id, "carries": "audio"}]}, headers=auth_headers)
+
+    r = client.get(f"/graph?project_id={project_id}", headers=auth_headers)
+    body = r.json()
+    node_a = next(n for n in body["nodes"] if n["id"] == a_id)
+    assert "agent" in node_a
+    edge = next(e for e in body["edges"] if e["from"] == a_id)
+    assert edge["carries"] == "audio"

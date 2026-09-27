@@ -633,11 +633,14 @@ def create_app(
                 for r in rows if r["parent_id"] in ids
             ]
             edges += [
-                {"from": d["depends_on"], "to": d["node_id"], "kind": "dep"}
-                for d in core.db.query_all(conn, "SELECT node_id, depends_on FROM deps ORDER BY rowid")
+                {"from": d["depends_on"], "to": d["node_id"], "kind": "dep", "carries": d["carries"]}
+                for d in core.db.query_all(conn, "SELECT node_id, depends_on, carries FROM deps ORDER BY rowid")
                 if d["node_id"] in ids and d["depends_on"] in ids
             ]
-        return {"nodes": _rows_to_list(rows), "edges": edges}
+        nodes = _rows_to_list(rows)
+        for node in nodes:
+            node["agent"] = node["owner"] or getattr(config.routing, node["kind"], None)
+        return {"nodes": nodes, "edges": edges}
 
     @app.get("/brief")
     def get_brief(
