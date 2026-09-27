@@ -978,6 +978,16 @@ def breakdown(
                 )
                 raise typer.Exit(code=1)
 
+            # Mirrors core.runner.run checking `_stop_requested` right
+            # before starting work (runner.py:446/484/579/792/880): a
+            # SIGTERM landing in the window between register() and this
+            # point (e.g. stuck behind a slow/blocked record_event write)
+            # would otherwise never be noticed, and invoke_driver would
+            # still spawn the agent -- the same orphan outcome as if no
+            # handler existed at all, just through a narrower window.
+            if stopped.is_set():
+                _fail("stopped")
+
             result = core.drivers.invoke_driver(agent, agent_cfg, brief, repo_root, log_path=log_path)
             if stopped.is_set():
                 _fail("stopped")
@@ -997,8 +1007,8 @@ def breakdown(
             created_ids: list[int] = []
             try:
                 for i, child in enumerate(children_spec):
-                    if "title" not in child:
-                        raise ValueError(f"child at index {i} is missing a title")
+                    if not isinstance(child.get("title"), str) or not child["title"]:
+                        raise ValueError(f"child at index {i} has no valid (non-empty string) title")
                     for dep in child.get("depends_on", []):
                         dep_id = dep.get("id")
                         if not isinstance(dep_id, int) or isinstance(dep_id, bool) or not (

@@ -150,6 +150,71 @@ def test_breakdown_sigterm_stops_agent_and_records_failed(tmp_path):
     assert ps.stdout.strip() == "", f"orphaned fake agent process(es) still running: {ps.stdout!r}"
 
 
+def test_breakdown_sigterm_before_agent_starts_is_not_lost(tmp_path):
+    """N1 (round-2 review): a SIGTERM landing in the window between
+    register() and invoke_driver actually starting the agent -- e.g.
+    stuck behind a slow/contended sqlite write for breakdown.started --
+    must still be noticed and must never let the agent spawn at all.
+
+    Reproduced the way the reviewer did: hold a real BEGIN IMMEDIATE write
+    lock on the same db file from a second connection so `_breakdown`'s
+    own `record_event(...breakdown.started...)` blocks inside sqlite's
+    busy-wait (busy_timeout=5000ms, core/db.py:38). While blocked there,
+    the process cannot be handling the Python-level SIGTERM handler yet
+    (it can't run until the blocking C call returns), so any check made
+    only *after* invoke_driver would already be too late -- this is
+    exactly why the fix needs a check immediately *before* the
+    invoke_driver call as well, not just after it.
+    """
+    repo_root = _init_repo(tmp_path)
+    conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
+    project = projects_mod.create_project(conn, goal="g")
+    spec = nodes_mod.create_node(conn, project_id=project["id"], kind="spec", title="s", status="ready")
+    conn.commit()
+    conn.close()
+
+    import sqlite3
+
+    lock_conn = sqlite3.connect(str(repo_root / ".muvue" / "muvue.db"), isolation_level=None)
+    lock_conn.execute("BEGIN IMMEDIATE")
+    try:
+        env = dict(os.environ)
+        env["MUVUE_FAKE_BEHAVIOR"] = "breakdown"
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "muvue", "_breakdown", "--node", str(spec["id"]),
+             "--agent", "fake", "--path", str(repo_root)],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            # Give the subprocess time to get past register() (a plain
+            # file write) and into the blocked record_event call.
+            time.sleep(0.5)
+            proc.send_signal(signal.SIGTERM)
+            # Keep holding the lock a bit longer so the SIGTERM genuinely
+            # lands while record_event is still retrying, not after.
+            time.sleep(0.5)
+        finally:
+            lock_conn.execute("COMMIT")
+        proc.wait(timeout=10)
+    finally:
+        lock_conn.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    assert proc.returncode == 1, (proc.stdout.read(), proc.stderr.read())
+    events = _events(repo_root, spec["id"])
+    assert ("breakdown.failed", {"reason": "stopped"}) in events
+    assert list(_runners_dir(repo_root).glob("*")) == []
+    # The point of N1: the agent must never have been started at all.
+    conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
+    children = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (spec["id"],)).fetchall()
+    conn.close()
+    assert children == []
+    ps = subprocess.run(["pgrep", "-f", "muvue-fake-agent"], capture_output=True, text=True)
+    assert ps.stdout.strip() == "", f"agent should never have started, found: {ps.stdout!r}"
+
+
 # -- fix #2: parse from `summary` too; empty breakdown is a failure --------
 
 
@@ -242,8 +307,11 @@ def test_breakdown_bad_sibling_index_fails_cleanly_not_a_crash(tmp_path, monkeyp
     assert len(failed_events) == 1
     assert "invalid depends_on index" in failed_events[0][1]["reason"]
 
-    # Atomicity (fix #3): child A must NOT be left committed as an orphan
-    # half-result when B's validation fails partway through the loop.
+    # Atomicity (fix #3, documented no-rollback scoping): child A DOES stay
+    # committed even though B's validation fails partway through the loop --
+    # each create_node call already committed its own write_txn before B was
+    # ever reached. The requirement is a terminal breakdown.failed event and
+    # a clean exit, not a rollback of already-committed children.
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
     children = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (spec["id"],)).fetchall()
     conn.close()
@@ -302,7 +370,33 @@ def test_breakdown_missing_title_rejected(tmp_path, monkeypatch):
     assert result.exit_code != 0
     failed_events = [(t, p) for t, p in _events(repo_root, spec["id"]) if t == "breakdown.failed"]
     assert len(failed_events) == 1
-    assert "missing a title" in failed_events[0][1]["reason"]
+    assert "no valid" in failed_events[0][1]["reason"] and "title" in failed_events[0][1]["reason"]
+
+
+def test_breakdown_non_string_title_rejected(tmp_path, monkeypatch):
+    repo_root = _init_repo(tmp_path)
+    conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
+    project = projects_mod.create_project(conn, goal="g")
+    spec = nodes_mod.create_node(conn, project_id=project["id"], kind="spec", title="s", status="ready")
+    conn.commit()
+    conn.close()
+
+    bad_breakdown = json.dumps({"type": "breakdown", "children": [{"title": 7, "body_md": "int title"}]})
+
+    def _fake_invoke(agent_name, agent_cfg, brief_text, cwd, *, timeout=600, log_path=None):
+        return DriverResult(status="done", raw_stdout=bad_breakdown + "\n")
+
+    monkeypatch.setattr(drivers_mod, "invoke_driver", _fake_invoke)
+    result = _invoke(repo_root, spec["id"])
+
+    assert result.exit_code != 0
+    failed_events = [(t, p) for t, p in _events(repo_root, spec["id"]) if t == "breakdown.failed"]
+    assert len(failed_events) == 1
+    assert "no valid" in failed_events[0][1]["reason"] and "title" in failed_events[0][1]["reason"]
+    conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
+    children = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (spec["id"],)).fetchall()
+    conn.close()
+    assert children == [], "a non-string title (e.g. an int) must never reach create_node"
 
 
 # -- fix #5: task-branch (replan_add_subtask) coverage; kind guard ---------
@@ -359,6 +453,9 @@ def test_breakdown_on_unapproved_task_fails_cleanly(tmp_path, monkeypatch):
     assert "Traceback" not in result.output, "an unapproved task's GateError must be caught, not leak as a traceback"
     failed_events = [(t, p) for t, p in _events(repo_root, task["id"]) if t == "breakdown.failed"]
     assert len(failed_events) == 1
+    # The actual GateError message from replan_add_subtask (revisions.py),
+    # not just that some breakdown.failed event happened.
+    assert "not been Gate 2 approved" in failed_events[0][1]["reason"]
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
     subtasks = conn.execute("SELECT * FROM nodes WHERE parent_id = ?", (task["id"],)).fetchall()
     conn.close()
