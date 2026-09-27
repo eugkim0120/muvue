@@ -745,6 +745,60 @@ def create_app(
         return {"spawned": {"pid": proc.pid, "node_id": node_id, "agent": agent,
                             "log": str(log_path.relative_to(repo_root))}}
 
+    @app.post("/nodes/{node_id}/breakdown")
+    def start_breakdown(node_id: int, request: Request, agent: str | None = Body(default=None, embed=True)) -> dict:
+        """`POST /nodes/{id}/breakdown` launches `muvue _breakdown` (Task
+        8's internal verb) as a detached subprocess against `node_id`,
+        the same way `_spawn_runner` above launches `muvue run`."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                node = core.nodes.get_node(conn, node_id)
+            except Exception as e:
+                _handle_core_error(e)
+        if node["kind"] not in ("spec", "task"):
+            raise HTTPException(status_code=409, detail=f"node {node_id} is kind={node['kind']!r}; breakdown only applies to a spec or a task")
+        resolved_agent = agent or getattr(config.routing, "spec" if node["kind"] == "spec" else "task")
+        if config.agents and resolved_agent not in config.agents:
+            raise HTTPException(status_code=422, detail=f"unknown agent {resolved_agent!r} (configured: {sorted(config.agents)})")
+        already_running = any(r["project_id"] in (None, node["project_id"]) for r in core.runners.live(repo_root))
+        if already_running:
+            raise HTTPException(status_code=409, detail=f"a breakdown or run is already active on project {node['project_id']}")
+        log_path = repo_root / core.runner.LOGS_RELDIR / f"breakdown-{node_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "muvue", "_breakdown", "--node", str(node_id), "--agent", resolved_agent,
+                 "--path", str(repo_root)],
+                cwd=repo_root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"spawned": {"pid": proc.pid, "node_id": node_id, "agent": resolved_agent,
+                            "log": str(log_path.relative_to(repo_root))}}
+
+    @app.post("/projects/{project_id}/run")
+    def start_run(project_id: int, request: Request, parallel: int | None = Body(default=None, embed=True)) -> dict:
+        """`POST /projects/{id}/run` launches `muvue run --project-id ID`
+        (whole-project unattended runner) as a detached subprocess."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+            except Exception as e:
+                _handle_core_error(e)
+        log_path = repo_root / core.runner.LOGS_RELDIR / f"run-project-{project_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        args = [sys.executable, "-m", "muvue", "run", "--project-id", str(project_id), "--path", str(repo_root)]
+        if parallel:
+            args += ["--parallel", str(parallel)]
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                args, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"spawned": {"pid": proc.pid, "project_id": project_id,
+                            "log": str(log_path.relative_to(repo_root))}}
+
     @app.post("/nodes/{node_id}/done")
     def done_node(
         node_id: int,

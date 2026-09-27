@@ -489,3 +489,39 @@ def test_agents_lists_configured_names_without_a_session(repo):
     r = c.get("/agents")
     assert r.status_code == 200
     assert r.json() == {"agents": ["claude", "zed"]}
+
+
+# -- Task 9: POST /nodes/{id}/breakdown and POST /projects/{id}/run --------
+
+
+def test_breakdown_endpoint_spawns_process(client, conn, auth_headers, tmp_path):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    conn.execute("UPDATE nodes SET status = 'ready' WHERE id = ?", (spec_id,))
+    conn.commit()
+
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
+    assert r.status_code == 200
+    assert "pid" in r.json()["spawned"]
+
+
+def test_breakdown_endpoint_409_if_already_running(client, conn, auth_headers, monkeypatch):
+    import muvue.core.runners as runners_mod
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec_id = r.json()["node"]["id"]
+    monkeypatch.setattr(runners_mod, "live", lambda repo_root: [{"pid": 1, "project_id": project_id, "started_at": "now"}])
+
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
+    assert r.status_code == 409
+
+
+def test_run_endpoint_spawns_process(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/run", json={}, headers=auth_headers)
+    assert r.status_code == 200
+    assert "pid" in r.json()["spawned"]
