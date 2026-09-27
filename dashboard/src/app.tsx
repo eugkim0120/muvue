@@ -42,7 +42,7 @@ export function App() {
         <main><Page /></main>
       </div>
       <TabBar />
-      {nodeId ? <NodeSheet /> : null}
+      {nodeId ? <NodeSheet key={nodeId} /> : null}
       {palette ? <CommandPalette onClose={() => setPalette(false)} /> : null}
       <Toasts />
     </div>

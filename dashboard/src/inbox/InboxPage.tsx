@@ -44,7 +44,7 @@ function QuestionCard({ q }: { q: Question }) {
   const [answer, setAnswer] = useState("");
   async function send() {
     if (!answer.trim()) return;
-    try { await post(routes.questionAnswer(q.id), { text: answer }); toast("answered"); refresh(); } catch (e) { toastError(e); }
+    try { await post(routes.questionAnswer(q.id), { text: answer }); toast("answered"); setAnswer(""); refresh(); } catch (e) { toastError(e); }
   }
   return (
     <form class="card stack tight" onSubmit={(e) => { e.preventDefault(); void send(); }}>
@@ -58,7 +58,14 @@ function QuestionCard({ q }: { q: Question }) {
 export function InboxPage() {
   const [data, setData] = useState<Inbox | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { api<Inbox>(routes.inbox()).then((d) => { setData(d); setError(null); inboxCount.value = countInbox(d); }, (e) => setError(e.message)); }, [refreshTick.value]);
+  useEffect(() => {
+    let alive = true;
+    api<Inbox>(routes.inbox()).then(
+      (d) => { if (!alive) return; setData(d); setError(null); inboxCount.value = countInbox(d); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [refreshTick.value]);
   if (error) return <div class="page"><div class="callout danger">{error}</div></div>;
   if (!data) return <div class="page"><p class="muted">loading…</p></div>;
   const rowOf = (n: { node_id: number; title: string }): NodeRow => ({ id: n.node_id, title: n.title, project_id: 0, parent_id: null, kind: "task", status: "review", risk_tier: "low", owner: null });
@@ -66,7 +73,7 @@ export function InboxPage() {
     <div class="page stack">
       <h1 class="page-title">Inbox</h1>
       {countInbox(data) === 0 ? <Empty text="Nothing waiting on you." check /> : null}
-      <Section title="Questions" count={data.questions.length}>{data.questions.map((q) => <QuestionCard q={q} />)}</Section>
+      <Section title="Questions" count={data.questions.length}>{data.questions.map((q) => <QuestionCard key={q.id} q={q} />)}</Section>
       <Section title="Awaiting review" count={data.review.length}><div class="list">{data.review.map((n) => <NodeRowItem node={n} right={<Tier tier={n.risk_tier} />} />)}</div></Section>
       <Section title="Unverified external criteria" count={data.unverified_external.length}>
         <div class="list">{data.unverified_external.map((u) => <NodeRowItem node={rowOf(u)} sub="muvue could not run these checks; verify before approving" />)}</div>

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/preact";
 import { NodeSheet } from "../src/node/NodeSheet";
+import { App } from "../src/app";
 import { authed } from "../src/state";
 import { resetRouteFromLocation } from "../src/router";
 
@@ -54,4 +55,28 @@ test("read-only shows no actions", async () => {
   render(<NodeSheet />);
   await screen.findByText("Overview");
   expect(screen.queryByText("Approve")).toBeNull();
+});
+
+test("switching to a different node id remounts the sheet, so a half-typed rejection doesn't leak across nodes", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    const idMatch = /^\/nodes\/(\d+)/.exec(url);
+    const id = idMatch ? Number(idMatch[1]) : 7;
+    const json = url.includes("/diff") ? { source: "none", diff: "", truncated: false }
+      : url.startsWith("/agents") ? { agents: [] }
+      : { node: { id, project_id: 1, parent_id: 1, kind: "task", title: `Task ${id}`, status: "review", risk_tier: "low", owner: null, body_md: "body", criteria_json: "[]", criteria_mode: "auto", summary: null, block_reason: null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
+    return { ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": "application/json" }), json: async () => json, text: async () => "" };
+  }));
+  window.location.hash = "#/plan?node=7";
+  resetRouteFromLocation();
+  render(<App />);
+  fireEvent.click(await screen.findByText("Reject"));
+  fireEvent.input(screen.getByPlaceholderText("what should change?"), { target: { value: "half-typed feedback for #7" } });
+  expect(screen.getByPlaceholderText("what should change?")).toHaveValue("half-typed feedback for #7");
+
+  window.location.hash = "#/plan?node=8";
+  resetRouteFromLocation();
+  await screen.findByText(/Task 8/);
+  expect(screen.queryByPlaceholderText("what should change?")).toBeNull();
+  fireEvent.click(await screen.findByText("Reject"));
+  expect(screen.getByPlaceholderText("what should change?")).toHaveValue("");
 });

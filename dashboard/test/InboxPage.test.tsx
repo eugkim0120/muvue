@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/preact";
+import { render, screen, fireEvent } from "@testing-library/preact";
 import { InboxPage, countInbox } from "../src/inbox/InboxPage";
-import { authed, inboxCount } from "../src/state";
+import { authed, inboxCount, refreshTick } from "../src/state";
 
 const empty = { questions: [], review: [], unverified_external: [], awaiting_approval: [], blocked: [], structure_updates: [], audit_items: [], signals: [], unattributed_commits: [] };
 
@@ -28,6 +28,25 @@ test("the count is the sum of every list and the badge follows", async () => {
 test("unverified_external alone is counted, not undercounted to zero", () => {
   const data = { ...empty, unverified_external: [{ node_id: 1, title: "a" }, { node_id: 2, title: "b" }] };
   expect(countInbox(data)).toBe(2);
+});
+
+test("typed-but-unsent answer for a question does not leak onto a different question rendered in its slot", async () => {
+  const q1 = { id: 1, node_id: 2, text: "which db?", default_answer: "sqlite" as string | null, default_ok: true };
+  const q2 = { id: 2, node_id: 3, text: "which host?", default_answer: null as string | null, default_ok: false };
+  let data = { ...empty, questions: [q1] };
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": "application/json" }), json: async () => data, text: async () => "" })));
+  render(<InboxPage />);
+  await screen.findByText("which db?");
+  fireEvent.input(screen.getByPlaceholderText("answer"), { target: { value: "half-typed answer" } });
+  expect(screen.getByPlaceholderText("answer")).toHaveValue("half-typed answer");
+
+  // q1 is answered/dismissed and a different question now occupies the same slot 0.
+  data = { ...empty, questions: [q2] };
+  refreshTick.value++;
+  await screen.findByText("which host?");
+  expect(screen.queryByText("which db?")).toBeNull();
+  const remaining = screen.getByPlaceholderText("answer") as HTMLInputElement;
+  expect(remaining.value).toBe("");
 });
 
 test("a javascript: pr_url never becomes an href, but still shows as text", async () => {
