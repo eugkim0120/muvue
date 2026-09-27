@@ -74,7 +74,7 @@ def create_node(
     actor: str = "human",
     actor_evidence: str = "tty",
     predicted_touches: list[str] | None = None,
-    depends_on: list[int] | None = None,
+    depends_on: list[dict] | None = None,
     owner: str | None = None,
 ) -> sqlite3.Row:
     """`owner` pre-assigns a ready node to someone without a lease (the
@@ -123,20 +123,23 @@ def create_node(
             type_="node.created",
             payload=dict(row),
         )
-        for dep_id in depends_on or []:
-            dep = get_node(conn, dep_id)
-            if dep["project_id"] != project_id or dep["deleted_at"] is not None:
+        for dep in depends_on or []:
+            dep_id = dep["id"]
+            carries = dep.get("carries")
+            dep_node = get_node(conn, dep_id)
+            if dep_node["project_id"] != project_id or dep_node["deleted_at"] is not None:
                 raise NodeError(
                     f"node {node_id} cannot depend on node {dep_id}: dependencies must be "
                     "live nodes in the same project"
                 )
             conn.execute(
-                "INSERT OR IGNORE INTO deps (node_id, depends_on) VALUES (?, ?)", (node_id, dep_id)
+                "INSERT OR IGNORE INTO deps (node_id, depends_on, carries) VALUES (?, ?, ?)",
+                (node_id, dep_id, carries),
             )
             events.record_event(
                 conn, project_id=project_id, node_id=node_id, actor=actor,
                 actor_evidence=actor_evidence, type_="dep.added",
-                payload={"node_id": node_id, "depends_on": dep_id},
+                payload={"node_id": node_id, "depends_on": dep_id, "carries": carries},
             )
         return row
 

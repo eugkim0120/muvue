@@ -32,7 +32,8 @@ def _seed(conn) -> dict:
         conn, project_id=project["id"], kind="task", title="Refactor pricing loader",
         body_md="Split parsing from file IO so the loader can read v2 price files.",
         criteria=["loader reads v2 files", "tests pass"], criteria_mode="auto",
-        predicted_touches=["pricing/loader.py", "pricing/raw.py"], depends_on=[loader["id"]],
+        predicted_touches=["pricing/loader.py", "pricing/raw.py"],
+        depends_on=[{"id": loader["id"], "carries": None}],
         status="pending",
     )
     other = nodes.create_node(

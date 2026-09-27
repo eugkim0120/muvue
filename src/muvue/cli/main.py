@@ -604,6 +604,10 @@ def decompose(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this task waits on"
     ),
+    carries: list[str] = typer.Option(
+        [], "--carries",
+        help="what each --depends-on edge carries, same order, or omit to leave unlabeled",
+    ),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
@@ -611,11 +615,19 @@ def decompose(
     (`core.nodes.create_node`). Created `pending` under the spec (`parent_id`);
     a human then calls `approve gate2:PROJECT_ID` to freeze criteria and
     unblock `start`."""
+    if carries and len(carries) != len(depends_on):
+        raise typer.BadParameter(
+            "--carries must be given once per --depends-on, in the same order (or not at all)"
+        )
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         def _apply():
             spec_node = core.nodes.get_node(conn, spec_id)
+            dep_list = [
+                {"id": dep_id, "carries": carries[i] if i < len(carries) else None}
+                for i, dep_id in enumerate(depends_on)
+            ]
             result = core.nodes.create_node(
                 conn,
                 project_id=spec_node["project_id"],
@@ -626,7 +638,7 @@ def decompose(
                 criteria=list(criteria),
                 criteria_mode=criteria_mode,
                 predicted_touches=list(predicted_touches),
-                depends_on=list(depends_on),
+                depends_on=dep_list,
                 status="pending",
                 actor="agent",
                 actor_evidence=_evidence(),
@@ -859,6 +871,10 @@ def replan(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this subtask waits on"
     ),
+    carries: list[str] = typer.Option(
+        [], "--carries",
+        help="what each --depends-on edge carries, same order, or omit to leave unlabeled",
+    ),
     predicted_touches: list[str] = typer.Option(
         [], "--predicted-touches", help="repeatable path glob; must fall inside the parent's touches"
     ),
@@ -869,14 +885,22 @@ def replan(
     subtask outside the parent's touches, or past `max_subtasks`, is
     created `pending` and needs `approve node:ID`. New tasks, deletions,
     or criteria changes need a plan revision instead."""
+    if carries and len(carries) != len(depends_on):
+        raise typer.BadParameter(
+            "--carries must be given once per --depends-on, in the same order (or not at all)"
+        )
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
         def _apply():
+            dep_list = [
+                {"id": dep_id, "carries": carries[i] if i < len(carries) else None}
+                for i, dep_id in enumerate(depends_on)
+            ]
             return core.revisions.replan_add_subtask(
                 conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
-                depends_on=list(depends_on), predicted_touches=list(predicted_touches),
+                depends_on=dep_list, predicted_touches=list(predicted_touches),
                 config=config, actor_evidence=_evidence(),
             )
         result = core.idempotency.once(

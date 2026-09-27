@@ -33,7 +33,7 @@ def replan_add_subtask(
     title: str,
     body_md: str = "",
     criteria: list[str] | None = None,
-    depends_on: list[int] | None = None,
+    depends_on: list[dict] | None = None,
     predicted_touches: list[str] | None = None,
     config: MuvueConfig | None = None,
     actor: str = "agent",

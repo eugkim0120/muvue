@@ -48,11 +48,35 @@ def _cli(repo: Path, *args: str) -> subprocess.CompletedProcess:
 def test_create_node_writes_deps_and_a_replayable_event(conn, project):
     a = nodes.create_node(conn, project_id=project["id"], kind="task", title="a")
     b = nodes.create_node(conn, project_id=project["id"], kind="task", title="b",
-                          depends_on=[a["id"]])
+                          depends_on=[{"id": a["id"], "carries": None}])
     rows = conn.execute("SELECT node_id, depends_on FROM deps").fetchall()
     assert [tuple(r) for r in rows] == [(b["id"], a["id"])]
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE type = 'dep.added'").fetchone()["c"] == 1
     assert rebuild.diff_state(conn) == {}
+
+
+def test_create_node_with_carries_writes_dep_added_event(conn, project):
+    upstream = nodes.create_node(conn, project_id=project["id"], kind="task", title="Record voice")
+    downstream = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="Detect pitch",
+        depends_on=[{"id": upstream["id"], "carries": "audio frames"}],
+    )
+
+    dep_row = conn.execute(
+        "SELECT * FROM deps WHERE node_id = ? AND depends_on = ?",
+        (downstream["id"], upstream["id"]),
+    ).fetchone()
+    assert dep_row["carries"] == "audio frames"
+
+    dep_events = conn.execute(
+        "SELECT * FROM events WHERE type = 'dep.added' AND node_id = ?",
+        (downstream["id"],),
+    ).fetchall()
+    assert len(dep_events) == 1
+    payload = json.loads(dep_events[0]["payload"])
+    assert payload == {
+        "node_id": downstream["id"], "depends_on": upstream["id"], "carries": "audio frames",
+    }
 
 
 def test_depends_on_must_be_a_live_node_in_the_same_project(conn, project):
@@ -60,10 +84,10 @@ def test_depends_on_must_be_a_live_node_in_the_same_project(conn, project):
     foreign = nodes.create_node(conn, project_id=other["id"], kind="task", title="x")
     with pytest.raises(nodes.NodeError, match="same project"):
         nodes.create_node(conn, project_id=project["id"], kind="task", title="b",
-                          depends_on=[foreign["id"]])
+                          depends_on=[{"id": foreign["id"], "carries": None}])
     with pytest.raises(LookupError):
         nodes.create_node(conn, project_id=project["id"], kind="task", title="b",
-                          depends_on=[999])
+                          depends_on=[{"id": 999, "carries": None}])
 
 
 def test_cli_decompose_accepts_depends_on(tmp_path: Path):
@@ -185,7 +209,8 @@ def test_cli_fail_takes_the_lesson_fields(tmp_path: Path):
 
 def test_replay_detects_tampered_deps(conn, project):
     a = nodes.create_node(conn, project_id=project["id"], kind="task", title="a")
-    nodes.create_node(conn, project_id=project["id"], kind="task", title="b", depends_on=[a["id"]])
+    nodes.create_node(conn, project_id=project["id"], kind="task", title="b",
+                     depends_on=[{"id": a["id"], "carries": None}])
     conn.execute("DELETE FROM deps")
     assert "deps" in rebuild.diff_state(conn)
 
@@ -224,7 +249,8 @@ def test_apply_rebuild_restores_the_replayable_set_and_keeps_other_tables(conn, 
     from muvue.core import asks
 
     a = nodes.create_node(conn, project_id=project["id"], kind="task", title="a", status="ready")
-    nodes.create_node(conn, project_id=project["id"], kind="task", title="b", depends_on=[a["id"]])
+    nodes.create_node(conn, project_id=project["id"], kind="task", title="b",
+                     depends_on=[{"id": a["id"], "carries": None}])
     nodes.start(conn, a["id"], owner="x")
     asks.ask(conn, a["id"], question="which db?", default="sqlite")
     spend.record_spend(conn, project["id"], "claude", "requests", 4)

@@ -147,7 +147,7 @@ def test_light_merge_conflict_blocks_and_creates_rebase_subtask(conn, config, re
 @pytest.mark.skipif(shutil.which("muvue-fake-agent") is None, reason="fake agent not installed")
 def test_run_parallel_isolates_nodes_and_merges_in_dependency_order(conn, config, repo):
     first = _task(conn, config, "first", ["a.py"])
-    second = _task(conn, config, "second", ["b.py"], depends_on=[first["id"]])
+    second = _task(conn, config, "second", ["b.py"], depends_on=[{"id": first["id"], "carries": None}])
     third = _task(conn, config, "third", ["c.py"])
     _approve_all(conn, config)
     result = runner_mod.run(repo / ".muvue" / "muvue.db", config, repo, parallel=2)
