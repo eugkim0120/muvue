@@ -11,7 +11,7 @@ export type BreakdownOutcome = {
 };
 export type Working = { node_id: number; title: string; agent: string | null };
 export type Activity = { active: ActiveProc[]; breakdowns: BreakdownOutcome[]; working: Working[] };
-export type Launch = { kind: "run" | "breakdown"; nodeId: number | null; label: string; afterEventId: number; at: number };
+export type Launch = { kind: "run" | "breakdown"; nodeId: number | null; projectId: number | null; label: string; afterEventId: number; at: number };
 export type LogRef = { kind: "node"; nodeId: number } | { kind: "project"; projectId: number };
 export type ActivityItem =
   | { tone: "busy"; key: string; text: string; startedAt: number; log: LogRef | null }
@@ -19,6 +19,11 @@ export type ActivityItem =
 
 export const LAUNCH_TIMEOUT_MS = 15000;
 const STORAGE_KEY = "muvue.dismissedActivity";
+// Bound the dismissed-key set so localStorage doesn't grow unbounded across
+// a machine's lifetime of dismissed errors; a simple truncation to the most
+// recently dismissed keys on write is enough since older ones are no longer
+// useful once their source event has scrolled out of the activity feed.
+const MAX_DISMISSED_KEYS = 200;
 
 function loadDismissed(): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as string[]); } catch { return new Set(); }
@@ -35,7 +40,9 @@ function timeoutKey(l: Launch): string {
   return `launch-timeout:${l.kind}:${l.nodeId}:${l.at}`;
 }
 export function dismiss(key: string): void {
-  const next = new Set(dismissedKeys.value); next.add(key); dismissedKeys.value = next;
+  let next = new Set(dismissedKeys.value); next.add(key);
+  if (next.size > MAX_DISMISSED_KEYS) next = new Set([...next].slice(-MAX_DISMISSED_KEYS));
+  dismissedKeys.value = next;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...next])); } catch { /* per-viewer convenience only; the in-memory set still hides it */ }
   const m = TIMEOUT_KEY_RE.exec(key);
   if (m) {
@@ -102,8 +109,12 @@ export function activityItems(
   }
 
   // Rule 3: launches this client fired, until the server confirms or times out.
+  // A launch belonging to a different project (this client's `launches`
+  // signal is global, not scoped to a project) must never surface here.
   for (const l of launched) {
+    if (l.projectId !== null && l.projectId !== projectId) continue;
     if (confirmed(l, a)) continue;
+    const log: LogRef = l.nodeId !== null ? { kind: "node", nodeId: l.nodeId } : { kind: "project", projectId };
     if (now - l.at < LAUNCH_TIMEOUT_MS) {
       items.push({ tone: "busy", key: `launch:${l.kind}:${l.nodeId}`, text: `Starting ${l.label}…`, startedAt: l.at, log: null });
     } else {
@@ -113,15 +124,19 @@ export function activityItems(
         tone: "error",
         key,
         text: `${l.label} did not start: nothing was reported within 15 seconds. Check the log.`,
-        log: null,
+        log,
       });
     }
   }
 
-  // Rule 4: persistent breakdown failures, until dismissed.
+  // Rule 4: persistent breakdown failures, until dismissed. The key
+  // includes the project id and timestamp (not just event_id) since event
+  // ids are small per-database integers shared across every repo served on
+  // the same `muvue serve` port -- an event_id-only key would let one
+  // repo's dismissal hide a different repo's failure.
   for (const b of activity.breakdowns) {
     if (b.type !== "breakdown.failed") continue;
-    const key = `bd-fail:${b.event_id}`;
+    const key = `bd-fail:${projectId}:${b.event_id}:${b.ts}`;
     if (dismissed.has(key)) continue;
     const title = titles[b.node_id] ?? "#" + b.node_id;
     items.push({ tone: "error", key, text: `Planning “${title}” failed: ${b.reason ?? "no reason recorded"}`, log: { kind: "node", nodeId: b.node_id } });
@@ -131,8 +146,10 @@ export function activityItems(
 }
 
 // Task 9's placeholder: nodes with a breakdown running now, or just launched
-// and not yet confirmed or timed out.
-export function planningNodeIds(a: Activity | null, launched: Launch[]): Set<number> {
+// and not yet confirmed or timed out. `projectId` scopes `launched`, which
+// is a global signal, so a launch against a different project never marks
+// one of this project's nodes as planning.
+export function planningNodeIds(a: Activity | null, launched: Launch[], projectId: number | null): Set<number> {
   const ids = new Set<number>();
   for (const p of a?.active ?? []) {
     if (p.kind === "breakdown" && p.node_id !== null) ids.add(p.node_id);
@@ -140,6 +157,7 @@ export function planningNodeIds(a: Activity | null, launched: Launch[]): Set<num
   const now = Date.now();
   for (const l of launched) {
     if (l.kind !== "breakdown" || l.nodeId === null) continue;
+    if (l.projectId !== null && l.projectId !== projectId) continue;
     if (confirmed(l, a)) continue;
     if (now - l.at < LAUNCH_TIMEOUT_MS) ids.add(l.nodeId);
   }
@@ -155,12 +173,20 @@ export function useActivity(projectId: number | null): Activity | null {
     let alive = true;
     api<Activity>(routes.projectActivity(projectId)).then((a) => {
       if (!alive) return;
+      // `launches` is a global signal, not scoped per project, so a launch
+      // fired against a different project must never be confirmed, pruned,
+      // or toasted about using this project's `a` -- it would falsely
+      // surface (or falsely dismiss) as this project's activity.
       for (const l of launches.value) {
+        if (l.projectId !== null && l.projectId !== projectId) continue;
         if (l.kind !== "breakdown" || !confirmed(l, a)) continue;
         const outcome = a.breakdowns.find((b) => b.node_id === l.nodeId);
         if (outcome?.type === "breakdown.finished" && outcome.event_id > l.afterEventId) { toast(`Added ${outcome.created?.length ?? 0} tasks`); refresh(); }
       }
-      launches.value = launches.value.filter((l) => !confirmed(l, a) || (l.kind === "breakdown" && a.active.some((p) => p.node_id === l.nodeId)));
+      launches.value = launches.value.filter((l) => {
+        if (l.projectId !== null && l.projectId !== projectId) return true;
+        return !confirmed(l, a) || (l.kind === "breakdown" && a.active.some((p) => p.node_id === l.nodeId));
+      });
       prev.current = a;
       setActivity(a);
     }, (e) => { if (alive) toast(e instanceof Error ? e.message : String(e), "error"); });
@@ -168,7 +194,9 @@ export function useActivity(projectId: number | null): Activity | null {
   }, [projectId, refreshTick.value, tick]);
   // A launch past LAUNCH_TIMEOUT_MS already has its (dismissable) error
   // item; it will never confirm, so it must not keep the poll alive forever.
-  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l) => Date.now() - l.at < LAUNCH_TIMEOUT_MS));
+  // A launch against a different project must not extend this project's
+  // polling either.
+  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l) => (l.projectId === null || l.projectId === projectId) && Date.now() - l.at < LAUNCH_TIMEOUT_MS));
   useEffect(() => {
     if (!polling) return;
     const t = setInterval(() => setTick((n) => n + 1), 1500);

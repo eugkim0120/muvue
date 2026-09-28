@@ -36,6 +36,19 @@ test("a pending spec shows Approve spec above the spec body", async () => {
   expect(btn.compareDocumentPosition(specBody) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
+test("Important #6: a pending spec does not also offer 'Plan more tasks with agent' -- that would skip the approval gate", async () => {
+  stubApi("pending", "spec");
+  render(<NodeSheet />);
+  await screen.findByText("Approve spec");
+  expect(screen.queryByText("✨ Plan more tasks with agent")).toBeNull();
+});
+
+test("an approved spec offers 'Plan more tasks with agent'", async () => {
+  stubApi("ready", "spec");
+  render(<NodeSheet />);
+  await screen.findByText("✨ Plan more tasks with agent");
+});
+
 test("review shows Approve and Reject; Reject posts the feedback", async () => {
   const calls = stubApi("review");
   render(<NodeSheet />);

@@ -4,7 +4,7 @@ import { refresh, toast } from "../state";
 import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
 import { BreakdownButton } from "../canvas/AddForm";
-import type { Activity } from "./activity";
+import { launches, LAUNCH_TIMEOUT_MS, type Activity } from "./activity";
 import type { NextStep } from "./nextStep";
 
 export function NextStepBar({
@@ -50,8 +50,14 @@ export function NextStepBar({
           ) : null}
           {step.id === "plan_tasks" && specId !== null ? (
             <div class="actions">
-              <BreakdownButton nodeId={specId} activity={activity} label="✨ Plan tasks with agent" />
-              <Button variant="outline" onClick={onAddTask}>+ Add task myself</Button>
+              <BreakdownButton nodeId={specId} projectId={projectId} activity={activity} label="✨ Plan tasks with agent" />
+              <Button
+                variant="outline"
+                disabled={launches.value.some((l) => l.kind === "breakdown" && l.nodeId === specId && l.projectId === projectId && Date.now() - l.at < LAUNCH_TIMEOUT_MS)}
+                onClick={onAddTask}
+              >
+                + Add task myself
+              </Button>
             </div>
           ) : null}
           {step.id === "approve_tasks" && specId !== null ? (

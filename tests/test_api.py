@@ -511,6 +511,24 @@ def test_breakdown_removed_node_is_refused(client, conn, auth_headers):
     assert r.status_code == 409
 
 
+def test_breakdown_pending_spec_is_refused(client, auth_headers):
+    """Final review Important #6: a spec that hasn't cleared the approval
+    gate yet (status still 'pending' right after /spec submission) must
+    refuse /breakdown -- letting it through would skip the spec-approval
+    gate the way the frontend's dropped `status !== "pending"` check did
+    before this fix."""
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.post(f"/projects/{project_id}/spec", json={"title": "s", "body_md": "b"}, headers=auth_headers)
+    spec = r.json()["node"]
+    spec_id = spec["id"]
+    assert spec["status"] == "pending"
+
+    r = client.post(f"/nodes/{spec_id}/breakdown", json={}, headers=auth_headers)
+
+    assert r.status_code == 409
+
+
 def test_create_project_requires_auth(client):
     r = client.post("/projects", json={"goal": "g"})
     assert r.status_code == 403

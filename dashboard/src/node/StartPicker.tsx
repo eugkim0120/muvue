@@ -6,14 +6,14 @@ import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
 import { markLaunched } from "../project/activity";
 
-function AgentRow({ nodeId, agent, onStarted }: { nodeId: number; agent: string; onStarted: () => void }) {
+function AgentRow({ nodeId, projectId, agent, onStarted }: { nodeId: number; projectId: number; agent: string; onStarted: () => void }) {
   const a = useAction();
   async function start() {
     const ok = await a.run(async () => {
       const r = await post<{ spawned: { pid: number; log: string } }>(routes.nodeStart(nodeId, agent));
       toast(`started runner pid ${r.spawned.pid}`);
     });
-    if (ok) { markLaunched({ kind: "run", nodeId, label: `#${nodeId}` }, null); refresh(); onStarted(); }
+    if (ok) { markLaunched({ kind: "run", nodeId, projectId, label: `#${nodeId}` }, null); refresh(); onStarted(); }
   }
   return (
     <div class="stack tight">
@@ -23,14 +23,14 @@ function AgentRow({ nodeId, agent, onStarted }: { nodeId: number; agent: string;
   );
 }
 
-export function StartPicker({ nodeId, onClose, onStarted }: { nodeId: number; onClose: () => void; onStarted: () => void }) {
+export function StartPicker({ nodeId, projectId, onClose, onStarted }: { nodeId: number; projectId: number; onClose: () => void; onStarted: () => void }) {
   const [agents, setAgents] = useState<string[] | null>(null);
   useEffect(() => { api<{ agents: string[] }>(routes.agents()).then((r) => setAgents(r.agents), toastError); }, []);
   return (
     <div class="card stack tight">
       <div class="caption">Agent from config.toml [agents.*]</div>
       {agents === null ? <p class="muted">loading…</p> : agents.length ? (
-        <div class="list stack tight">{agents.map((a) => <AgentRow key={a} nodeId={nodeId} agent={a} onStarted={onStarted} />)}</div>
+        <div class="list stack tight">{agents.map((a) => <AgentRow key={a} nodeId={nodeId} projectId={projectId} agent={a} onStarted={onStarted} />)}</div>
       ) : <p class="muted">no agents configured</p>}
       <div class="actions"><Button variant="plain" onClick={onClose}>Cancel</Button></div>
     </div>

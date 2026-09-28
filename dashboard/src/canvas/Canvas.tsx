@@ -16,8 +16,8 @@ function boxStyle(p: Placed): Record<string, string> {
 type Point = { x: number; y: number };
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
-export function Canvas({ data, projectPhase, needsYou, activity, onAddTask }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number>; activity: Activity | null; onAddTask: () => void }) {
-  const planning = data.spec ? planningNodeIds(activity, launches.value).has(data.spec.id) : false;
+export function Canvas({ data, projectId, projectPhase, needsYou, activity, onAddTask }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number>; activity: Activity | null; onAddTask: () => void }) {
+  const planning = data.spec ? planningNodeIds(activity, launches.value, projectId).has(data.spec.id) : false;
   const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
 
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -105,7 +105,21 @@ export function Canvas({ data, projectPhase, needsYou, activity, onAddTask }: { 
         </div>
       </div>
       <div class="canvas-zoom-controls">
-        <button type="button" class="icon-btn" aria-label="zoom out" onClick={() => setZoom(Math.max(MIN_ZOOM, z - 0.15))}>−</button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="zoom out"
+          onClick={() => {
+            const next = Math.max(MIN_ZOOM, z - 0.15);
+            setZoom(next);
+            // Zooming out below fit with a stale pan offset left the diagram
+            // stuck off-center until "Fit" was pressed; reset pan whenever
+            // the new zoom drops to (or below) fit, matching "Fit"'s own reset.
+            if (next <= fit + 0.001) setPan({ x: 0, y: 0 });
+          }}
+        >
+          −
+        </button>
         <button type="button" class="icon-btn" aria-label="fit to width" onClick={() => { setZoom(null); setPan({ x: 0, y: 0 }); }}>Fit</button>
         <button type="button" class="icon-btn" aria-label="zoom in" onClick={() => setZoom(Math.min(MAX_ZOOM, z + 0.15))}>+</button>
       </div>

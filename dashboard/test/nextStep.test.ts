@@ -19,9 +19,20 @@ test.each([
   expect(nextStep({ ...base, ...(over as Partial<NextStepInput>) }).id).toBe(id);
 });
 
-test("Run is only enabled at the run step, and says why otherwise", () => {
-  expect(runBlockReason(nextStep({ ...base, phase: "executing", taskCount: 1, readyCount: 1 }))).toBeNull();
-  expect(runBlockReason(nextStep({ ...base, taskCount: 3 }))).toBe("Run starts after the task list is approved.");
+test("Run is enabled whenever the project is executing with a ready task, and says why otherwise", () => {
+  expect(runBlockReason({ ...base, phase: "executing", taskCount: 1, readyCount: 1 })).toBeNull();
+  expect(runBlockReason({ ...base, taskCount: 3 })).toBe("Run starts after the task list is approved.");
+  expect(runBlockReason({ ...base, phase: "paused", taskCount: 3, readyCount: 3 })).toBe("The project is paused.");
+  expect(runBlockReason({ ...base, phase: "closed" })).toBe("The project is closed.");
+  expect(runBlockReason({ ...base, phase: "executing", taskCount: 3 })).toBe("Nothing is ready to run.");
+});
+
+test("Important #3: Run is not falsely blocked by an in_progress or review task elsewhere when another task is ready", () => {
+  // The backend's `run_block_reason` (core/queries.py) only checks phase
+  // and the ready count -- it never blocks Run just because some other
+  // task is in_progress or in review. The frontend used to be stricter.
+  expect(runBlockReason({ ...base, phase: "executing", taskCount: 2, workingCount: 1, readyCount: 1 })).toBeNull();
+  expect(runBlockReason({ ...base, phase: "executing", taskCount: 2, reviewCount: 1, readyCount: 1 })).toBeNull();
 });
 
 test("detail counts are pluralised", () => {

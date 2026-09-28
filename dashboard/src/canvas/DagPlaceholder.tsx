@@ -1,6 +1,3 @@
-import { authed } from "../state";
-import { BreakdownButton } from "./AddForm";
-import { Button } from "../ui/Button";
 import type { Activity } from "../project/activity";
 
 // It sits inside the pannable canvas frame, so click and keydown must not
@@ -9,6 +6,12 @@ function stopBubble(e: { stopPropagation: () => void }): void {
   e.stopPropagation();
 }
 
+// The "no tasks yet" state owns no action button of its own -- NextStepBar's
+// "✨ Plan tasks with agent" (and its "+ Add task myself") is the sole owner
+// of that action when `nextStep().id === "plan_tasks"`, which is exactly
+// this state. Two independent "plan tasks" controls on screen at once was a
+// D8-class regression (final review, Important #4); this placeholder is
+// caption-only so there's never a second one.
 export function DagPlaceholder({ specId, planning, activity, onAddTask, style }: { specId: number; planning: boolean; activity: Activity | null; onAddTask: () => void; style?: Record<string, string | number> }) {
   return (
     <div class="task-box dag-empty" style={style} onClick={stopBubble} onKeyDown={stopBubble}>
@@ -23,13 +26,7 @@ export function DagPlaceholder({ specId, planning, activity, onAddTask, style }:
       ) : (
         <>
           <span class="title">No tasks yet</span>
-          <div class="caption">Tasks the spec breaks into will appear here, with arrows for what each one hands to the next.</div>
-          {authed.value ? (
-            <>
-              <BreakdownButton nodeId={specId} activity={activity} label="✨ Plan tasks with agent" />
-              <Button variant="plain" onClick={() => onAddTask()}>+ Add task myself</Button>
-            </>
-          ) : null}
+          <div class="caption">Tasks the spec breaks into will appear here, with arrows for what each one hands to the next. Use "Plan tasks with agent" above.</div>
         </>
       )}
     </div>

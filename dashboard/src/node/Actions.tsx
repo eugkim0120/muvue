@@ -44,9 +44,9 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
   if (n.status === "awaiting_approval") buttons.push(<Button variant="filled" busy={approveA.busy} busyLabel="Approving…" onClick={() => approve("node", "criteria approved")}>Approve changed criteria</Button>);
   if (n.kind === "spec" && n.status === "pending") buttons.push(<Button variant="filled" busy={approveA.busy} busyLabel="Approving…" onClick={() => approve("spec", "spec approved")}>Approve spec</Button>);
   if (n.status === "ready") buttons.push(<Button variant="filled" onClick={() => setStarting(true)}>Start with agent</Button>);
-  if (n.kind === "spec" && n.deleted_at === null) buttons.push(<BreakdownButton nodeId={n.id} activity={activity ?? null} label="✨ Plan more tasks with agent" />);
+  if (n.kind === "spec" && n.deleted_at === null && n.status !== "pending") buttons.push(<BreakdownButton nodeId={n.id} projectId={n.project_id} activity={activity ?? null} label="✨ Plan more tasks with agent" />);
   if (n.kind === "task" && n.deleted_at === null) {
-    buttons.push(<BreakdownButton nodeId={n.id} activity={activity ?? null} label="✨ Split into subtasks with agent" />);
+    buttons.push(<BreakdownButton nodeId={n.id} projectId={n.project_id} activity={activity ?? null} label="✨ Split into subtasks with agent" />);
     buttons.push(<Button variant="outline" onClick={() => setAddingSubtask((v) => !v)}>+ Add subtask</Button>);
   }
   if (n.criteria_hash === null && n.deleted_at === null && n.kind !== "spec") buttons.push(<Button variant="danger" onClick={() => setRemoving(true)}>Remove</Button>);
@@ -64,7 +64,7 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
           <div class="actions"><Button variant="danger" busy={rejectA.busy} busyLabel="Sending…" onClick={reject}>Send</Button><Button variant="plain" onClick={() => setRejecting(false)}>Cancel</Button></div>
         </div>
       ) : null}
-      {starting ? <StartPicker nodeId={n.id} onClose={() => setStarting(false)} onStarted={onDone} /> : null}
+      {starting ? <StartPicker nodeId={n.id} projectId={n.project_id} onClose={() => setStarting(false)} onStarted={onDone} /> : null}
       {removing ? (
         <Confirm
           title="Remove this task?"

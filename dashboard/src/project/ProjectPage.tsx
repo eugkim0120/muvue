@@ -71,7 +71,7 @@ export function ProjectPage() {
   const readyCount = taskAndSubtaskNodes.filter((n) => n.status === "ready").length;
   const workingCount = taskAndSubtaskNodes.filter((n) => n.status === "in_progress").length;
   const reviewCount = taskAndSubtaskNodes.filter((n) => n.status === "review").length;
-  const step = nextStep({
+  const stepInput = {
     phase: p.phase,
     spec: data?.spec ? { id: data.spec.id, status: data.spec.status } : null,
     taskCount: total,
@@ -79,14 +79,15 @@ export function ProjectPage() {
     workingCount,
     reviewCount,
     doneCount: done,
-    planning: data?.spec ? planningNodeIds(activity, launches.value).has(data.spec.id) : false,
-  } satisfies NextStepInput);
-  const reason = runBlockReason(step);
+    planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false,
+  } satisfies NextStepInput;
+  const step = nextStep(stepInput);
+  const reason = runBlockReason(stepInput);
 
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
-    if (ok) { toast("run started"); markLaunched({ kind: "run", nodeId: null, label: "the run" }, activity); }
+    if (ok) { toast("run started"); markLaunched({ kind: "run", nodeId: null, projectId: pid, label: "the run" }, activity); }
   }
 
   const openAddTask = () => setAddingTask(true);
@@ -98,7 +99,7 @@ export function ProjectPage() {
           <div class="row between" style={{ padding: "16px 16px 0" }}>
             <h1 class="page-title">{p.goal}</h1>
             <div class="row">
-              {authed.value && data?.spec && data.spec.status !== "pending" ? (
+              {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
                 <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
               ) : null}
               <Button variant="filled" busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
@@ -118,9 +119,11 @@ export function ProjectPage() {
             </div>
           ) : null}
           {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : step.id === "write_spec" ? (
-            <div style={{ padding: "0 16px 16px" }}>
-              <SubmitSpecForm projectId={pid!} />
-            </div>
+            authed.value ? (
+              <div style={{ padding: "0 16px 16px" }}>
+                <SubmitSpecForm projectId={pid!} />
+              </div>
+            ) : null
           ) : (
             <div style={{ padding: "0 16px 16px" }}>
               <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} onAddTask={openAddTask} />

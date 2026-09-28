@@ -27,12 +27,12 @@ test("every box has an explicit height so it cannot overlap its neighbours", () 
   for (const el of container.querySelectorAll<HTMLElement>(".task-box, .spec-root-card")) expect(el.style.height).toMatch(/px$/);
 });
 
-test("no tasks: the placeholder offers both ways to create them", () => {
+test("no tasks: the placeholder is caption-only -- NextStepBar owns the sole plan-tasks action (Important #4)", () => {
   authed.value = true;
   render(<Canvas data={{ ...data, tasks: [], edges: [] }} {...props} projectPhase="planning" />);
   expect(screen.getByText("No tasks yet")).toBeTruthy();
-  expect(screen.getByText("✨ Plan tasks with agent")).toBeTruthy();
-  expect(screen.getByText("+ Add task myself")).toBeTruthy();
+  expect(screen.queryByText("✨ Plan tasks with agent")).toBeNull();
+  expect(screen.queryByText("+ Add task myself")).toBeNull();
   authed.value = false;
 });
 

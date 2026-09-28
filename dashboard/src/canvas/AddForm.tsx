@@ -60,13 +60,13 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
   );
 }
 
-export function BreakdownButton({ nodeId, disabled, caption, activity, label }: { nodeId: number; disabled?: boolean; caption?: string; activity: Activity | null; label?: string }) {
+export function BreakdownButton({ nodeId, projectId, disabled, caption, activity, label }: { nodeId: number; projectId: number; disabled?: boolean; caption?: string; activity: Activity | null; label?: string }) {
   const a = useAction();
   async function run() {
     const ok = await a.run(async () => {
       await post(routes.nodeBreakdown(nodeId), {});
     });
-    if (ok) { markLaunched({ kind: "breakdown", nodeId, label: "planning" }, activity); refresh(); }
+    if (ok) { markLaunched({ kind: "breakdown", nodeId, projectId, label: "planning" }, activity); refresh(); }
   }
   return (
     <div class="stack tight">

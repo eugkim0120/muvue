@@ -70,27 +70,16 @@ export function nextStep(i: NextStepInput): NextStep {
   return { id: "stuck", title: "Nothing can run", detail: "The remaining tasks are blocked or waiting on earlier tasks. Open a task to see why." };
 }
 
-export function runBlockReason(step: NextStep): string | null {
-  switch (step.id) {
-    case "run":
-      return null;
-    case "write_spec":
-    case "approve_spec":
-    case "planning":
-    case "plan_tasks":
-    case "approve_tasks":
-      return "Run starts after the task list is approved.";
-    case "paused":
-      return "The project is paused.";
-    case "running":
-      return "Already running.";
-    case "review":
-      return "Waiting on your review.";
-    case "all_done":
-      return "Nothing left to run.";
-    case "closed":
-      return "The project is closed.";
-    case "stuck":
-      return "Nothing is ready to run.";
-  }
+// Mirrors the backend's `core.queries.run_block_reason`: Run is enabled
+// whenever there's a positive ready count in the executing phase, regardless
+// of whether some other task is in_progress or in review elsewhere in the
+// project. (The frontend used to also block on any in_progress/review task
+// anywhere in the project, which was stricter than the backend and could
+// disable Run even when other tasks were ready to go.)
+export function runBlockReason(i: NextStepInput): string | null {
+  if (i.phase === "closed") return "The project is closed.";
+  if (i.phase === "paused") return "The project is paused.";
+  if (i.phase === "planning") return "Run starts after the task list is approved.";
+  if (i.readyCount > 0) return null;
+  return "Nothing is ready to run.";
 }

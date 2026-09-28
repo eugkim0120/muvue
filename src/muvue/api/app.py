@@ -839,6 +839,12 @@ def create_app(
             raise HTTPException(status_code=409, detail=f"node {node_id} is deleted; cannot break it down")
         if node["kind"] not in ("spec", "task"):
             raise HTTPException(status_code=409, detail=f"node {node_id} is kind={node['kind']!r}; breakdown only applies to a spec or a task")
+        # Final review Important #6: a pending spec hasn't cleared the
+        # approval gate yet, so breaking it down further would skip that
+        # gate entirely -- refuse the same way the other blocked-action
+        # checks above do, rather than relying on the frontend alone.
+        if node["kind"] == "spec" and node["status"] == "pending":
+            raise HTTPException(status_code=409, detail=f"spec {node_id} is pending approval; approve it before planning tasks")
         resolved_agent = agent or getattr(config.routing, "spec" if node["kind"] == "spec" else "task")
         # Strict, matching `_spawn_runner`'s check for `start?agent=X` (final
         # review Important #4): an `if config.agents and ...` guard used to
