@@ -96,6 +96,8 @@ def run_migrate(repo_root: Path) -> int:
             _add_column_if_missing(
                 conn, "questions", "default_ok", "INTEGER NOT NULL DEFAULT 0"
             )
+            # SCHEMA_VERSION 7 -> 8 (project canvas plan): deps.carries.
+            _add_column_if_missing(conn, "deps", "carries", "TEXT")
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

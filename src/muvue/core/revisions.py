@@ -33,7 +33,7 @@ def replan_add_subtask(
     title: str,
     body_md: str = "",
     criteria: list[str] | None = None,
-    depends_on: list[int] | None = None,
+    depends_on: list[dict] | None = None,
     predicted_touches: list[str] | None = None,
     config: MuvueConfig | None = None,
     actor: str = "agent",
@@ -98,6 +98,66 @@ def replan_add_subtask(
                 payload={"parent_task_id": parent_task_id, "reason": "; ".join(reasons)},
             )
         return dict(row)
+
+
+def add_child(
+    conn: sqlite3.Connection,
+    parent_id: int,
+    *,
+    title: str,
+    body_md: str = "",
+    criteria: list[str] | None = None,
+    depends_on: list[dict] | None = None,
+    predicted_touches: list[str] | None = None,
+    config: MuvueConfig | None = None,
+    actor: str = "agent",
+    actor_evidence: str = "tty",
+) -> dict:
+    """Add a child under `parent_id`, branching on the parent's kind and
+    approval state -- the one place this decision is made, shared by
+    `POST /nodes/{id}/children` (app.py) and `muvue _breakdown`
+    (cli/main.py), which used to each hardcode their own, disagreeing
+    version of it (final review Important #3: `_breakdown` always called
+    `replan_add_subtask` for a task parent, which raises `GateError` on an
+    unapproved task -- backwards for the canvas flow, where breaking down
+    a task *before* Gate 2 is the common case).
+
+    - `spec` parent: a new `task` (`create_node`), same as decomposing by
+      hand.
+    - `task` parent, not yet Gate-2 approved (`criteria_hash is None`): a
+      new `subtask` (`create_node`) -- same as a human's `/children` call.
+    - `task` parent, Gate-2 approved: `replan_add_subtask`'s in-scope/
+      out-of-scope gating.
+    - anything else: refused.
+    """
+    parent = nodes_mod.get_node(conn, parent_id)
+    if parent["kind"] == "spec":
+        return dict(
+            nodes_mod.create_node(
+                conn, project_id=parent["project_id"], parent_id=parent_id, kind="task",
+                title=title, body_md=body_md, criteria=criteria, depends_on=depends_on,
+                predicted_touches=predicted_touches, status="pending", actor=actor,
+                actor_evidence=actor_evidence,
+            )
+        )
+    if parent["kind"] == "task":
+        if parent["criteria_hash"] is None:
+            return dict(
+                nodes_mod.create_node(
+                    conn, project_id=parent["project_id"], parent_id=parent_id, kind="subtask",
+                    title=title, body_md=body_md, criteria=criteria, depends_on=depends_on,
+                    predicted_touches=predicted_touches, status="pending", actor=actor,
+                    actor_evidence=actor_evidence,
+                )
+            )
+        return replan_add_subtask(
+            conn, parent_task_id=parent_id, title=title, body_md=body_md, criteria=criteria,
+            depends_on=depends_on, predicted_touches=predicted_touches, config=config,
+            actor=actor, actor_evidence=actor_evidence,
+        )
+    raise GateError(
+        f"node {parent_id} is kind={parent['kind']!r}; children can only be added to a spec or a task"
+    )
 
 
 def propose_revision(

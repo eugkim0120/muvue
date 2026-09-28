@@ -128,8 +128,11 @@ class RoutingConfig(StrictModel):
 # The agent/human verb protocol this muvue speaks (plan section 4). 2:
 # the W4-W11 changes to verbs and flags (ask --default, fail's four-part
 # lesson, brief --budget/--since, comment line anchors, JSON-only POSTs,
-# nonce auth).
-PROTOCOL_VERSION = 2
+# nonce auth). 3: the project canvas backend -- dashboard endpoints for
+# every human verb (project create, spec, children/decompose, remove,
+# edit, breakdown, run), `agents/status`, `nodes/{id}/runs`, and
+# `depends_on` becoming dict-shaped (`{"id", "carries"}`) everywhere.
+PROTOCOL_VERSION = 3
 
 
 class MuvueConfig(StrictModel):
@@ -168,7 +171,7 @@ class MuvueConfig(StrictModel):
 
 DEFAULT_CONFIG_TOML = """\
 schema_version = 1
-protocol_version = 2
+protocol_version = 3
 mode = "light"
 worktree_mode = "branch"
 worktree_setup = "uv sync"

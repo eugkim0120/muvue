@@ -225,6 +225,7 @@ def create_app(
             exc,
             (
                 core.nodes.NodeError,
+                core.nodes.EditError,
                 core.gates.GateError,
                 core.asks.AskError,
                 core.state_machine.InvalidTransition,
@@ -233,6 +234,7 @@ def create_app(
                 core.close.CloseError,
                 core.imports.ImportError_,
                 core.actor.HumanOnly,
+                core.removal.RemovalError,
                 ValueError,
             ),
         ):
@@ -306,6 +308,19 @@ def create_app(
         """Names under `[agents.*]`, for the dashboard's start-with-agent
         picker. Names only: a command line may embed local paths."""
         return {"agents": sorted(config.agents)}
+
+    @app.get("/agents/status")
+    def agents_status(request: Request, project_id: int) -> dict:
+        """Dashboard's Agents panel: each agent's routed roles, current
+        lease (if any) and accumulated spend (`core.agent_status`)."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+                result = core.agent_status.agent_status(conn, project_id, config)
+            except Exception as e:
+                _handle_core_error(e)
+        return {"agents": result}
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
@@ -491,6 +506,40 @@ def create_app(
             rows = core.db.query_all(conn, "SELECT * FROM projects ORDER BY id")
         return _rows_to_list(rows)
 
+    @app.post("/projects")
+    def create_project(request: Request, goal: str = Body(..., embed=True)) -> dict:
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "project-create",
+                    lambda: core.projects.create_project(
+                        conn, goal=goal, actor="human", actor_evidence="dashboard_token",
+                        repo_root=repo_root,
+                    ),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"project": _row_to_dict(result)}
+
+    @app.post("/projects/{project_id}/spec")
+    def create_spec(
+        project_id: int, request: Request, title: str = Body(...), body_md: str = Body(...)
+    ) -> dict:
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "spec",
+                    lambda: core.gates.submit_spec(
+                        conn, project_id=project_id, title=title, body_md=body_md,
+                        actor_evidence="dashboard_token",
+                    ),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"node": result}
+
     @app.get("/projects/{project_id}")
     def show_project(project_id: int) -> dict:
         with _conn() as conn:
@@ -585,11 +634,21 @@ def create_app(
                 for r in rows if r["parent_id"] in ids
             ]
             edges += [
-                {"from": d["depends_on"], "to": d["node_id"], "kind": "dep"}
-                for d in core.db.query_all(conn, "SELECT node_id, depends_on FROM deps ORDER BY rowid")
+                {"from": d["depends_on"], "to": d["node_id"], "kind": "dep", "carries": d["carries"]}
+                for d in core.db.query_all(conn, "SELECT node_id, depends_on, carries FROM deps ORDER BY rowid")
                 if d["node_id"] in ids and d["depends_on"] in ids
             ]
-        return {"nodes": _rows_to_list(rows), "edges": edges}
+        nodes = _rows_to_list(rows)
+        for node in nodes:
+            # `core.runner.run_node` leases a node to `f"runner:{agent}"`;
+            # strip that prefix so `/graph` agrees with `agent_status`'s
+            # plain agent names (final review Important #6) instead of
+            # showing "runner:claude" here and "claude" there.
+            owner = node["owner"]
+            if owner and owner.startswith("runner:"):
+                owner = owner.split(":", 1)[1]
+            node["agent"] = owner or getattr(config.routing, node["kind"], None)
+        return {"nodes": nodes, "edges": edges}
 
     @app.get("/brief")
     def get_brief(
@@ -637,6 +696,30 @@ def create_app(
                 _handle_core_error(e)
         return core.queries.tail_log(repo_root, node_id, min(max(lines, 1), 5000))
 
+    @app.get("/nodes/{node_id}/runs")
+    def node_runs(request: Request, node_id: int) -> dict:
+        """A read view over the node's `node.start`/`node.done`/
+        `node.fail`/`breakdown.*` events (plan section 3's append-only
+        event log) -- there is no separate runs/attempts table;
+        `nodes.attempts` only counts failures, it doesn't record run
+        history. Breakdown events are included (final review Important
+        #7) since the design spec wants breakdowns shown in a node's Runs
+        section too."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.nodes.get_node(conn, node_id)  # 404s if the node doesn't exist
+                rows = core.db.query_all(
+                    conn,
+                    "SELECT * FROM events WHERE node_id = ? AND type IN "
+                    "('node.start', 'node.done', 'node.fail', 'breakdown.started', "
+                    "'breakdown.finished', 'breakdown.failed') ORDER BY id",
+                    (node_id,),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return {"runs": _rows_to_list(rows)}
+
     @app.post("/nodes/{node_id}/start")
     def start_node(
         node_id: int,
@@ -675,6 +758,13 @@ def create_app(
         return result
 
     def _spawn_runner(node_id: int, agent: str) -> dict:
+        # No "already active on the project" 409 check here, unlike
+        # `/breakdown` below (docs/decisions.md #168): a second concurrent
+        # `muvue run` process racing this one is already safe because
+        # `core.nodes.start`'s own `write_txn`-based lease claim (nodes.py)
+        # atomically refuses a second `start` on the same node -- the
+        # `node["status"] != "ready"` check right below simply finds the
+        # node no longer ready and 409s per-node, not project-wide.
         if agent not in config.agents:
             raise HTTPException(
                 status_code=422,
@@ -708,6 +798,73 @@ def create_app(
                 start_new_session=True,
             )
         return {"spawned": {"pid": proc.pid, "node_id": node_id, "agent": agent,
+                            "log": str(log_path.relative_to(repo_root))}}
+
+    @app.post("/nodes/{node_id}/breakdown")
+    def start_breakdown(node_id: int, request: Request, agent: str | None = Body(default=None, embed=True)) -> dict:
+        """`POST /nodes/{id}/breakdown` launches `muvue _breakdown` (Task
+        8's internal verb) as a detached subprocess against `node_id`,
+        the same way `_spawn_runner` above launches `muvue run`."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                node = core.nodes.get_node(conn, node_id)
+            except Exception as e:
+                _handle_core_error(e)
+        if node["deleted_at"] is not None:
+            raise HTTPException(status_code=409, detail=f"node {node_id} is deleted; cannot break it down")
+        if node["kind"] not in ("spec", "task"):
+            raise HTTPException(status_code=409, detail=f"node {node_id} is kind={node['kind']!r}; breakdown only applies to a spec or a task")
+        resolved_agent = agent or getattr(config.routing, "spec" if node["kind"] == "spec" else "task")
+        # Strict, matching `_spawn_runner`'s check for `start?agent=X` (final
+        # review Important #4): an `if config.agents and ...` guard used to
+        # skip this entirely for an empty/misconfigured `config.agents`, so
+        # the endpoint returned 200 with a pid while the subprocess exited
+        # immediately with no event ever recorded (`muvue _breakdown` itself
+        # does the strict check *before* `register()`/`breakdown.started`) --
+        # the frontend's "breakdown in progress" UI would spin forever.
+        if resolved_agent not in config.agents:
+            raise HTTPException(status_code=422, detail=f"unknown agent {resolved_agent!r} (configured: {sorted(config.agents)})")
+        already_running = any(r["project_id"] in (None, node["project_id"]) for r in core.runners.live(repo_root))
+        if already_running:
+            raise HTTPException(status_code=409, detail=f"a breakdown or run is already active on project {node['project_id']}")
+        log_path = repo_root / core.runner.LOGS_RELDIR / f"breakdown-{node_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "muvue", "_breakdown", "--node", str(node_id), "--agent", resolved_agent,
+                 "--path", str(repo_root)],
+                cwd=repo_root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"spawned": {"pid": proc.pid, "node_id": node_id, "agent": resolved_agent,
+                            "log": str(log_path.relative_to(repo_root))}}
+
+    @app.post("/projects/{project_id}/run")
+    def start_run(project_id: int, request: Request, parallel: int | None = Body(default=None, embed=True)) -> dict:
+        """`POST /projects/{id}/run` launches `muvue run --project-id ID`
+        (whole-project unattended runner) as a detached subprocess. No
+        "already active" 409 check (see `_spawn_runner`'s comment and
+        docs/decisions.md #168): `core.nodes.start`'s transactional lease
+        claim already makes running several `muvue run` processes against
+        the same project concurrently safe."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+            except Exception as e:
+                _handle_core_error(e)
+        log_path = repo_root / core.runner.LOGS_RELDIR / f"run-project-{project_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        args = [sys.executable, "-m", "muvue", "run", "--project-id", str(project_id), "--path", str(repo_root)]
+        if parallel:
+            args += ["--parallel", str(parallel)]
+        with open(log_path, "ab") as log:
+            proc = subprocess.Popen(
+                args, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        return {"spawned": {"pid": proc.pid, "project_id": project_id,
                             "log": str(log_path.relative_to(repo_root))}}
 
     @app.post("/nodes/{node_id}/done")
@@ -826,6 +983,94 @@ def create_app(
                     actor_evidence="dashboard_token",
                 ), actor="agent",
                 )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
+    @app.post("/nodes/{node_id}/children")
+    def add_child_node(
+        node_id: int,
+        request: Request,
+        title: str = Body(...),
+        body_md: str = Body(default=""),
+        criteria: list[str] = Body(default=[]),
+        predicted_touches: list[str] = Body(default=[]),
+        depends_on: list[dict] = Body(default=[]),
+    ) -> dict:
+        """`decompose`-adjacent verb: adds a task under a `spec` node, or a
+        subtask under a `task` node. A subtask under a Gate-2-approved task
+        (`criteria_hash is not None`) goes through `replan_add_subtask`
+        (plan section 6's in-scope/out-of-scope gating); a subtask under an
+        unapproved task is created directly, same as a task under a spec.
+        The branching itself lives in `core.revisions.add_child`, shared
+        with `muvue _breakdown` (final review Important #3)."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                def _apply():
+                    parent = core.nodes.get_node(conn, node_id)
+                    if parent["deleted_at"] is not None:
+                        raise core.nodes.NodeError(
+                            f"node {node_id} is deleted; cannot add children to it"
+                        )
+                    return core.revisions.add_child(
+                        conn, node_id, title=title, body_md=body_md, criteria=criteria,
+                        depends_on=depends_on, predicted_touches=predicted_touches,
+                        config=config, actor="human", actor_evidence="dashboard_token",
+                    )
+
+                result = core.idempotency.once(conn, _request_id(request), "children", _apply)
+            except Exception as e:
+                _handle_core_error(e)
+        return {"node": dict(result)}
+
+    @app.post("/nodes/{node_id}/remove")
+    def remove_node(request: Request, node_id: int) -> dict:
+        """Soft-delete a node and its descendants (`core.removal.remove_node`);
+        refused once the node is Gate-2 approved -- see `RemovalError`."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "remove",
+                    lambda: core.removal.remove_node(conn, node_id, actor="human", actor_evidence="dashboard_token"),
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
+
+    @app.post("/nodes/{node_id}/edit")
+    def edit_node(
+        request: Request, node_id: int, title: str | None = Body(default=None),
+        body_md: str | None = Body(default=None), criteria: list[str] | None = Body(default=None),
+    ) -> dict:
+        """Edit title/body_md/criteria before Gate 2. Routes through
+        `core.nodes.edit_node` (title/body_md) and `core.gates.edit_criteria`
+        (criteria) -- no raw SQL in the API layer (final review Important
+        #9: decision #167 claims every human verb routes through the same
+        `core` functions the CLI calls; this endpoint used to bypass that
+        with an inline `UPDATE`). After Gate 2 (`criteria_hash` set) this
+        refuses -- use `propose-revision` instead."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                def _apply():
+                    node = core.nodes.get_node(conn, node_id)
+                    if node["deleted_at"] is not None:
+                        raise core.nodes.NodeError(f"node {node_id} is deleted; cannot edit it")
+                    with core.db.write_txn(conn):
+                        core.nodes.edit_node(
+                            conn, node_id, title=title, body_md=body_md,
+                            actor="human", actor_evidence="dashboard_token",
+                        )
+                        if criteria is not None:
+                            core.gates.edit_criteria(
+                                conn, node_id, criteria_json=json.dumps(criteria),
+                                actor="human", actor_evidence="dashboard_token",
+                            )
+                        return {"node": dict(core.nodes.get_node(conn, node_id))}
+
+                result = core.idempotency.once(conn, _request_id(request), "edit", _apply)
             except Exception as e:
                 _handle_core_error(e)
         return result

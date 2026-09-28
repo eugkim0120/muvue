@@ -294,3 +294,43 @@ def test_invoke_driver_never_touches_credential_env_vars(tmp_path, fake_cfg, mon
     assert "os.environ" not in source
     result = drivers.invoke_driver("fake", fake_cfg, "{}", tmp_path)
     assert result.status in ("done", "unavailable")  # ran without touching the var
+
+
+# -- parse_breakdown ----------------------------------------------------------
+
+
+def test_parse_breakdown_reads_children():
+    stdout = (
+        '{"type": "breakdown", "children": ['
+        '{"title": "Record voice", "body_md": "capture mic", "criteria": [], "depends_on": [], "predicted_touches": []}, '
+        '{"title": "Detect pitch", "body_md": "yin tracker", "criteria": [], '
+        '"depends_on": [{"id": 0, "carries": "audio frames"}], "predicted_touches": []}, '
+        '{"title": "Export", "body_md": "musicxml", "criteria": [], '
+        '"depends_on": [{"id": 1, "carries": "notes"}], "predicted_touches": []}'
+        ']}\n'
+    )
+    children = drivers.parse_breakdown(stdout)
+    assert len(children) == 3
+    assert children[0]["title"] == "Record voice"
+    assert children[1]["depends_on"] == [{"id": 0, "carries": "audio frames"}]
+
+
+def test_parse_breakdown_no_output_returns_empty():
+    assert drivers.parse_breakdown("") == []
+
+
+@pytest.mark.skipif(FAKE_AGENT_BIN is None, reason="muvue-fake-agent console script not installed")
+def test_fake_agent_breakdown_behavior_prints_three_children():
+    import json
+    import os
+    import subprocess
+
+    proc = subprocess.run(
+        [FAKE_AGENT_BIN],
+        input="decompose this spec\n", capture_output=True, text=True,
+        env={**os.environ, "MUVUE_FAKE_BEHAVIOR": "breakdown"},
+    )
+    lines = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+    breakdown_lines = [l for l in lines if l.get("type") == "breakdown"]
+    assert len(breakdown_lines) == 1
+    assert len(breakdown_lines[0]["children"]) == 3

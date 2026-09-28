@@ -141,7 +141,7 @@ def rebuild_state_from_events(events: list[dict]) -> dict:
             # `decay_lessons`' distinct-project count, not `notes` replay.
             notes[payload["id"]] = payload
         elif etype == "dep.added":
-            deps[(payload["node_id"], payload["depends_on"])] = {}
+            deps[(payload["node_id"], payload["depends_on"])] = {"carries": payload.get("carries")}
         elif etype == "commit.linked":
             node_id = ev.get("node_id")
             files = payload.get("files") or []
@@ -190,7 +190,7 @@ def live_state(conn: sqlite3.Connection) -> dict:
         row["id"]: {c: row[c] for c in _NOTE_COLUMNS}
         for row in db_mod.query_all(conn, "SELECT * FROM notes")
     }
-    deps = {(r["node_id"], r["depends_on"]): {} for r in db_mod.query_all(
+    deps = {(r["node_id"], r["depends_on"]): {"carries": r["carries"]} for r in db_mod.query_all(
         conn,
         "SELECT * FROM deps",
     )}
@@ -224,7 +224,7 @@ _TABLE_COLUMNS = {
     "nodes": _REPLAYABLE_NODE_COLUMNS,
     "components": _REPLAYABLE_COMPONENT_COLUMNS,
     "notes": _REPLAYABLE_NOTE_COLUMNS,
-    "deps": [],
+    "deps": ["carries"],
     "node_commits": ["files"],
     "actual_touches": [],
     "plan_revisions": ["approved"],
@@ -354,7 +354,8 @@ def apply_rebuild(conn: sqlite3.Connection) -> dict:
 
         conn.execute("DELETE FROM deps")
         conn.executemany(
-            "INSERT INTO deps (node_id, depends_on) VALUES (?, ?)", list(replayed["deps"])
+            "INSERT INTO deps (node_id, depends_on, carries) VALUES (?, ?, ?)",
+            [(n, d, row["carries"]) for (n, d), row in replayed["deps"].items()],
         )
         conn.execute("DELETE FROM node_commits")
         conn.executemany(

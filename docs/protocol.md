@@ -1,6 +1,6 @@
 # muvue protocol
 
-`protocol_version = 2` (`muvue.core.config.PROTOCOL_VERSION`, written to
+`protocol_version = 3` (`muvue.core.config.PROTOCOL_VERSION`, written to
 `.muvue/config.toml` by `init`). Bump on any verb change. `doctor` warns
 when a repo's `config.toml` or an installed adapter names another
 version.
@@ -18,6 +18,20 @@ Version 2 (the v4 delta closure, W4-W11) changed:
   request.
 - `/auth/exchange` takes a one-time `nonce`, and `/auth/nonce` and
   `/auth/check` are new.
+
+Version 3 (the project canvas backend) changed:
+- The dashboard's canvas rebuild gets a session-gated endpoint for every
+  human-verb CLI command it now drives: `POST /projects`, `POST
+  /projects/{id}/spec`, `POST /nodes/{id}/children`, `POST
+  /nodes/{id}/remove`, `POST /nodes/{id}/edit`, `POST
+  /nodes/{id}/breakdown`, `POST /projects/{id}/run`.
+- `GET /agents/status` and `GET /nodes/{id}/runs` are new read views.
+- `GET /graph` gained `carries` on dependency edges and a resolved
+  `agent` field on each node.
+- `deps` gained a nullable `carries` column (`SCHEMA_VERSION` 7 -> 8),
+  and `depends_on` is dict-shaped (`{"id": int, "carries": str|None}`)
+  everywhere it's accepted -- the CLI's `decompose`/`replan` and the API
+  alike.
 
 All mutating verbs go through `muvue.core` — the CLI never issues raw SQL.
 
@@ -408,6 +422,43 @@ running daemon -- an already-running one on `--daemon-port` (default
 isolated scratch repo (never `repo_root` -- see docs/decisions.md #87)
 and torn down afterward -- and fails loudly (`report.issues`) if any
 control doesn't reject as expected.
+
+### Project canvas endpoints (protocol_version 3)
+
+Human-verb parity: every CLI verb a person uses day to day, not just the
+agent-driven ones, now has a session-gated dashboard endpoint alongside
+the verbs above (decision #167).
+
+- **`POST /projects {goal}`**: mirrors `muvue new`. No budget parameter
+  -- there is no per-project budget field in this codebase; budgets are
+  per agent, in `[agents.<name>.budget]` (decision #170).
+- **`POST /projects/{id}/spec {title, body_md}`**: `core.gates.submit_spec`.
+- **`POST /nodes/{id}/children {title, body_md, criteria,
+  predicted_touches, depends_on}`**: adds a task under a `spec` node, or
+  a subtask under a `task` node. Gate-aware: a subtask under a task whose
+  `criteria_hash` is already set (Gate 2 approved) goes through
+  `replan_add_subtask` instead of a plain insert.
+- **`POST /nodes/{id}/remove`**: soft-deletes a node and its descendants
+  (`core.removal.remove_node`); refused once the node is Gate-2 approved.
+- **`POST /nodes/{id}/edit {title?, body_md?, criteria?}`**: pre-Gate-2
+  only -- once `criteria_hash` is set this refuses in favor of
+  `propose-revision`.
+- **`POST /nodes/{id}/breakdown {agent?}`**: spawns the internal `muvue
+  _breakdown` CLI verb as a detached, SIGTERM-safe subprocess against
+  `node_id`, the same subprocess pattern `start?agent=X` already uses
+  for `muvue run`. Not driven by `core/runner.py`'s ready-node loop,
+  because that loop deliberately excludes spec nodes (decision #168).
+- **`POST /projects/{id}/run {parallel?}`**: spawns `muvue run
+  --project-id ID` (optionally `--parallel N`) as a detached subprocess.
+- **`GET /agents/status?project_id=N`**: per-agent roles, current lease
+  (if any) and accumulated spend -- the union of configured agents
+  (`[agents.*]`) and routed role targets (`config.routing`).
+- **`GET /nodes/{id}/runs`**: a read view over the node's existing
+  `node.start`/`node.done`/`node.fail` events; no new runs/attempts
+  table.
+- **`GET /graph`** gained `carries` on each dependency edge and a
+  resolved `agent` field (`node.owner` or the routed default for its
+  kind) on each node, for the dashboard's flow diagram (decision #169).
 
 ## Leases and optimistic version (P3, ships v0.1)
 

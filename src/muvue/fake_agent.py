@@ -67,7 +67,7 @@ import json
 import os
 import sys
 
-BEHAVIORS = ("cooperative", "lazy", "adversarial", "rate_limited", "crash", "failed", "slow")
+BEHAVIORS = ("cooperative", "lazy", "adversarial", "rate_limited", "crash", "failed", "slow", "breakdown")
 
 
 def _result_line(**fields) -> str:
@@ -131,6 +131,17 @@ def _run(behavior: str, brief_raw: str) -> int:
             usage={"in_tokens": 80, "out_tokens": 0}, model="fake",
             error="fake agent scripted failure",
         ))
+        return 0
+
+    if behavior == "breakdown":
+        print(json.dumps({
+            "type": "breakdown",
+            "children": [
+                {"title": "Record voice", "body_md": "Capture microphone input.", "criteria": [], "depends_on": [], "predicted_touches": []},
+                {"title": "Detect pitch", "body_md": "Turn audio into a note sequence.", "criteria": [], "depends_on": [{"id": 0, "carries": "audio frames"}], "predicted_touches": []},
+                {"title": "Export MusicXML", "body_md": "Write the note sequence to a file.", "criteria": [], "depends_on": [{"id": 1, "carries": "notes"}], "predicted_touches": []},
+            ],
+        }))
         return 0
 
     if behavior == "crash":

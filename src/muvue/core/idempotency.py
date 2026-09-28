@@ -23,6 +23,23 @@ def _event_type(verb: str) -> str:
     return f"request.{verb}.completed"
 
 
+def _to_jsonable(value: object) -> object:
+    """Recursively convert `sqlite3.Row` to `dict` before JSON-encoding a
+    verb's result for later replay. `core.projects.create_project` and
+    `core.nodes.create_node` (among others) return `sqlite3.Row` objects;
+    without this, `json.dumps(result, default=str)` stringified the whole
+    row (`"<sqlite3.Row object at 0x...>"`) instead of its fields, so a
+    retried request with the same `X-Request-Id` replayed garbage instead
+    of the original result (final review Important #5)."""
+    if isinstance(value, sqlite3.Row):
+        return {k: _to_jsonable(v) for k, v in dict(value).items()}
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    return value
+
+
 def _stored(conn: sqlite3.Connection, request_id: str, verb: str):
     prior = events_mod.find_recent_by_request_id(conn, request_id, _event_type(verb))
     if prior is None:
@@ -34,7 +51,7 @@ def _record(conn: sqlite3.Connection, request_id: str, verb: str, result, actor:
     events_mod.record_event(
         conn, project_id=None, node_id=None, actor=actor, actor_evidence=None,
         type_=_event_type(verb), request_id=request_id,
-        payload={"verb": verb, "result": json.loads(json.dumps(result, default=str))},
+        payload={"verb": verb, "result": json.loads(json.dumps(_to_jsonable(result), default=str))},
     )
 
 

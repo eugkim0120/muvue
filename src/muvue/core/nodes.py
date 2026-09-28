@@ -74,7 +74,7 @@ def create_node(
     actor: str = "human",
     actor_evidence: str = "tty",
     predicted_touches: list[str] | None = None,
-    depends_on: list[int] | None = None,
+    depends_on: list[dict] | None = None,
     owner: str | None = None,
 ) -> sqlite3.Row:
     """`owner` pre-assigns a ready node to someone without a lease (the
@@ -123,20 +123,23 @@ def create_node(
             type_="node.created",
             payload=dict(row),
         )
-        for dep_id in depends_on or []:
-            dep = get_node(conn, dep_id)
-            if dep["project_id"] != project_id or dep["deleted_at"] is not None:
+        for dep in depends_on or []:
+            dep_id = dep["id"]
+            carries = dep.get("carries")
+            dep_node = get_node(conn, dep_id)
+            if dep_node["project_id"] != project_id or dep_node["deleted_at"] is not None:
                 raise NodeError(
                     f"node {node_id} cannot depend on node {dep_id}: dependencies must be "
                     "live nodes in the same project"
                 )
             conn.execute(
-                "INSERT OR IGNORE INTO deps (node_id, depends_on) VALUES (?, ?)", (node_id, dep_id)
+                "INSERT OR IGNORE INTO deps (node_id, depends_on, carries) VALUES (?, ?, ?)",
+                (node_id, dep_id, carries),
             )
             events.record_event(
                 conn, project_id=project_id, node_id=node_id, actor=actor,
                 actor_evidence=actor_evidence, type_="dep.added",
-                payload={"node_id": node_id, "depends_on": dep_id},
+                payload={"node_id": node_id, "depends_on": dep_id, "carries": carries},
             )
         return row
 
@@ -427,6 +430,51 @@ def bump_version(
             payload=dict(row),
         )
         return row
+
+
+class EditError(NodeError):
+    """Raised by `edit_node` when a title/body_md edit is refused because
+    the node is already Gate-2 approved (`criteria_hash` set) -- a
+    frozen node's plan changes through a revision instead, same rule
+    `core.removal.RemovalError` enforces for removal. Distinct from
+    `RemovalError` because this refusal is about editing, not removing
+    (final review Important #9: the API layer used to raise
+    `RemovalError` here, which is semantically about the wrong verb)."""
+
+
+def edit_node(
+    conn: sqlite3.Connection,
+    node_id: int,
+    *,
+    title: str | None = None,
+    body_md: str | None = None,
+    actor: str = "human",
+    actor_evidence: str = "tty",
+) -> dict:
+    """Edit a node's title/body_md before Gate 2. Refused once
+    `criteria_hash` is set -- use a plan revision instead. Criteria edits
+    are a separate, more permissive operation (`core.gates.edit_criteria`);
+    this function only ever touches `title`/`body_md`."""
+    with db_mod.write_txn(conn):
+        node = get_node(conn, node_id)
+        if node["criteria_hash"] is not None:
+            raise EditError(
+                f"node {node_id} is already Gate-2 approved; use propose-revision "
+                "instead of editing directly"
+            )
+        if title is not None or body_md is not None:
+            fields = []
+            params: list[object] = []
+            if title is not None:
+                fields.append("title = ?")
+                params.append(title)
+            if body_md is not None:
+                fields.append("body_md = ?")
+                params.append(body_md)
+            params.append(node_id)
+            conn.execute(f"UPDATE nodes SET {', '.join(fields)} WHERE id = ?", params)
+            bump_version(conn, node_id, actor=actor, actor_evidence=actor_evidence)
+        return dict(get_node(conn, node_id))
 
 
 class VersionMismatch(NodeError):

@@ -6,7 +6,9 @@ import functools
 import importlib.metadata
 import json
 import os
+import signal
 import sys
+import threading
 from pathlib import Path
 
 import typer
@@ -604,6 +606,10 @@ def decompose(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this task waits on"
     ),
+    carries: list[str] = typer.Option(
+        [], "--carries",
+        help="what each --depends-on edge carries, same order, or omit to leave unlabeled",
+    ),
     request_id: str = typer.Option(None, "--request-id", help=REQUEST_ID_HELP),
     path: Path = typer.Option(Path("."), "--path"),
 ) -> None:
@@ -611,11 +617,19 @@ def decompose(
     (`core.nodes.create_node`). Created `pending` under the spec (`parent_id`);
     a human then calls `approve gate2:PROJECT_ID` to freeze criteria and
     unblock `start`."""
+    if carries and len(carries) != len(depends_on):
+        raise typer.BadParameter(
+            "--carries must be given once per --depends-on, in the same order (or not at all)"
+        )
     repo_root = _find_repo_root(path)
     conn = _db_connect(repo_root)
     try:
         def _apply():
             spec_node = core.nodes.get_node(conn, spec_id)
+            dep_list = [
+                {"id": dep_id, "carries": carries[i] if i < len(carries) else None}
+                for i, dep_id in enumerate(depends_on)
+            ]
             result = core.nodes.create_node(
                 conn,
                 project_id=spec_node["project_id"],
@@ -626,7 +640,7 @@ def decompose(
                 criteria=list(criteria),
                 criteria_mode=criteria_mode,
                 predicted_touches=list(predicted_touches),
-                depends_on=list(depends_on),
+                depends_on=dep_list,
                 status="pending",
                 actor="agent",
                 actor_evidence=_evidence(),
@@ -859,6 +873,10 @@ def replan(
     depends_on: list[int] = typer.Option(
         [], "--depends-on", help="repeatable; id of a node in the same project this subtask waits on"
     ),
+    carries: list[str] = typer.Option(
+        [], "--carries",
+        help="what each --depends-on edge carries, same order, or omit to leave unlabeled",
+    ),
     predicted_touches: list[str] = typer.Option(
         [], "--predicted-touches", help="repeatable path glob; must fall inside the parent's touches"
     ),
@@ -869,14 +887,22 @@ def replan(
     subtask outside the parent's touches, or past `max_subtasks`, is
     created `pending` and needs `approve node:ID`. New tasks, deletions,
     or criteria changes need a plan revision instead."""
+    if carries and len(carries) != len(depends_on):
+        raise typer.BadParameter(
+            "--carries must be given once per --depends-on, in the same order (or not at all)"
+        )
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     conn = _db_connect(repo_root)
     try:
         def _apply():
+            dep_list = [
+                {"id": dep_id, "carries": carries[i] if i < len(carries) else None}
+                for i, dep_id in enumerate(depends_on)
+            ]
             return core.revisions.replan_add_subtask(
                 conn, parent_task_id=parent_task_id, title=title, body_md=body_md,
-                depends_on=list(depends_on), predicted_touches=list(predicted_touches),
+                depends_on=dep_list, predicted_touches=list(predicted_touches),
                 config=config, actor_evidence=_evidence(),
             )
         result = core.idempotency.once(
@@ -885,6 +911,146 @@ def replan(
     finally:
         conn.close()
     _echo_json(result)
+
+
+@app.command(name="_breakdown", hidden=True, help="Internal: an agent decomposes a spec or task into children.")
+def breakdown(
+    node_id: int = typer.Option(..., "--node"),
+    agent: str = typer.Option(..., "--agent"),
+    path: Path = typer.Option(Path("."), "--path"),
+) -> None:
+    repo_root = _find_repo_root(path)
+    config = _load_config(repo_root)
+    conn = _db_connect(repo_root)
+    try:
+        node = core.nodes.get_node(conn, node_id)
+        if node["kind"] not in ("spec", "task"):
+            raise typer.BadParameter(
+                f"node {node_id} is kind={node['kind']!r}; _breakdown only accepts a spec or a task"
+            )
+        if agent not in config.agents:
+            raise typer.BadParameter(f"unknown agent {agent!r}; known agents: {sorted(config.agents)}")
+        agent_cfg = config.agents[agent]
+
+        # Mirrors core.runner.run's SIGTERM handling exactly: install a
+        # handler that stops the in-flight driver subprocess (`pause` ->
+        # core.runners.stop() sends SIGTERM here), so `invoke_driver`
+        # unblocks and returns instead of leaving an orphaned agent
+        # process running under Python's default SIGTERM action. The
+        # `finally` below still runs afterward to record a terminal
+        # event and unregister.
+        stopped = threading.Event()
+
+        def _on_sigterm(signum, frame) -> None:
+            stopped.set()
+            core.drivers.stop_all()
+
+        previous_handler = None
+        if threading.current_thread() is threading.main_thread():
+            previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+
+        core_runners = core.runners
+        core_runners.register(repo_root, node["project_id"])
+        try:
+            criteria_text = "\n".join(f"- {c}" for c in json.loads(node["criteria_json"]))
+            brief = (
+                f"Break down this {node['kind']} into 2-5 child tasks, each with a "
+                f"title, a one-line body, acceptance criteria, and which earlier "
+                f"sibling (by 0-based index) it depends on and what that dependency "
+                f"carries. Do not write code.\n\n"
+                f"Title: {node['title']}\n\n{node['body_md']}\n\n{criteria_text}\n\n"
+                'Reply with exactly one line: {"type": "breakdown", "children": '
+                '[{"title": ..., "body_md": ..., "criteria": [...], '
+                '"depends_on": [{"id": <sibling index>, "carries": "..."}], '
+                '"predicted_touches": [...]}]}'
+            )
+            log_path = repo_root / core.runner.LOGS_RELDIR / f"breakdown-{node_id}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            core.events.record_event(
+                conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                actor_evidence="tty", type_="breakdown.started", payload={"agent": agent},
+            )
+
+            def _fail(reason: str) -> None:
+                core.events.record_event(
+                    conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                    actor_evidence="tty", type_="breakdown.failed", payload={"reason": reason},
+                )
+                raise typer.Exit(code=1)
+
+            # Mirrors core.runner.run checking `_stop_requested` right
+            # before starting work (runner.py:446/484/579/792/880): a
+            # SIGTERM landing in the window between register() and this
+            # point (e.g. stuck behind a slow/blocked record_event write)
+            # would otherwise never be noticed, and invoke_driver would
+            # still spawn the agent -- the same orphan outcome as if no
+            # handler existed at all, just through a narrower window.
+            if stopped.is_set():
+                _fail("stopped")
+
+            result = core.drivers.invoke_driver(agent, agent_cfg, brief, repo_root, log_path=log_path)
+            if stopped.is_set():
+                _fail("stopped")
+            if result.status != "done":
+                _fail(result.error or result.status)
+
+            # A real agent's usage parser (e.g. claude_stream_json) puts
+            # its final text in `summary`, not verbatim in `raw_stdout` --
+            # only the fake agent's line protocol lands unparsed there.
+            # Try the parsed summary first, fall back to raw stdout.
+            children_spec = core.drivers.parse_breakdown(result.summary) or core.drivers.parse_breakdown(
+                result.raw_stdout
+            )
+            if not children_spec:
+                _fail("agent produced no parseable breakdown")
+
+            created_ids: list[int] = []
+            try:
+                for i, child in enumerate(children_spec):
+                    if not isinstance(child.get("title"), str) or not child["title"]:
+                        raise ValueError(f"child at index {i} has no valid (non-empty string) title")
+                    for dep in child.get("depends_on", []):
+                        dep_id = dep.get("id")
+                        if not isinstance(dep_id, int) or isinstance(dep_id, bool) or not (
+                            0 <= dep_id < len(created_ids)
+                        ):
+                            raise ValueError(
+                                f"child {child['title']!r} has an invalid depends_on index "
+                                f"{dep_id!r} (must be an int naming an earlier sibling, "
+                                f"0 <= id < {len(created_ids)})"
+                            )
+                    resolved_deps = [
+                        {"id": created_ids[dep["id"]], "carries": dep.get("carries")}
+                        for dep in child.get("depends_on", [])
+                    ]
+                    # `core.revisions.add_child` (final review Important #3): a
+                    # `spec` parent gets a new task, an unapproved `task` parent
+                    # gets a new subtask directly, and an approved `task` parent
+                    # goes through `replan_add_subtask`'s in-scope/out-of-scope
+                    # gating -- the same branching `POST /nodes/{id}/children`
+                    # uses, instead of always calling `replan_add_subtask` (which
+                    # raised `GateError` for the common case: breaking down a task
+                    # *before* Gate 2).
+                    row = core.revisions.add_child(
+                        conn, node_id, title=child["title"], body_md=child.get("body_md", ""),
+                        criteria=child.get("criteria", []), depends_on=resolved_deps,
+                        predicted_touches=child.get("predicted_touches", []), config=config,
+                        actor="agent", actor_evidence="tty",
+                    )
+                    created_ids.append(row["id"])
+            except Exception as e:
+                _fail(str(e))
+
+            core.events.record_event(
+                conn, project_id=node["project_id"], node_id=node_id, actor="agent",
+                actor_evidence="tty", type_="breakdown.finished", payload={"created": created_ids},
+            )
+        finally:
+            core_runners.unregister(repo_root)
+            if previous_handler is not None:
+                signal.signal(signal.SIGTERM, previous_handler)
+    finally:
+        conn.close()
 
 
 @app.command(name="propose-revision", help="Propose a change to an approved plan.")

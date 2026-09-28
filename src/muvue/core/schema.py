@@ -31,9 +31,13 @@ Process graph tables per plan section 3, plus empty structure-graph tables
 - SCHEMA_VERSION 6 -> 7 (v4 section 4, `ask --default TEXT --default-ok`):
   `questions.default_ok` -- set when the agent asks, so `wait` applies
   the proposed default on timeout without needing its own flag.
+- SCHEMA_VERSION 7 -> 8 (project canvas plan): `deps.carries` records what a
+  dependency edge carries (e.g. "audio frames"), shown as an arrow
+  label on the dashboard's flow diagram. Nullable: existing deps rows
+  and CLI/API calls that don't pass it keep working unlabeled.
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -96,6 +100,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS deps (
     node_id INTEGER NOT NULL REFERENCES nodes(id),
     depends_on INTEGER NOT NULL REFERENCES nodes(id),
+    carries TEXT,
     PRIMARY KEY (node_id, depends_on)
 );
 
