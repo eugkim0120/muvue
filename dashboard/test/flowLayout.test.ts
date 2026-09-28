@@ -40,7 +40,7 @@ test("a dep cycle does not hang layout and produces a defined column for every n
 });
 
 test("a cycle elsewhere does not corrupt the column of a non-cyclic ancestor feeding into it", () => {
-  const tasks = [task(1), task(2), task(3), task(4)]; // 1 -> 2 -> 3, plus 3 <-> 4 cycle
+  const tasks = [task(4), task(3), task(2), task(1)]; // 1 -> 2 -> 3, plus 3 <-> 4 cycle; order forces 2 mid-recursion when cycle hits
   const edges: CanvasEdge[] = [
     { from: 1, to: 2, carries: null }, { from: 2, to: 3, carries: null },
     { from: 3, to: 4, carries: null }, { from: 4, to: 3, carries: null },
