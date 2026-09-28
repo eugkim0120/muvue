@@ -1,0 +1,18 @@
+import { render, screen, waitFor } from "@testing-library/preact";
+import { ProjectPage } from "../src/project/ProjectPage";
+import * as client from "../src/api/client";
+import { projectId, projects } from "../src/state";
+
+test("renders Canvas on desktop width using merged /graph and /nodes data", async () => {
+  projects.value = [{ id: 1, goal: "Voxscore", phase: "planning" }];
+  projectId.value = 1;
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    if (path.startsWith("/graph")) return Promise.resolve({ nodes: [{ id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "pending", risk_tier: "low", owner: null, agent: null }], edges: [] });
+    if (path.startsWith("/nodes")) return Promise.resolve([{ id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "pending", risk_tier: "low", owner: null, body_md: "x", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null }]);
+    if (path === "/inbox") return Promise.resolve({ questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] });
+    if (path.startsWith("/projects/1/revisions")) return Promise.resolve([]);
+    return Promise.resolve({});
+  });
+  render(<ProjectPage />);
+  await waitFor(() => screen.getByText("Voxscore"));
+});
