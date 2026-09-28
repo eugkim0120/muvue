@@ -1,8 +1,8 @@
 import { parseHash, navigate, openNode, closeNode, route, resetRouteFromLocation } from "../src/router";
 
-test("empty hash is the plan page", () => {
-  expect(parseHash("")).toMatchObject({ page: "plan", params: [] });
-  expect(parseHash("#/")).toMatchObject({ page: "plan", params: [] });
+test("empty hash has no page", () => {
+  expect(parseHash("")).toMatchObject({ page: "", params: [] });
+  expect(parseHash("#/")).toMatchObject({ page: "", params: [] });
 });
 
 test("path and query parse", () => {
@@ -13,7 +13,7 @@ test("path and query parse", () => {
 });
 
 test("the nonce fragment is never a route", () => {
-  expect(parseHash("#n=abc").page).toBe("plan");
+  expect(parseHash("#n=abc").page).toBe("");
 });
 
 test("openNode keeps the page and closeNode drops the query", () => {
