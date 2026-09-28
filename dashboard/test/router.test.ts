@@ -1,4 +1,4 @@
-import { parseHash, navigate, openNode, closeNode, route, resetRouteFromLocation } from "../src/router";
+import { parseHash, navigate, openNode, closeNode, route, resetRouteFromLocation, isLegacyRoute } from "../src/router";
 
 test("empty hash has no page", () => {
   expect(parseHash("")).toMatchObject({ page: "", params: [] });
@@ -47,4 +47,11 @@ test("openNode reflects a navigate() called earlier in the same tick, not a stal
   navigate("#/p/5");
   openNode(7);
   expect(window.location.hash).toBe("#/p/5?node=7");
+});
+
+test("isLegacyRoute matches the retired tab pages and the old spec route", () => {
+  expect(isLegacyRoute({ page: "plan", params: [], query: new URLSearchParams() })).toBe(true);
+  expect(isLegacyRoute({ page: "inbox", params: [], query: new URLSearchParams() })).toBe(true);
+  expect(isLegacyRoute({ page: "spec", params: ["3"], query: new URLSearchParams() })).toBe(true);
+  expect(isLegacyRoute({ page: "p", params: ["1"], query: new URLSearchParams() })).toBe(false);
 });

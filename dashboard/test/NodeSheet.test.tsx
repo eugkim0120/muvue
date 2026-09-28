@@ -62,8 +62,14 @@ test("switching to a different node id remounts the sheet, so a half-typed rejec
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const idMatch = /^\/nodes\/(\d+)/.exec(url);
     const id = idMatch ? Number(idMatch[1]) : 7;
+    // ProjectPage now always mounts underneath NodeSheet, so its own
+    // /graph and /nodes(list) fetches need shapes buildCanvasData won't choke on.
     const json = url.includes("/diff") ? { source: "none", diff: "", truncated: false }
       : url.startsWith("/agents") ? { agents: [] }
+      : url.startsWith("/graph") ? { nodes: [], edges: [] }
+      : url === "/nodes" || url.startsWith("/nodes?") ? []
+      : url === "/inbox" ? { questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] }
+      : url.includes("/revisions") ? []
       : { node: { id, project_id: 1, parent_id: 1, kind: "task", title: `Task ${id}`, status: "review", risk_tier: "low", owner: null, body_md: "body", criteria_json: "[]", criteria_mode: "auto", summary: null, block_reason: null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
     return { ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": "application/json" }), json: async () => json, text: async () => "" };
   }));
