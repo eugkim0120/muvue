@@ -2370,3 +2370,16 @@ reading here. Real `decisions` table entries start once dogfooding begins
     `status`), this synthesis silently drifts from the real rule and the
     card stops appearing at the right time. Low probability: this
     mirrors an already-shipped, already-tested client-side rule.
+
+172. **The dashboard reads launch progress from the server, not from its
+    own clicks.** The canvas used to draw "breakdown in progress" ghost
+    boxes from a client-side signal set when the button was pressed. It
+    never saw `breakdown.failed`, so a failed breakdown spun forever (or
+    vanished at once when tasks already existed), and phones never
+    showed it at all. `GET /projects/{id}/activity` now reports live
+    runner processes (the runner registry records `kind` and `node_id`)
+    and each node's latest breakdown outcome; the dashboard only keeps a
+    short-lived "Starting…" entry between the click and the server
+    confirming it, and turns an unconfirmed launch into a visible error
+    after 15 seconds. Cost if wrong: one extra small request every 1.5 s
+    while something is running.

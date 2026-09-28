@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+- Dashboard: every launch (planning, run, start, approve, save) shows a spinner and "…ing" label on its button, and a sticky activity bar reports what is running from the server (`GET /projects/{id}/activity`). A failed planning or run stays on screen with its reason and a log link until dismissed.
+- Dashboard: a "Next" bar names the one next step (write the spec, approve it, plan tasks, approve the task list, run, review, close). `▶ Run tasks` is disabled with the reason whenever running would do nothing, and `POST /projects/{id}/run` now refuses with 409 and that reason.
+- Dashboard: the plan is a top-down diagram at every screen width: spec on top, arrows with arrowheads to each task, labelled with what each task hands to the next. The separate phone list view is gone. With no tasks, a placeholder under the spec offers planning with an agent or adding tasks by hand.
+- Dashboard: status words say what is true ("starts after the task list is approved", "waits for earlier tasks", "ready — starts on Run"); the always-zero spend figure is gone; projects routed to the `fake` agent say it is a demo agent that writes no code.
+- The `fake` agent's default behavior now answers breakdown briefs, so a freshly initialised project can be planned from the dashboard.
+- Breakdown logs are served by `GET /nodes/{id}/logs`; the whole-project run log by `GET /projects/{id}/logs`.
+
 ## [0.2.5] - 2026-09-28
 
 ### Changed

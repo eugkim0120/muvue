@@ -34,9 +34,17 @@ def test_no_inline_event_handlers():
 
 
 def test_token_never_reaches_persistent_storage():
+    """The auth token is kept in memory only (dashboard/src/api/client.ts).
+    `localStorage` is also used for an unrelated, non-secret per-viewer
+    convenience -- which activity-bar items were dismissed
+    (dashboard/src/project/activity.ts) -- so the check has to be that no
+    persistent-storage call carries the token, not that the APIs are absent."""
     html = INDEX.read_text()
-    for api in ("localStorage", "sessionStorage", "indexedDB", "document.cookie"):
-        assert api not in html
+    assert "document.cookie" not in html
+    assert "indexedDB" not in html
+    for call in re.findall(r"(?:localStorage|sessionStorage)\.[a-zA-Z]+\([^)]*\)", html):
+        assert "token" not in call.lower()
+        assert "authorization" not in call.lower()
 
 
 def test_the_page_is_the_built_bundle():
