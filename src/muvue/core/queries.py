@@ -14,6 +14,7 @@ for (node + notes + commits + predicted_touches)."""
 from __future__ import annotations
 
 import fnmatch
+import json
 import re
 import sqlite3
 import subprocess
@@ -24,6 +25,7 @@ from . import db as db_mod
 from . import drift as drift_mod
 from . import nodes as nodes_mod
 from . import risk as risk_mod
+from . import runners as runners_mod
 
 STRUCTURE_SEARCH_LIMIT = 3
 
@@ -226,17 +228,64 @@ def node_diff(conn: sqlite3.Connection, node_id: int, repo_root: str | Path) -> 
     return {"node_id": node_id, "source": source, "diff": text, "truncated": truncated, "commits": shas}
 
 
-def tail_log(repo_root: str | Path, node_id: int, lines: int) -> str:
-    """The last `lines` lines of a node's driver output: the runner's
-    `<id>.log`, then `run-<id>.log` from a dashboard-started run."""
-    logs = Path(repo_root) / ".muvue" / "logs"
+def _tail_files(paths: list[Path], lines: int) -> str:
     tail: deque[str] = deque(maxlen=max(lines, 0))
-    for name in (f"run-{node_id}.log", f"{node_id}.log"):
-        path = logs / name
+    for path in paths:
         if path.exists():
             with open(path, errors="replace") as f:
                 tail.extend(f)
     return "".join(tail)
+
+
+def tail_log(repo_root: str | Path, node_id: int, lines: int) -> str:
+    """The last `lines` lines of a node's agent output: its breakdown
+    log, then `run-<id>.log` from a dashboard-started run, then the
+    runner's `<id>.log`."""
+    logs = Path(repo_root) / ".muvue" / "logs"
+    return _tail_files([logs / f"breakdown-{node_id}.log", logs / f"run-{node_id}.log", logs / f"{node_id}.log"], lines)
+
+
+def tail_project_log(repo_root: str | Path, project_id: int, lines: int) -> str:
+    """The last `lines` lines of a dashboard-started whole-project run
+    (`POST /projects/{id}/run` writes `run-project-<id>.log`)."""
+    return _tail_files([Path(repo_root) / ".muvue" / "logs" / f"run-project-{project_id}.log"], lines)
+
+
+def project_activity(conn: sqlite3.Connection, repo_root: str | Path, project_id: int) -> dict:
+    """What is running for a project right now and how each node's
+    latest breakdown ended -- the dashboard's activity bar reads this
+    instead of guessing from its own clicks."""
+    active = [
+        {"kind": r.get("kind", "run"), "pid": r["pid"], "node_id": r.get("node_id"), "started_at": r["started_at"]}
+        for r in runners_mod.live(Path(repo_root))
+        if r.get("project_id") in (None, project_id)
+    ]
+    rows = db_mod.query_all(
+        conn,
+        "SELECT id, node_id, type, ts, payload FROM events WHERE project_id = ? "
+        "AND type IN ('breakdown.started', 'breakdown.finished', 'breakdown.failed') ORDER BY id",
+        (project_id,),
+    )
+    latest: dict[int, dict] = {}
+    agent_of: dict[int, str | None] = {}
+    for row in rows:
+        payload = json.loads(row["payload"] or "{}")
+        if row["type"] == "breakdown.started":
+            agent_of[row["node_id"]] = payload.get("agent")
+        latest[row["node_id"]] = {
+            "node_id": row["node_id"], "event_id": row["id"], "type": row["type"], "ts": row["ts"],
+            "agent": agent_of.get(row["node_id"]), "reason": payload.get("reason"), "created": payload.get("created"),
+        }
+    working = [
+        {"node_id": r["id"], "title": r["title"],
+         "agent": (r["owner"] or "").split(":", 1)[1] if (r["owner"] or "").startswith("runner:") else r["owner"]}
+        for r in db_mod.query_all(
+            conn,
+            "SELECT id, title, owner FROM nodes WHERE project_id = ? AND status = 'in_progress' AND deleted_at IS NULL ORDER BY id",
+            (project_id,),
+        )
+    ]
+    return {"active": active, "breakdowns": list(latest.values()), "working": working}
 
 
 def touch_drift(conn: sqlite3.Connection) -> float:

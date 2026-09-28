@@ -2,8 +2,8 @@
 runner processes"; section 8 "runner process management").
 
 Each `muvue run` process registers itself as `.muvue/runners/<pid>.json`
-(gitignored) for its lifetime: `{"pid", "project_id", "started_at"}`.
-`stop` sends SIGTERM to the matching runners and waits for them to
+(gitignored) for its lifetime: `{"pid", "project_id", "started_at",
+"kind", "node_id"}`. `stop` sends SIGTERM to the matching runners and waits for them to
 unregister; the runner's handler kills its driver subprocesses and hands
 their nodes back to `ready` without consuming an attempt
 (`core.runner`). A runner that doesn't exit in time is killed, and its
@@ -25,13 +25,15 @@ def _dir(repo_root: Path) -> Path:
     return Path(repo_root) / RUNNERS_RELDIR
 
 
-def register(repo_root: Path, project_id: int | None) -> Path:
+def register(repo_root: Path, project_id: int | None, kind: str = "run", node_id: int | None = None) -> Path:
     path = _dir(repo_root) / f"{os.getpid()}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "pid": os.getpid(),
         "project_id": project_id,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "kind": kind,
+        "node_id": node_id,
     }))
     return path
 

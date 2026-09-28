@@ -757,3 +757,23 @@ def test_graph_endpoint_strips_runner_prefix_from_agent_field(client, conn, auth
     r = client.get(f"/graph?project_id={project_id}", headers=auth_headers)
     node = next(n for n in r.json()["nodes"] if n["id"] == task_id)
     assert node["agent"] == "claude"
+
+
+def test_project_activity_endpoint(client, conn, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    r = client.get(f"/projects/{project_id}/activity", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert set(r.json()) == {"active", "breakdowns", "working"}
+    assert client.get("/projects/9999/activity", headers=auth_headers).status_code == 404
+    assert client.get(f"/projects/{project_id}/activity").status_code == 403
+
+
+def test_project_logs_endpoint(client, repo, auth_headers):
+    r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
+    project_id = r.json()["project"]["id"]
+    (repo / ".muvue" / "logs").mkdir(parents=True, exist_ok=True)
+    (repo / ".muvue" / "logs" / f"run-project-{project_id}.log").write_text("runner said hi\n")
+    r = client.get(f"/projects/{project_id}/logs", headers=auth_headers)
+    assert r.status_code == 200
+    assert "runner said hi" in r.text

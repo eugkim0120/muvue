@@ -564,6 +564,30 @@ def create_app(
                 out.append({**dict(rev), "diff": diff})
         return out
 
+    @app.get("/projects/{project_id}/activity")
+    def project_activity(request: Request, project_id: int) -> dict:
+        """Live runner/breakdown processes and each node's latest
+        breakdown outcome (`core.queries.project_activity`), for the
+        dashboard's activity bar."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+                return core.queries.project_activity(conn, repo_root, project_id)
+            except Exception as e:
+                _handle_core_error(e)
+
+    @app.get("/projects/{project_id}/logs", response_class=PlainTextResponse)
+    def project_logs(request: Request, project_id: int, lines: int = 200) -> str:
+        """Tail of the whole-project run log started by `POST /projects/{id}/run`."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                core.projects.get_project(conn, project_id)
+            except Exception as e:
+                _handle_core_error(e)
+        return core.queries.tail_project_log(repo_root, project_id, min(max(lines, 1), 5000))
+
     @app.get("/events")
     def list_events(
         since_id: int = 0,

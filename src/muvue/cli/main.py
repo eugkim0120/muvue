@@ -950,7 +950,7 @@ def breakdown(
             previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
 
         core_runners = core.runners
-        core_runners.register(repo_root, node["project_id"])
+        core_runners.register(repo_root, node["project_id"], kind="breakdown", node_id=node_id)
         try:
             criteria_text = "\n".join(f"- {c}" for c in json.loads(node["criteria_json"]))
             brief = (
