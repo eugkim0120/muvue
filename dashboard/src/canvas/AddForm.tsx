@@ -48,7 +48,7 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
             const picked = receives.find((r) => r.id === c.id);
             return (
               <div class="row">
-                <label class="row" style={{ flex: 1 }}>
+                <label class="row" style={{ flex: 1, minHeight: "44px", alignItems: "center" }}>
                   <input type="checkbox" aria-label={`receives from ${c.title}`} style={{ width: "auto", minHeight: 0 }} checked={!!picked} onChange={() => toggle(c.id)} />
                   {c.title}
                 </label>
