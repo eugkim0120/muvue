@@ -266,7 +266,7 @@ def test_breakdown_parses_from_summary_when_not_in_raw_stdout(tmp_path, monkeypa
 
 def test_breakdown_empty_reply_fails_loudly(tmp_path, monkeypatch):
     repo_root = _init_repo(tmp_path)
-    monkeypatch.setenv("MUVUE_FAKE_BEHAVIOR", "cooperative")  # a "done" reply with no breakdown line
+    monkeypatch.setenv("MUVUE_FAKE_BEHAVIOR", "lazy")  # a "done" reply with no breakdown line
     conn = core_db.connect(repo_root / ".muvue" / "muvue.db")
     project = projects_mod.create_project(conn, goal="g")
     spec = nodes_mod.create_node(conn, project_id=project["id"], kind="spec", title="s", status="ready")

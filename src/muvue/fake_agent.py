@@ -82,6 +82,13 @@ def _run(behavior: str, brief_raw: str) -> int:
     print(json.dumps({"type": "progress", "message": "reading brief"}), flush=True)
     print(json.dumps({"type": "progress", "message": f"behavior={behavior}"}), flush=True)
 
+    # `muvue _breakdown`'s brief asks for a breakdown line. A cooperative
+    # agent answers what it was asked, so the default behavior plans
+    # instead of reporting generic "did the work" (which `_breakdown`
+    # can only record as a failure).
+    if behavior == "cooperative" and '{"type": "breakdown"' in brief_raw:
+        behavior = "breakdown"
+
     if behavior == "slow":
         import time
 

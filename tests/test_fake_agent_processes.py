@@ -90,3 +90,24 @@ def test_port_file_gives_an_agent_no_credential(tmp_path, monkeypatch):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_cooperative_fake_agent_answers_a_breakdown_brief(capsys):
+    """The default behavior must answer a breakdown brief with a breakdown
+    line: a fresh project routes every kind to `fake`, and a breakdown
+    that always fails with "agent produced no parseable breakdown" made
+    the dashboard's planning button look broken (voxscore, 2026-09-28)."""
+    from muvue import fake_agent
+    from muvue.core.drivers import parse_breakdown
+
+    brief = 'Break down this spec...\nReply with exactly one line: {"type": "breakdown", "children": [...]}'
+    assert fake_agent._run("cooperative", brief) == 0
+    children = parse_breakdown(capsys.readouterr().out)
+    assert [c["title"] for c in children] == ["Record voice", "Detect pitch", "Export MusicXML"]
+
+
+def test_cooperative_fake_agent_still_does_normal_work_for_a_task_brief(capsys):
+    from muvue import fake_agent
+
+    assert fake_agent._run("cooperative", "implement the task") == 0
+    assert '"status": "done"' in capsys.readouterr().out
