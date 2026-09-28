@@ -2251,6 +2251,7 @@ function Actions({ detail, onDone }) {
   async function remove() {
     const ok = await removeA.run(() => post(routes.nodeRemove(n2.id)));
     if (ok) {
+      setRemoving(false);
       toast("removed");
       refresh();
       onDone();
@@ -2280,7 +2281,6 @@ function Actions({ detail, onDone }) {
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "actions", children: buttons }),
     approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
-    removeA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: removeA.error }) : null,
     breakdownA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: breakdownA.error }) : null,
     rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("textarea", { placeholder: "what should change?", value: feedback, onInput: (e2) => setFeedback(e2.target.value) }),
@@ -2291,10 +2291,20 @@ function Actions({ detail, onDone }) {
       ] })
     ] }) : null,
     starting ? /* @__PURE__ */ u$1(StartPicker, { nodeId: n2.id, onClose: () => setStarting(false), onStarted: onDone }) : null,
-    removing ? /* @__PURE__ */ u$1(Confirm, { title: "Remove this task?", body: "It and its subtasks are soft-deleted; this cannot be undone from the page.", confirmLabel: "Remove", danger: true, onConfirm: () => {
-      setRemoving(false);
-      void remove();
-    }, onCancel: () => setRemoving(false) }) : null
+    removing ? /* @__PURE__ */ u$1(
+      Confirm,
+      {
+        title: "Remove this task?",
+        body: /* @__PURE__ */ u$1(S$1, { children: [
+          "It and its subtasks are soft-deleted; this cannot be undone from the page.",
+          removeA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: removeA.error }) : null
+        ] }),
+        confirmLabel: removeA.busy ? "Removing…" : "Remove",
+        danger: true,
+        onConfirm: remove,
+        onCancel: () => setRemoving(false)
+      }
+    ) : null
   ] });
 }
 const VERIFICATION = { checked_by_muvue: "checked by muvue", unverified: "unverified", human: "human" };

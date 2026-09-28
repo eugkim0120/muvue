@@ -32,7 +32,7 @@ export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => 
   }
   async function remove() {
     const ok = await removeA.run(() => post(routes.nodeRemove(n.id)));
-    if (ok) { toast("removed"); refresh(); onDone(); }
+    if (ok) { setRemoving(false); toast("removed"); refresh(); onDone(); }
   }
   async function breakDown() {
     const ok = await breakdownA.run(async () => {
@@ -58,7 +58,6 @@ export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => 
     <div class="stack tight">
       <div class="actions">{buttons}</div>
       {approveA.error ? <div class="callout danger">{approveA.error}</div> : null}
-      {removeA.error ? <div class="callout danger">{removeA.error}</div> : null}
       {breakdownA.error ? <div class="callout danger">{breakdownA.error}</div> : null}
       {rejecting ? (
         <div class="stack tight">
@@ -68,7 +67,16 @@ export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => 
         </div>
       ) : null}
       {starting ? <StartPicker nodeId={n.id} onClose={() => setStarting(false)} onStarted={onDone} /> : null}
-      {removing ? <Confirm title="Remove this task?" body="It and its subtasks are soft-deleted; this cannot be undone from the page." confirmLabel="Remove" danger onConfirm={() => { setRemoving(false); void remove(); }} onCancel={() => setRemoving(false)} /> : null}
+      {removing ? (
+        <Confirm
+          title="Remove this task?"
+          body={<>It and its subtasks are soft-deleted; this cannot be undone from the page.{removeA.error ? <div class="callout danger">{removeA.error}</div> : null}</>}
+          confirmLabel={removeA.busy ? "Removing…" : "Remove"}
+          danger
+          onConfirm={remove}
+          onCancel={() => setRemoving(false)}
+        />
+      ) : null}
     </div>
   );
 }
