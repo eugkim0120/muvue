@@ -21,14 +21,14 @@ export function navigate(hash: string): void { window.location.hash = hash; }
 export function openProject(id: number): void { navigate("#/p/" + id); }
 
 export function openNode(id: number): void {
-  const r = route.value;
+  const r = parseHash(window.location.hash);
   const q = new URLSearchParams(r.query);
   q.set("node", String(id));
   navigate("#/" + [r.page, ...r.params].join("/") + "?" + q.toString());
 }
 
 export function closeNode(): void {
-  const r = route.value;
+  const r = parseHash(window.location.hash);
   const q = new URLSearchParams(r.query);
   q.delete("node");
   const qs = q.toString();

@@ -42,3 +42,9 @@ test("#/p/3?node=9 carries the node query param", () => {
   const r = parseHash("#/p/3?node=9");
   expect(r.query.get("node")).toBe("9");
 });
+
+test("openNode reflects a navigate() called earlier in the same tick, not a stale route signal", () => {
+  navigate("#/p/5");
+  openNode(7);
+  expect(window.location.hash).toBe("#/p/5?node=7");
+});
