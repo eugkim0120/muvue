@@ -17,3 +17,22 @@ test("renders Canvas on desktop width using merged /graph and /nodes data", asyn
   render(<ProjectPage />);
   await waitFor(() => screen.getByText("Voxscore"));
 });
+
+test("shows fake-agent notice when a /graph node has agent === 'fake'", async () => {
+  projects.value = [{ id: 1, goal: "Voxscore", phase: "planning" }];
+  projectId.value = 1;
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    if (path.startsWith("/graph")) return Promise.resolve({ nodes: [{ id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "pending", risk_tier: "low", owner: null, agent: "fake" }], edges: [] });
+    if (path.startsWith("/nodes")) return Promise.resolve([{ id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "pending", risk_tier: "low", owner: null, body_md: "x", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null }]);
+    if (path === "/inbox") return Promise.resolve({ questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] });
+    if (path.startsWith("/projects/1/revisions")) return Promise.resolve([]);
+    if (path.startsWith("/projects/1/activity")) return Promise.resolve({ active: [], breakdowns: [], working: [] });
+    return Promise.resolve({});
+  });
+  render(<ProjectPage />);
+  await waitFor(() => {
+    const notice = document.querySelector("[data-fake-notice]");
+    expect(notice).toBeTruthy();
+    expect(notice?.textContent).toContain("demo agent");
+  });
+});

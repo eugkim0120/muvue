@@ -1658,13 +1658,15 @@ function stepsFromColumns(tasks, edges) {
   }));
 }
 const LABEL$1 = {
-  queued: "queued",
-  running: "running",
+  unassigned: "no agent",
+  waiting_for_plan_approval: "starts after the task list is approved",
+  waiting_on_earlier: "waits for earlier tasks",
+  ready: "ready — starts on Run",
+  running: "working now",
   waiting_on_you: "waiting on you",
   done: "done",
   failed: "failed",
-  paused: "paused",
-  unassigned: "unassigned"
+  paused: "paused"
 };
 function AgentChip({ agent, state }) {
   return /* @__PURE__ */ u$1("span", { class: "chip agent-chip st-" + state, children: [
@@ -1679,7 +1681,9 @@ function agentStateOf(node, projectPhase, needsYou) {
   if (node.status === "failed") return "failed";
   if (needsYou || node.status === "review" || node.status === "awaiting_approval") return "waiting_on_you";
   if (node.status === "in_progress") return "running";
-  return "queued";
+  if (projectPhase === "planning") return "waiting_for_plan_approval";
+  if (node.status === "ready") return "ready";
+  return "waiting_on_earlier";
 }
 const GLYPH = { done: "✓", in_progress: "●", review: "●", pending: "○", ready: "○", blocked: "⚠", failed: "⚠", awaiting_approval: "●" };
 function SubtaskRow({ subtask, needsYou }) {
@@ -1947,7 +1951,6 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase, activi
   if (!spec) return authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: projectId2 }) : /* @__PURE__ */ u$1("div", { class: "spec-root-card", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "No spec yet." }) });
   const canApproveSpec = authed.value && spec.status === "pending";
   const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && projectPhase === "planning";
-  const state = agentStateOf({ status: spec.status, agent: spec.agent }, projectPhase, false);
   async function approveSpec() {
     const ok = await approveSpecA.run(() => post(routes.nodeApprove(spec.id), { target: "spec" }));
     if (ok) {
@@ -1970,19 +1973,17 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase, activi
       /* @__PURE__ */ u$1(Pill, { status: spec.status })
     ] }),
     spec.body_md ? /* @__PURE__ */ u$1("div", { class: "caption", children: purposeLine(spec.body_md) }) : null,
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1(AgentChip, { agent: spec.agent, state }),
-      /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: (e2) => {
-          e2.stopPropagation();
-          void approveSpec();
-        }, children: "Approve spec" }) : null,
-        canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: (e2) => {
-          e2.stopPropagation();
-          void approveTasks();
-        }, children: "Approve task list" }) : null
-      ] })
-    ] }),
+    spec.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: `planned by ${spec.agent}` }) : null,
+    /* @__PURE__ */ u$1("div", { class: "row between", children: /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: (e2) => {
+        e2.stopPropagation();
+        void approveSpec();
+      }, children: "Approve spec" }) : null,
+      canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: (e2) => {
+        e2.stopPropagation();
+        void approveTasks();
+      }, children: "Approve task list" }) : null
+    ] }) }),
     approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null,
     approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null,
     authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id, activity: activity ?? null }) }) : null
@@ -2187,24 +2188,18 @@ function cardsFromInbox(inbox, ctx) {
   for (const u2 of inbox.unverified_external) cards.push({ id: "ack:unverified:" + u2.node_id, kind: "ack", nodeId: u2.node_id, projectId: ctx.nodesById[u2.node_id]?.project_id ?? null, title: u2.title, context: "unverified external criteria", agent: "", ts: "" });
   return cards;
 }
-function StatusLine({ phase, done, total, busyAgents, spend, budget }) {
-  const pct = budget > 0 ? spend / budget : 0;
-  const spendClass = pct >= 1 ? "spend-red" : pct >= 0.8 ? "spend-amber" : "";
+const PHASE = { planning: "Planning", executing: "Running", paused: "Paused", closed: "Closed" };
+function StatusLine({ phase, done, total, working }) {
+  const phaseLabel = PHASE[phase] || phase;
+  const workingLabel = working === 0 ? "no agent working" : working === 1 ? "1 agent working" : `${working} agents working`;
   return /* @__PURE__ */ u$1("div", { class: "status-line caption", children: [
-    phase,
+    phaseLabel,
     " · ",
     done,
-    "/",
+    " of ",
     total,
-    " done · ",
-    busyAgents,
-    " agents busy · ",
-    /* @__PURE__ */ u$1("span", { class: spendClass, children: [
-      "$",
-      spend.toFixed(2),
-      " of $",
-      budget.toFixed(2)
-    ] })
+    " tasks done · ",
+    workingLabel
   ] });
 }
 function NewProject() {
@@ -2304,7 +2299,8 @@ function ProjectPage() {
   if (!p2) return /* @__PURE__ */ u$1(NewProject, {});
   const done = (nodesQ.data ?? []).filter((n2) => n2.status === "done" && n2.kind === "task").length;
   const total = (nodesQ.data ?? []).filter((n2) => n2.kind === "task").length;
-  const busyAgents = new Set((nodesQ.data ?? []).filter((n2) => n2.status === "in_progress").map((n2) => n2.owner)).size;
+  const working = (nodesQ.data ?? []).filter((n2) => n2.status === "in_progress").length;
+  const hasFakeAgent = (graphQ.data?.nodes ?? []).some((n2) => n2.agent === "fake");
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
@@ -2322,8 +2318,9 @@ function ProjectPage() {
       ] })
     ] }),
     runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", style: { margin: "0 16px" }, children: runA.error }) : null,
+    hasFakeAgent ? /* @__PURE__ */ u$1("div", { class: "callout", "data-fake-notice": true, style: { margin: "0 16px" }, children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' }) : null,
     /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
-    /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, busyAgents, spend: 0, budget: 1 }) }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
     authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
     graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
       /* @__PURE__ */ u$1(CardRail, { cards }),
@@ -3105,8 +3102,6 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .parallel-label { text-transform: uppercase; letter-spacing: .04em; }
 .status-line { padding: 4px 16px; }
 .status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
-.spend-amber { color: var(--tier-medium); }
-.spend-red { color: var(--danger); }
 .spec-body { padding: 8px 0; }
 .spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
 .spec-line:hover { background: var(--surface-2); }

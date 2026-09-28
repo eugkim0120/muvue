@@ -7,8 +7,6 @@ import { purposeLine } from "./canvasData";
 import { openNode } from "../router";
 import { Button } from "../ui/Button";
 import { Pill } from "../ui/Pill";
-import { AgentChip } from "./AgentChip";
-import { agentStateOf } from "./agentState";
 import { BreakdownButton } from "./AddForm";
 import { useAction } from "../ui/useAction";
 import type { Activity } from "../project/activity";
@@ -39,7 +37,6 @@ export function SpecRoot({ spec, projectId, taskCount, projectPhase, activity }:
   if (!spec) return authed.value ? <SubmitSpecForm projectId={projectId} /> : <div class="spec-root-card"><p class="muted">No spec yet.</p></div>;
   const canApproveSpec = authed.value && spec.status === "pending";
   const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && projectPhase === "planning";
-  const state = agentStateOf({ status: spec.status, owner: null, agent: spec.agent }, projectPhase, false);
 
   async function approveSpec() {
     const ok = await approveSpecA.run(() => post(routes.nodeApprove(spec!.id), { target: "spec" }));
@@ -57,8 +54,8 @@ export function SpecRoot({ spec, projectId, taskCount, projectPhase, activity }:
         <Pill status={spec.status} />
       </div>
       {spec.body_md ? <div class="caption">{purposeLine(spec.body_md)}</div> : null}
+      {spec.agent ? <div class="caption">{`planned by ${spec.agent}`}</div> : null}
       <div class="row between">
-        <AgentChip agent={spec.agent} state={state} />
         <div class="actions">
           {canApproveSpec ? <Button variant="filled" busy={approveSpecA.busy} busyLabel="Approving…" onClick={(e: Event) => { e.stopPropagation(); void approveSpec(); }}>Approve spec</Button> : null}
           {canApproveTasks ? <Button variant="filled" busy={approveTasksA.busy} busyLabel="Approving…" onClick={(e: Event) => { e.stopPropagation(); void approveTasks(); }}>Approve task list</Button> : null}

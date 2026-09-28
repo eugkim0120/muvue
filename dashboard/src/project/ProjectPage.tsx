@@ -64,7 +64,8 @@ export function ProjectPage() {
 
   const done = (nodesQ.data ?? []).filter((n) => n.status === "done" && n.kind === "task").length;
   const total = (nodesQ.data ?? []).filter((n) => n.kind === "task").length;
-  const busyAgents = new Set((nodesQ.data ?? []).filter((n) => n.status === "in_progress").map((n) => n.owner)).size;
+  const working = (nodesQ.data ?? []).filter((n) => n.status === "in_progress").length;
+  const hasFakeAgent = (graphQ.data?.nodes ?? []).some((n) => n.agent === "fake");
 
   async function run() {
     if (!pid) return;
@@ -84,9 +85,10 @@ export function ProjectPage() {
         </div>
       </div>
       {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
+      {hasFakeAgent ? <div class="callout" data-fake-notice style={{ margin: "0 16px" }}>Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.</div> : null}
       <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
       <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
-        <StatusLine phase={p.phase} done={done} total={total} busyAgents={busyAgents} spend={0} budget={1} />
+        <StatusLine phase={p.phase} done={done} total={total} working={working} />
       </button>
       {authed.value && addingTask && data?.spec ? (
         <div style={{ padding: "0 16px 16px" }}>

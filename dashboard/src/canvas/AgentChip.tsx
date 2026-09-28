@@ -1,8 +1,15 @@
 import type { AgentState } from "./agentState";
 
 const LABEL: Record<AgentState, string> = {
-  queued: "queued", running: "running", waiting_on_you: "waiting on you", done: "done", failed: "failed",
-  paused: "paused", unassigned: "unassigned",
+  unassigned: "no agent",
+  waiting_for_plan_approval: "starts after the task list is approved",
+  waiting_on_earlier: "waits for earlier tasks",
+  ready: "ready — starts on Run",
+  running: "working now",
+  waiting_on_you: "waiting on you",
+  done: "done",
+  failed: "failed",
+  paused: "paused",
 };
 
 export function AgentChip({ agent, state }: { agent: string | null; state: AgentState }) {
