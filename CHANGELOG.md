@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+- The dashboard is rebuilt around a single per-project canvas: a flow
+  diagram of the spec and its tasks/subtasks (columns by `deps` order,
+  labelled arrows, nested subtask rows), agent chips on every box, a
+  notification-card rail replacing the Inbox tab, and creation/agent-
+  breakdown directly from the page. The Plan, Inbox, Activity and Spend
+  tabs, and the separate spec page, are retired — their content now
+  lives in the canvas and the node sheet (`#/p/:id` replaces the old
+  per-tab hashes, which redirect). No CLI verb loses its dashboard
+  equivalent: `#/spec/:id` still opens that node's sheet, and History/
+  Agents move into the project menu as sheets.
+
 ## [0.2.4] - 2026-09-28
 
 ### Added
