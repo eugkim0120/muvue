@@ -70,13 +70,20 @@ export function Canvas({ data, projectId, projectPhase, needsYou, activity, onAd
   }
   function onPointerUp(e: PointerEvent) {
     pointers.current.delete(e.pointerId);
-    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size < 2 && pinch.current) {
+      pinch.current = null;
+      // Pinch-zooming out below fit left a stale pan offset, same as the
+      // "−" button; reset once the gesture ends rather than mid-pinch.
+      if (z <= fit + 0.001) setPan({ x: 0, y: 0 });
+    }
     dragging.current = null;
   }
   function onWheel(e: WheelEvent) {
     if (!e.ctrlKey) return;
     e.preventDefault();
-    setZoom(clampZoom(z - e.deltaY * 0.001));
+    const next = clampZoom(z - e.deltaY * 0.001);
+    setZoom(next);
+    if (next <= fit + 0.001) setPan({ x: 0, y: 0 });
   }
 
   return (

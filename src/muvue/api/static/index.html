@@ -1782,8 +1782,27 @@ function SpecRoot({ spec, style }) {
     spec.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: `planned by ${spec.agent}` }) : null
   ] });
 }
+function stopBubble(e2) {
+  e2.stopPropagation();
+}
+function DagPlaceholder({ specId, planning, activity, onAddTask, style }) {
+  return /* @__PURE__ */ u$1("div", { class: "task-box dag-empty", style, onClick: stopBubble, onKeyDown: stopBubble, children: planning ? /* @__PURE__ */ u$1(S$1, { children: [
+    /* @__PURE__ */ u$1("div", { class: "row", children: [
+      /* @__PURE__ */ u$1("span", { class: "spinner" }),
+      /* @__PURE__ */ u$1("span", { class: "title", children: "Planning tasks…" })
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "caption", children: "Tasks appear here when the agent finishes." }),
+    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" }),
+    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" }),
+    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" })
+  ] }) : /* @__PURE__ */ u$1(S$1, { children: [
+    /* @__PURE__ */ u$1("span", { class: "title", children: "No tasks yet" }),
+    /* @__PURE__ */ u$1("div", { class: "caption", children: 'Tasks the spec breaks into will appear here, with arrows for what each one hands to the next. Use "Plan tasks with agent" above.' })
+  ] }) });
+}
 const LAUNCH_TIMEOUT_MS = 15e3;
 const STORAGE_KEY = "muvue.dismissedActivity";
+const MAX_DISMISSED_KEYS = 200;
 function loadDismissed() {
   try {
     return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]"));
@@ -1797,8 +1816,9 @@ function timeoutKey(l2) {
   return `launch-timeout:${l2.kind}:${l2.nodeId}:${l2.at}`;
 }
 function dismiss(key) {
-  const next = new Set(dismissedKeys.value);
+  let next = new Set(dismissedKeys.value);
   next.add(key);
+  if (next.size > MAX_DISMISSED_KEYS) next = new Set([...next].slice(-MAX_DISMISSED_KEYS));
   dismissedKeys.value = next;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));
@@ -1818,7 +1838,7 @@ function latestEventId(a2, nodeId) {
 }
 function markLaunched(l2, a2) {
   const launch = { ...l2, at: Date.now(), afterEventId: latestEventId(a2, l2.nodeId) };
-  launches.value = [...launches.value.filter((x2) => !(x2.kind === l2.kind && x2.nodeId === l2.nodeId)), launch];
+  launches.value = [...launches.value.filter((x2) => !(x2.kind === l2.kind && x2.nodeId === l2.nodeId && x2.projectId === l2.projectId)), launch];
 }
 function confirmed(l2, a2) {
   if (!a2) return false;
@@ -1849,7 +1869,9 @@ function activityItems(a2, launched, now, titles, dismissed, projectId2) {
     items.push({ tone: "busy", key, text, startedAt: seenAt(key, now), log: { kind: "project", projectId: projectId2 } });
   }
   for (const l2 of launched) {
+    if (l2.projectId !== null && l2.projectId !== projectId2) continue;
     if (confirmed(l2, a2)) continue;
+    const log = l2.nodeId !== null ? { kind: "node", nodeId: l2.nodeId } : { kind: "project", projectId: projectId2 };
     if (now - l2.at < LAUNCH_TIMEOUT_MS) {
       items.push({ tone: "busy", key: `launch:${l2.kind}:${l2.nodeId}`, text: `Starting ${l2.label}…`, startedAt: l2.at, log: null });
     } else {
@@ -1859,20 +1881,20 @@ function activityItems(a2, launched, now, titles, dismissed, projectId2) {
         tone: "error",
         key,
         text: `${l2.label} did not start: nothing was reported within 15 seconds. Check the log.`,
-        log: null
+        log
       });
     }
   }
   for (const b2 of activity.breakdowns) {
     if (b2.type !== "breakdown.failed") continue;
-    const key = `bd-fail:${b2.event_id}`;
+    const key = `bd-fail:${projectId2}:${b2.event_id}:${b2.ts}`;
     if (dismissed.has(key)) continue;
     const title = titles[b2.node_id] ?? "#" + b2.node_id;
     items.push({ tone: "error", key, text: `Planning “${title}” failed: ${b2.reason ?? "no reason recorded"}`, log: { kind: "node", nodeId: b2.node_id } });
   }
   return items;
 }
-function planningNodeIds(a2, launched) {
+function planningNodeIds(a2, launched, projectId2) {
   const ids = /* @__PURE__ */ new Set();
   for (const p2 of a2?.active ?? []) {
     if (p2.kind === "breakdown" && p2.node_id !== null) ids.add(p2.node_id);
@@ -1880,6 +1902,7 @@ function planningNodeIds(a2, launched) {
   const now = Date.now();
   for (const l2 of launched) {
     if (l2.kind !== "breakdown" || l2.nodeId === null) continue;
+    if (l2.projectId !== null && l2.projectId !== projectId2) continue;
     if (confirmed(l2, a2)) continue;
     if (now - l2.at < LAUNCH_TIMEOUT_MS) ids.add(l2.nodeId);
   }
@@ -1895,6 +1918,7 @@ function useActivity(projectId2) {
     api(routes.projectActivity(projectId2)).then((a2) => {
       if (!alive) return;
       for (const l2 of launches.value) {
+        if (l2.projectId !== null && l2.projectId !== projectId2) continue;
         if (l2.kind !== "breakdown" || !confirmed(l2, a2)) continue;
         const outcome = a2.breakdowns.find((b2) => b2.node_id === l2.nodeId);
         if (outcome?.type === "breakdown.finished" && outcome.event_id > l2.afterEventId) {
@@ -1902,7 +1926,10 @@ function useActivity(projectId2) {
           refresh();
         }
       }
-      launches.value = launches.value.filter((l2) => !confirmed(l2, a2) || l2.kind === "breakdown" && a2.active.some((p2) => p2.node_id === l2.nodeId));
+      launches.value = launches.value.filter((l2) => {
+        if (l2.projectId !== null && l2.projectId !== projectId2) return true;
+        return !confirmed(l2, a2) || l2.kind === "breakdown" && a2.active.some((p2) => p2.node_id === l2.nodeId);
+      });
       prev.current = a2;
       setActivity(a2);
     }, (e2) => {
@@ -1912,7 +1939,7 @@ function useActivity(projectId2) {
       alive = false;
     };
   }, [projectId2, refreshTick.value, tick]);
-  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l2) => Date.now() - l2.at < LAUNCH_TIMEOUT_MS));
+  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l2) => (l2.projectId === null || l2.projectId === projectId2) && Date.now() - l2.at < LAUNCH_TIMEOUT_MS));
   h$2(() => {
     if (!polling) return;
     const t2 = setInterval(() => setTick((n2) => n2 + 1), 1500);
@@ -1920,106 +1947,14 @@ function useActivity(projectId2) {
   }, [polling]);
   return activity;
 }
-function AddForm({ parentId, kind, candidates, onClose }) {
-  const [title, setTitle] = d$2("");
-  const [purpose, setPurpose] = d$2("");
-  const [criteria, setCriteria] = d$2("");
-  const [receives, setReceives] = d$2([]);
-  const a2 = useAction();
-  function toggle(id) {
-    setReceives((r2) => r2.some((x2) => x2.id === id) ? r2.filter((x2) => x2.id !== id) : [...r2, { id, carries: "" }]);
-  }
-  function setCarries(id, carries) {
-    setReceives((r2) => r2.map((x2) => x2.id === id ? { ...x2, carries } : x2));
-  }
-  async function save() {
-    if (!title.trim()) return;
-    const ok = await a2.run(() => post(routes.nodeChildren(parentId), {
-      title,
-      body_md: purpose,
-      criteria: criteria.split("\n").map((l2) => l2.trim()).filter(Boolean),
-      depends_on: receives.map((r2) => ({ id: r2.id, carries: r2.carries || null })),
-      predicted_touches: []
-    }));
-    if (ok) {
-      refresh();
-      onClose();
-    }
-  }
-  return /* @__PURE__ */ u$1("form", { class: "card stack tight add-form", onSubmit: (e2) => {
-    e2.preventDefault();
-    void save();
-  }, children: [
-    /* @__PURE__ */ u$1("input", { placeholder: "title", value: title, onInput: (e2) => setTitle(e2.target.value) }),
-    /* @__PURE__ */ u$1("input", { placeholder: "purpose", value: purpose, onInput: (e2) => setPurpose(e2.target.value) }),
-    /* @__PURE__ */ u$1("textarea", { placeholder: "one per line", value: criteria, onInput: (e2) => setCriteria(e2.target.value) }),
-    candidates.length ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-      /* @__PURE__ */ u$1("div", { class: "caption", children: "Receives from" }),
-      candidates.map((c2) => {
-        const picked = receives.find((r2) => r2.id === c2.id);
-        return /* @__PURE__ */ u$1("div", { class: "row", children: [
-          /* @__PURE__ */ u$1("label", { class: "row", style: { flex: 1, minHeight: "44px", alignItems: "center" }, children: [
-            /* @__PURE__ */ u$1("input", { type: "checkbox", "aria-label": `receives from ${c2.title}`, style: { width: "auto", minHeight: 0 }, checked: !!picked, onChange: () => toggle(c2.id) }),
-            c2.title
-          ] }),
-          picked ? /* @__PURE__ */ u$1("input", { placeholder: "carrying ___", value: picked.carries, onInput: (e2) => setCarries(c2.id, e2.target.value) }) : null
-        ] });
-      })
-    ] }) : null,
-    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
-    /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Saving…", children: "Save" }),
-      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" })
-    ] })
-  ] });
-}
-function BreakdownButton({ nodeId, disabled, caption, activity, label }) {
-  const a2 = useAction();
-  async function run() {
-    const ok = await a2.run(async () => {
-      await post(routes.nodeBreakdown(nodeId), {});
-    });
-    if (ok) {
-      markLaunched({ kind: "breakdown", nodeId, label: "planning" }, activity);
-      refresh();
-    }
-  }
-  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: label ?? "✨ Break down with agent" }),
-    disabled && caption ? /* @__PURE__ */ u$1("div", { class: "caption", children: caption }) : null,
-    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
-  ] });
-}
-function stopBubble(e2) {
-  e2.stopPropagation();
-}
-function DagPlaceholder({ specId, planning, activity, onAddTask, style }) {
-  return /* @__PURE__ */ u$1("div", { class: "task-box dag-empty", style, onClick: stopBubble, onKeyDown: stopBubble, children: planning ? /* @__PURE__ */ u$1(S$1, { children: [
-    /* @__PURE__ */ u$1("div", { class: "row", children: [
-      /* @__PURE__ */ u$1("span", { class: "spinner" }),
-      /* @__PURE__ */ u$1("span", { class: "title", children: "Planning tasks…" })
-    ] }),
-    /* @__PURE__ */ u$1("div", { class: "caption", children: "Tasks appear here when the agent finishes." }),
-    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" }),
-    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" }),
-    /* @__PURE__ */ u$1("div", { class: "dag-skeleton" })
-  ] }) : /* @__PURE__ */ u$1(S$1, { children: [
-    /* @__PURE__ */ u$1("span", { class: "title", children: "No tasks yet" }),
-    /* @__PURE__ */ u$1("div", { class: "caption", children: "Tasks the spec breaks into will appear here, with arrows for what each one hands to the next." }),
-    authed.value ? /* @__PURE__ */ u$1(S$1, { children: [
-      /* @__PURE__ */ u$1(BreakdownButton, { nodeId: specId, activity, label: "✨ Plan tasks with agent" }),
-      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => onAddTask(), children: "+ Add task myself" })
-    ] }) : null
-  ] }) });
-}
 const MIN_ZOOM = 0.3, MAX_ZOOM = 2;
 const clampZoom = (z2) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z2));
 function boxStyle(p2) {
   return { position: "absolute", left: p2.x + "px", top: p2.y + "px", width: p2.w + "px", height: p2.h + "px" };
 }
 const distance = (a2, b2) => Math.hypot(a2.x - b2.x, a2.y - b2.y);
-function Canvas({ data, projectPhase, needsYou, activity, onAddTask }) {
-  const planning = data.spec ? planningNodeIds(activity, launches.value).has(data.spec.id) : false;
+function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity, onAddTask }) {
+  const planning = data.spec ? planningNodeIds(activity, launches.value, projectId2).has(data.spec.id) : false;
   const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
   const viewportRef = A(null);
   const [viewportWidth, setViewportWidth] = d$2(null);
@@ -2067,13 +2002,18 @@ function Canvas({ data, projectPhase, needsYou, activity, onAddTask }) {
   }
   function onPointerUp(e2) {
     pointers.current.delete(e2.pointerId);
-    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size < 2 && pinch.current) {
+      pinch.current = null;
+      if (z2 <= fit + 1e-3) setPan({ x: 0, y: 0 });
+    }
     dragging.current = null;
   }
   function onWheel(e2) {
     if (!e2.ctrlKey) return;
     e2.preventDefault();
-    setZoom(clampZoom(z2 - e2.deltaY * 1e-3));
+    const next = clampZoom(z2 - e2.deltaY * 1e-3);
+    setZoom(next);
+    if (next <= fit + 1e-3) setPan({ x: 0, y: 0 });
   }
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
     /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: zoomedIn ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
@@ -2093,7 +2033,20 @@ function Canvas({ data, projectPhase, needsYou, activity, onAddTask }) {
       lay.pos[PLACEHOLDER_ID] && data.spec ? /* @__PURE__ */ u$1(DagPlaceholder, { specId: data.spec.id, planning, activity, onAddTask, style: boxStyle(lay.pos[PLACEHOLDER_ID]) }) : null
     ] }) }),
     /* @__PURE__ */ u$1("div", { class: "canvas-zoom-controls", children: [
-      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom out", onClick: () => setZoom(Math.max(MIN_ZOOM, z2 - 0.15)), children: "−" }),
+      /* @__PURE__ */ u$1(
+        "button",
+        {
+          type: "button",
+          class: "icon-btn",
+          "aria-label": "zoom out",
+          onClick: () => {
+            const next = Math.max(MIN_ZOOM, z2 - 0.15);
+            setZoom(next);
+            if (next <= fit + 1e-3) setPan({ x: 0, y: 0 });
+          },
+          children: "−"
+        }
+      ),
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "fit to width", onClick: () => {
         setZoom(null);
         setPan({ x: 0, y: 0 });
@@ -2240,6 +2193,76 @@ function cardsFromInbox(inbox, ctx) {
   for (const u2 of inbox.unverified_external) cards.push({ id: "ack:unverified:" + u2.node_id, kind: "ack", nodeId: u2.node_id, projectId: ctx.nodesById[u2.node_id]?.project_id ?? null, title: u2.title, context: "unverified external criteria", agent: "", ts: "" });
   return cards;
 }
+function AddForm({ parentId, kind, candidates, onClose }) {
+  const [title, setTitle] = d$2("");
+  const [purpose, setPurpose] = d$2("");
+  const [criteria, setCriteria] = d$2("");
+  const [receives, setReceives] = d$2([]);
+  const a2 = useAction();
+  function toggle(id) {
+    setReceives((r2) => r2.some((x2) => x2.id === id) ? r2.filter((x2) => x2.id !== id) : [...r2, { id, carries: "" }]);
+  }
+  function setCarries(id, carries) {
+    setReceives((r2) => r2.map((x2) => x2.id === id ? { ...x2, carries } : x2));
+  }
+  async function save() {
+    if (!title.trim()) return;
+    const ok = await a2.run(() => post(routes.nodeChildren(parentId), {
+      title,
+      body_md: purpose,
+      criteria: criteria.split("\n").map((l2) => l2.trim()).filter(Boolean),
+      depends_on: receives.map((r2) => ({ id: r2.id, carries: r2.carries || null })),
+      predicted_touches: []
+    }));
+    if (ok) {
+      refresh();
+      onClose();
+    }
+  }
+  return /* @__PURE__ */ u$1("form", { class: "card stack tight add-form", onSubmit: (e2) => {
+    e2.preventDefault();
+    void save();
+  }, children: [
+    /* @__PURE__ */ u$1("input", { placeholder: "title", value: title, onInput: (e2) => setTitle(e2.target.value) }),
+    /* @__PURE__ */ u$1("input", { placeholder: "purpose", value: purpose, onInput: (e2) => setPurpose(e2.target.value) }),
+    /* @__PURE__ */ u$1("textarea", { placeholder: "one per line", value: criteria, onInput: (e2) => setCriteria(e2.target.value) }),
+    candidates.length ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("div", { class: "caption", children: "Receives from" }),
+      candidates.map((c2) => {
+        const picked = receives.find((r2) => r2.id === c2.id);
+        return /* @__PURE__ */ u$1("div", { class: "row", children: [
+          /* @__PURE__ */ u$1("label", { class: "row", style: { flex: 1, minHeight: "44px", alignItems: "center" }, children: [
+            /* @__PURE__ */ u$1("input", { type: "checkbox", "aria-label": `receives from ${c2.title}`, style: { width: "auto", minHeight: 0 }, checked: !!picked, onChange: () => toggle(c2.id) }),
+            c2.title
+          ] }),
+          picked ? /* @__PURE__ */ u$1("input", { placeholder: "carrying ___", value: picked.carries, onInput: (e2) => setCarries(c2.id, e2.target.value) }) : null
+        ] });
+      })
+    ] }) : null,
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
+    /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Saving…", children: "Save" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" })
+    ] })
+  ] });
+}
+function BreakdownButton({ nodeId, projectId: projectId2, disabled, caption, activity, label }) {
+  const a2 = useAction();
+  async function run() {
+    const ok = await a2.run(async () => {
+      await post(routes.nodeBreakdown(nodeId), {});
+    });
+    if (ok) {
+      markLaunched({ kind: "breakdown", nodeId, projectId: projectId2, label: "planning" }, activity);
+      refresh();
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: label ?? "✨ Break down with agent" }),
+    disabled && caption ? /* @__PURE__ */ u$1("div", { class: "caption", children: caption }) : null,
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
+  ] });
+}
 const PHASE = { planning: "Planning", executing: "Running", paused: "Paused", closed: "Closed" };
 function StatusLine({ phase, done, total, working }) {
   const phaseLabel = PHASE[phase] || phase;
@@ -2349,8 +2372,16 @@ function NextStepBar({
         approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null
       ] }) : null,
       step.id === "plan_tasks" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        /* @__PURE__ */ u$1(BreakdownButton, { nodeId: specId, activity, label: "✨ Plan tasks with agent" }),
-        /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: onAddTask, children: "+ Add task myself" })
+        /* @__PURE__ */ u$1(BreakdownButton, { nodeId: specId, projectId: projectId2, activity, label: "✨ Plan tasks with agent" }),
+        /* @__PURE__ */ u$1(
+          Button,
+          {
+            variant: "outline",
+            disabled: launches.value.some((l2) => l2.kind === "breakdown" && l2.nodeId === specId && l2.projectId === projectId2 && Date.now() - l2.at < LAUNCH_TIMEOUT_MS),
+            onClick: onAddTask,
+            children: "+ Add task myself"
+          }
+        )
       ] }) : null,
       step.id === "approve_tasks" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
         /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: approveTasks, children: "Approve task list" }),
@@ -2403,29 +2434,12 @@ function nextStep(i2) {
   if (i2.taskCount > 0 && i2.doneCount === i2.taskCount) return { id: "all_done", title: "All tasks done", detail: "Close the project from the project menu." };
   return { id: "stuck", title: "Nothing can run", detail: "The remaining tasks are blocked or waiting on earlier tasks. Open a task to see why." };
 }
-function runBlockReason(step) {
-  switch (step.id) {
-    case "run":
-      return null;
-    case "write_spec":
-    case "approve_spec":
-    case "planning":
-    case "plan_tasks":
-    case "approve_tasks":
-      return "Run starts after the task list is approved.";
-    case "paused":
-      return "The project is paused.";
-    case "running":
-      return "Already running.";
-    case "review":
-      return "Waiting on your review.";
-    case "all_done":
-      return "Nothing left to run.";
-    case "closed":
-      return "The project is closed.";
-    case "stuck":
-      return "Nothing is ready to run.";
-  }
+function runBlockReason(i2) {
+  if (i2.phase === "closed") return "The project is closed.";
+  if (i2.phase === "paused") return "The project is paused.";
+  if (i2.phase === "planning") return "Run starts after the task list is approved.";
+  if (i2.readyCount > 0) return null;
+  return "Nothing is ready to run.";
 }
 function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = d$2(false);
@@ -2469,7 +2483,7 @@ function ProjectPage() {
   const readyCount = taskAndSubtaskNodes.filter((n2) => n2.status === "ready").length;
   const workingCount = taskAndSubtaskNodes.filter((n2) => n2.status === "in_progress").length;
   const reviewCount = taskAndSubtaskNodes.filter((n2) => n2.status === "review").length;
-  const step = nextStep({
+  const stepInput = {
     phase: p2.phase,
     spec: data?.spec ? { id: data.spec.id, status: data.spec.status } : null,
     taskCount: total,
@@ -2477,15 +2491,16 @@ function ProjectPage() {
     workingCount,
     reviewCount,
     doneCount: done,
-    planning: data?.spec ? planningNodeIds(activity, launches.value).has(data.spec.id) : false
-  });
-  const reason = runBlockReason(step);
+    planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false
+  };
+  const step = nextStep(stepInput);
+  const reason = runBlockReason(stepInput);
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
     if (ok) {
       toast("run started");
-      markLaunched({ kind: "run", nodeId: null, label: "the run" }, activity);
+      markLaunched({ kind: "run", nodeId: null, projectId: pid, label: "the run" }, activity);
     }
   }
   const openAddTask = () => setAddingTask(true);
@@ -2495,7 +2510,7 @@ function ProjectPage() {
         /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
           /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
           /* @__PURE__ */ u$1("div", { class: "row", children: [
-            authed.value && data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
+            authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
             /* @__PURE__ */ u$1(Button, { variant: "filled", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
             reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
           ] })
@@ -2506,7 +2521,7 @@ function ProjectPage() {
         /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
         /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
         authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
-        graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : step.id === "write_spec" ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: pid }) }) : /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity, onAddTask: openAddTask }) })
+        graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : step.id === "write_spec" ? authed.value ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: pid }) }) : null : /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity, onAddTask: openAddTask }) })
       ] }),
       /* @__PURE__ */ u$1(CardRail, { cards })
     ] }),
@@ -2514,7 +2529,7 @@ function ProjectPage() {
     openLog ? /* @__PURE__ */ u$1(LogSheet, { log: openLog, onClose: () => setOpenLog(null) }) : null
   ] });
 }
-function AgentRow({ nodeId, agent, onStarted }) {
+function AgentRow({ nodeId, projectId: projectId2, agent, onStarted }) {
   const a2 = useAction();
   async function start() {
     const ok = await a2.run(async () => {
@@ -2522,7 +2537,7 @@ function AgentRow({ nodeId, agent, onStarted }) {
       toast(`started runner pid ${r2.spawned.pid}`);
     });
     if (ok) {
-      markLaunched({ kind: "run", nodeId, label: `#${nodeId}` }, null);
+      markLaunched({ kind: "run", nodeId, projectId: projectId2, label: `#${nodeId}` }, null);
       refresh();
       onStarted();
     }
@@ -2532,14 +2547,14 @@ function AgentRow({ nodeId, agent, onStarted }) {
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
-function StartPicker({ nodeId, onClose, onStarted }) {
+function StartPicker({ nodeId, projectId: projectId2, onClose, onStarted }) {
   const [agents, setAgents] = d$2(null);
   h$2(() => {
     api(routes.agents()).then((r2) => setAgents(r2.agents), toastError);
   }, []);
   return /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "caption", children: "Agent from config.toml [agents.*]" }),
-    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list stack tight", children: agents.map((a2) => /* @__PURE__ */ u$1(AgentRow, { nodeId, agent: a2, onStarted }, a2)) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
+    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list stack tight", children: agents.map((a2) => /* @__PURE__ */ u$1(AgentRow, { nodeId, projectId: projectId2, agent: a2, onStarted }, a2)) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" }) })
   ] });
 }
@@ -2588,9 +2603,10 @@ function Actions({ detail, onDone, activity }) {
   if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
   if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
   if (n2.status === "ready") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => setStarting(true), children: "Start with agent" }));
-  if (n2.kind === "spec" && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, activity: activity ?? null, label: "✨ Plan more tasks with agent" }));
+  const planning = planningNodeIds(activity ?? null, launches.value, n2.project_id);
+  if (n2.kind === "spec" && n2.deleted_at === null && n2.status !== "pending") buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, projectId: n2.project_id, disabled: planning.has(n2.id), activity: activity ?? null, label: "✨ Plan more tasks with agent" }));
   if (n2.kind === "task" && n2.deleted_at === null) {
-    buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, activity: activity ?? null, label: "✨ Split into subtasks with agent" }));
+    buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, projectId: n2.project_id, disabled: planning.has(n2.id), activity: activity ?? null, label: "✨ Split into subtasks with agent" }));
     buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingSubtask((v2) => !v2), children: "+ Add subtask" }));
   }
   if (n2.criteria_hash === null && n2.deleted_at === null && n2.kind !== "spec") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRemoving(true), children: "Remove" }));
@@ -2607,7 +2623,7 @@ function Actions({ detail, onDone, activity }) {
         /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setRejecting(false), children: "Cancel" })
       ] })
     ] }) : null,
-    starting ? /* @__PURE__ */ u$1(StartPicker, { nodeId: n2.id, onClose: () => setStarting(false), onStarted: onDone }) : null,
+    starting ? /* @__PURE__ */ u$1(StartPicker, { nodeId: n2.id, projectId: n2.project_id, onClose: () => setStarting(false), onStarted: onDone }) : null,
     removing ? /* @__PURE__ */ u$1(
       Confirm,
       {

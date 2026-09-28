@@ -60,7 +60,7 @@ export function latestEventId(a: Activity | null, nodeId: number | null): number
 }
 export function markLaunched(l: Omit<Launch, "at" | "afterEventId">, a: Activity | null): void {
   const launch: Launch = { ...l, at: Date.now(), afterEventId: latestEventId(a, l.nodeId) };
-  launches.value = [...launches.value.filter((x) => !(x.kind === l.kind && x.nodeId === l.nodeId)), launch];
+  launches.value = [...launches.value.filter((x) => !(x.kind === l.kind && x.nodeId === l.nodeId && x.projectId === l.projectId)), launch];
 }
 function confirmed(l: Launch, a: Activity | null): boolean {
   if (!a) return false;
