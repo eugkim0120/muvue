@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.4] - 2026-09-28
 
 ### Added
 - Project canvas backend (`protocol_version` 2 -> 3): a session-gated
