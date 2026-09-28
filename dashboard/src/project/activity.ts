@@ -24,9 +24,26 @@ function loadDismissed(): Set<string> {
   try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as string[]); } catch { return new Set(); }
 }
 export const dismissedKeys = signal<Set<string>>(loadDismissed());
+
+// A dismissed timeout error's key encodes the launch it came from, so
+// dismissing it can also drop that launch from `launches` — otherwise the
+// launch would sit there forever with nothing left to display it, and
+// useActivity's "poll while any unconfirmed launch exists" check would never
+// go false again.
+const TIMEOUT_KEY_RE = /^launch-timeout:(run|breakdown):(-?\d+|null):(-?\d+)$/;
+function timeoutKey(l: Launch): string {
+  return `launch-timeout:${l.kind}:${l.nodeId}:${l.at}`;
+}
 export function dismiss(key: string): void {
   const next = new Set(dismissedKeys.value); next.add(key); dismissedKeys.value = next;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...next])); } catch { /* per-viewer convenience only; the in-memory set still hides it */ }
+  const m = TIMEOUT_KEY_RE.exec(key);
+  if (m) {
+    const [, kind, nodeIdStr, atStr] = m;
+    const nodeId = nodeIdStr === "null" ? null : Number(nodeIdStr);
+    const at = Number(atStr);
+    launches.value = launches.value.filter((l) => !(l.kind === kind && l.nodeId === nodeId && l.at === at));
+  }
 }
 
 export const launches = signal<Launch[]>([]);
@@ -90,9 +107,11 @@ export function activityItems(
     if (now - l.at < LAUNCH_TIMEOUT_MS) {
       items.push({ tone: "busy", key: `launch:${l.kind}:${l.nodeId}`, text: `Starting ${l.label}…`, startedAt: l.at, log: null });
     } else {
+      const key = timeoutKey(l);
+      if (dismissed.has(key)) continue;
       items.push({
         tone: "error",
-        key: `launch-timeout:${l.kind}:${l.nodeId}:${l.at}`,
+        key,
         text: `${l.label} did not start: nothing was reported within 15 seconds. Check the log.`,
         log: null,
       });
@@ -147,7 +166,9 @@ export function useActivity(projectId: number | null): Activity | null {
     }, (e) => { if (alive) toast(e instanceof Error ? e.message : String(e), "error"); });
     return () => { alive = false; };
   }, [projectId, refreshTick.value, tick]);
-  const polling = !!activity && (activity.active.length > 0 || launches.value.length > 0);
+  // A launch past LAUNCH_TIMEOUT_MS already has its (dismissable) error
+  // item; it will never confirm, so it must not keep the poll alive forever.
+  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l) => Date.now() - l.at < LAUNCH_TIMEOUT_MS));
   useEffect(() => {
     if (!polling) return;
     const t = setInterval(() => setTick((n) => n + 1), 1500);

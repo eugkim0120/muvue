@@ -1,4 +1,4 @@
-import { activityItems, type Activity, type Launch, LAUNCH_TIMEOUT_MS } from "../src/project/activity";
+import { activityItems, dismiss, launches, type Activity, type Launch, LAUNCH_TIMEOUT_MS } from "../src/project/activity";
 
 const idle: Activity = { active: [], breakdowns: [], working: [] };
 const titles = { 1: "voxscore v0.1" };
@@ -38,4 +38,18 @@ test("a live run lists what is being worked on", () => {
   const a: Activity = { active: [{ kind: "run", pid: 3, node_id: null, started_at: "t" }], breakdowns: [], working: [{ node_id: 2, title: "Detect pitch", agent: "claude" }] };
   const [item] = activityItems(a, [], 0, titles, new Set(), 1);
   expect(item).toMatchObject({ tone: "busy", text: "▶ Running tasks · 1 agent working — Detect pitch", log: { kind: "project", projectId: 1 } });
+});
+
+test("a timed-out launch's error can be dismissed, the same way a failed breakdown can", () => {
+  const l: Launch = { kind: "run", nodeId: null, label: "the run", afterEventId: 0, at: 0 };
+  const now = LAUNCH_TIMEOUT_MS + 1;
+  const items = activityItems(idle, [l], now, titles, new Set(), 1);
+  expect(items).toEqual([expect.objectContaining({ tone: "error", key: "launch-timeout:run:null:0" })]);
+  expect(activityItems(idle, [l], now, titles, new Set(["launch-timeout:run:null:0"]), 1)).toEqual([]);
+});
+
+test("dismissing a timed-out launch's error also drops it from `launches`, so useActivity stops polling for it", () => {
+  launches.value = [{ kind: "run", nodeId: null, label: "the run", afterEventId: 0, at: 0 }];
+  dismiss("launch-timeout:run:null:0");
+  expect(launches.value).toEqual([]);
 });

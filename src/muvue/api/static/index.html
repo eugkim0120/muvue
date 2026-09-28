@@ -1702,6 +1702,10 @@ function loadDismissed() {
   }
 }
 const dismissedKeys = y(loadDismissed());
+const TIMEOUT_KEY_RE = /^launch-timeout:(run|breakdown):(-?\d+|null):(-?\d+)$/;
+function timeoutKey(l2) {
+  return `launch-timeout:${l2.kind}:${l2.nodeId}:${l2.at}`;
+}
 function dismiss(key) {
   const next = new Set(dismissedKeys.value);
   next.add(key);
@@ -1709,6 +1713,13 @@ function dismiss(key) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));
   } catch {
+  }
+  const m2 = TIMEOUT_KEY_RE.exec(key);
+  if (m2) {
+    const [, kind, nodeIdStr, atStr] = m2;
+    const nodeId = nodeIdStr === "null" ? null : Number(nodeIdStr);
+    const at = Number(atStr);
+    launches.value = launches.value.filter((l2) => !(l2.kind === kind && l2.nodeId === nodeId && l2.at === at));
   }
 }
 const launches = y([]);
@@ -1752,9 +1763,11 @@ function activityItems(a2, launched, now, titles, dismissed, projectId2) {
     if (now - l2.at < LAUNCH_TIMEOUT_MS) {
       items.push({ tone: "busy", key: `launch:${l2.kind}:${l2.nodeId}`, text: `Starting ${l2.label}…`, startedAt: l2.at, log: null });
     } else {
+      const key = timeoutKey(l2);
+      if (dismissed.has(key)) continue;
       items.push({
         tone: "error",
-        key: `launch-timeout:${l2.kind}:${l2.nodeId}:${l2.at}`,
+        key,
         text: `${l2.label} did not start: nothing was reported within 15 seconds. Check the log.`,
         log: null
       });
@@ -1796,7 +1809,7 @@ function useActivity(projectId2) {
       alive = false;
     };
   }, [projectId2, refreshTick.value, tick]);
-  const polling = !!activity && (activity.active.length > 0 || launches.value.length > 0);
+  const polling = !!activity && (activity.active.length > 0 || launches.value.some((l2) => Date.now() - l2.at < LAUNCH_TIMEOUT_MS));
   h$2(() => {
     if (!polling) return;
     const t2 = setInterval(() => setTick((n2) => n2 + 1), 1500);
