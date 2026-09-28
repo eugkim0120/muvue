@@ -22,7 +22,7 @@ export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
     try { await fn(); toast(label.toLowerCase()); onActed(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(null); }
   }
   async function approve() {
-    if (card.kind === "revision") return run("Approve", () => post(routes.approveRevision(Number(card.id.split(":")[1])), {}));
+    if (card.kind === "revision") return run("Approve", () => post(routes.approveRevision(card.nodeId!), { target: "revision", n: Number(card.id.split(":")[1]) }));
     if (card.kind === "ack") return run("Acknowledge", () => post(routes.eventAck(Number(card.id.split(":").pop()))));
     const target = APPROVE_TARGET[card.kind];
     if (!target || !card.nodeId) return;
@@ -49,9 +49,9 @@ export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
           {card.kind !== "revision" ? <Button variant="danger" disabled={!!busy} onClick={() => setRejecting((r) => !r)}>Reject</Button> : null}
           {card.kind !== "revision" ? <Button variant="plain" onClick={() => setDiscussing((d) => !d)}>{card.kind === "question" ? "Answer" : "Discuss"}</Button> : null}
         </div>
-      ) : (
+      ) : card.kind === "ack" && !card.id.startsWith("ack:unverified:") ? (
         <div class="actions"><Button variant="filled" disabled={!!busy} onClick={approve}>{busy ? "…" : "Acknowledge"}</Button></div>
-      )}
+      ) : null}
       {rejecting ? (
         <div class="stack tight">
           <input placeholder="why?" value={reason} onInput={(e) => setReason((e.target as HTMLInputElement).value)} />

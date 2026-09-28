@@ -9,7 +9,14 @@ import type { NodeDetail } from "../node/NodeSheet";
 export function Discuss({ card, onSent }: { card: Card; onSent: () => void }) {
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [reply, setReply] = useState("");
-  useEffect(() => { if (card.nodeId) api<NodeDetail>(routes.node(card.nodeId)).then(setDetail, toastError); }, [card.nodeId]);
+  useEffect(() => {
+    let alive = true;
+    if (card.nodeId) api<NodeDetail>(routes.node(card.nodeId)).then(
+      (d) => { if (alive) setDetail(d); },
+      (e) => { if (alive) toastError(e); },
+    );
+    return () => { alive = false; };
+  }, [card.nodeId]);
   async function send() {
     if (!reply.trim()) return;
     try {
