@@ -303,3 +303,25 @@ def touch_drift(conn: sqlite3.Connection) -> float:
         for node_id, paths in actual.items()
     ]
     return sum(shares) / len(shares) if shares else 0.0
+
+
+def run_block_reason(conn: sqlite3.Connection, project_id: int) -> str | None:
+    """Why `run` would do nothing for this project, or None if some task
+    is ready. `POST /projects/{id}/run` refuses with this text instead of
+    spawning a runner that exits having processed nothing."""
+    phase = db_mod.query_one(conn, "SELECT phase FROM projects WHERE id = ?", (project_id,))["phase"]
+    if phase == "planning":
+        return "Nothing to run yet: approve the task list first."
+    if phase == "paused":
+        return "The project is paused. Resume it first."
+    if phase == "closed":
+        return "The project is closed."
+    ready = db_mod.query_one(
+        conn,
+        "SELECT COUNT(*) AS n FROM nodes WHERE project_id = ? AND status = 'ready' "
+        "AND kind IN ('task', 'subtask') AND deleted_at IS NULL",
+        (project_id,),
+    )["n"]
+    if not ready:
+        return "Nothing is ready to run: every task is done, running, waiting on review, or waiting on earlier tasks."
+    return None

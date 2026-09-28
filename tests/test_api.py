@@ -714,12 +714,18 @@ def test_breakdown_endpoint_409_if_already_running(repo, conn, monkeypatch):
     assert r.status_code == 409
 
 
-def test_run_endpoint_spawns_process(client, conn, auth_headers):
+def test_run_endpoint_spawns_process_when_a_task_is_ready(client, ready_task, auth_headers):
+    r = client.post(f"/projects/{ready_task['project']['id']}/run", json={}, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    assert "pid" in r.json()["spawned"]
+
+
+def test_run_endpoint_409s_with_a_reason_in_planning(client, auth_headers):
     r = client.post("/projects", json={"goal": "g"}, headers=auth_headers)
     project_id = r.json()["project"]["id"]
     r = client.post(f"/projects/{project_id}/run", json={}, headers=auth_headers)
-    assert r.status_code == 200
-    assert "pid" in r.json()["spawned"]
+    assert r.status_code == 409
+    assert r.json()["detail"] == "Nothing to run yet: approve the task list first."
 
 
 def test_graph_endpoint_includes_carries_and_agent(client, conn, auth_headers):

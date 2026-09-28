@@ -866,7 +866,8 @@ def create_app(
 
     @app.post("/projects/{project_id}/run")
     def start_run(project_id: int, request: Request, parallel: int | None = Body(default=None, embed=True)) -> dict:
-        """`POST /projects/{id}/run` launches `muvue run --project-id ID`
+        """`POST /projects/{id}/run` refuses with 409 when `core.queries.run_block_reason`
+        gives a reason, otherwise launches `muvue run --project-id ID`
         (whole-project unattended runner) as a detached subprocess. No
         "already active" 409 check (see `_spawn_runner`'s comment and
         docs/decisions.md #168): `core.nodes.start`'s transactional lease
@@ -878,6 +879,9 @@ def create_app(
                 core.projects.get_project(conn, project_id)
             except Exception as e:
                 _handle_core_error(e)
+            reason = core.queries.run_block_reason(conn, project_id)
+        if reason:
+            raise HTTPException(status_code=409, detail=reason)
         log_path = repo_root / core.runner.LOGS_RELDIR / f"run-project-{project_id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         args = [sys.executable, "-m", "muvue", "run", "--project-id", str(project_id), "--path", str(repo_root)]

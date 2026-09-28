@@ -124,3 +124,27 @@ def test_register_records_kind_and_node(tmp_path):
     path = runners.register(tmp_path, 3, kind="breakdown", node_id=9)
     entry = json.loads(path.read_text())
     assert (entry["kind"], entry["node_id"], entry["project_id"]) == ("breakdown", 9, 3)
+
+
+def test_run_block_reason_by_phase_and_readiness(tmp_path):
+    from muvue.core import db as core_db, gates, nodes, projects, queries
+    from muvue.core.config import MuvueConfig
+    from muvue.core.repo_init import init_repo
+
+    init_repo(tmp_path)
+    conn = core_db.connect(tmp_path / ".muvue" / "muvue.db")
+    try:
+        p = projects.create_project(conn, goal="g")
+        assert queries.run_block_reason(conn, p["id"]) == "Nothing to run yet: approve the task list first."
+        task = nodes.create_node(conn, project_id=p["id"], kind="task", title="t", criteria=["passes"], criteria_mode="auto", predicted_touches=["a.py"], status="pending")
+        gates.approve_gate2(conn, p["id"], config=MuvueConfig())
+        assert nodes.get_node(conn, task["id"])["status"] == "ready"
+        assert queries.run_block_reason(conn, p["id"]) is None
+        conn.execute("UPDATE nodes SET status = 'done' WHERE id = ?", (task["id"],))
+        conn.commit()
+        assert queries.run_block_reason(conn, p["id"]).startswith("Nothing is ready to run")
+        conn.execute("UPDATE projects SET phase = 'paused' WHERE id = ?", (p["id"],))
+        conn.commit()
+        assert queries.run_block_reason(conn, p["id"]) == "The project is paused. Resume it first."
+    finally:
+        conn.close()
