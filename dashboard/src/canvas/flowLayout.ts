@@ -1,94 +1,107 @@
 import type { CanvasTask, CanvasEdge } from "./canvasData";
 
-// BOX_H_BASE is the rendered height (in px) of a .task-box with zero
-// subtasks, INCLUDING the authed-only "+ Subtask"/breakdown actions row
-// (its own row, not sharing a line with .agent-chip -- see TaskBox.tsx and
-// .task-box-actions in canvas.css, so its ~48px is a fixed addition, not
-// dependent on flex-wrap at 240px width). A signed-out viewer's box is
-// shorter than this (no actions row), which only leaves harmless slack --
-// never an overlap -- so sizing to the authed case is the safe choice.
-//
-// Verified by actually rendering the compiled TaskBox markup + the real
-// built CSS (dashboard's `vite build` output) in a headless Chromium
-// (chrome-headless-shell via playwright-core) and reading
-// getBoundingClientRect().height, not estimated from the CSS by hand: 0/2/4
-// subtasks measured 192.8/284.8/372.8px with the actions row present, which
-// solves to BOX_H_BASE=196.8 + SUBTASK_ROW_H(44)*rows exactly (the 0-subtask
-// figure alone reads ~4px lower because the .subtask-list wrapper's own
-// margin isn't present at 0 subtasks -- the 2/4 anchor points are used
-// since they agree with each other and with the existing SUBTASK_ROW_H).
-export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 197, MAX_SUBTASK_ROWS = 4;
+// Box heights are fixed by the layout and set as CSS heights on the boxes, so
+// a wrong estimate can only clip a box's content, never overlap two boxes.
+// Measured in headless Chromium against the built CSS at the worst case: a
+// 2-line title, a 1-line purpose, and an agent chip whose label wraps to two
+// lines ("claude · starts after the task list is approved") needs 151px;
+// the placeholder with both create buttons (the agent one wraps) needs 214px.
+export const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 152, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 216, PAD = 16, GAP_X = 24, GAP_Y = 72;
+export const PLACEHOLDER_ID = -1;
 
-export function boxHeight(subtaskCount: number): number {
-  const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
-  return BOX_H_BASE + rows * SUBTASK_ROW_H;
+export function taskHeight(subtaskCount: number): number {
+  const rows = Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
+  return TASK_H_BASE + rows * SUBTASK_ROW_H;
 }
 
-type Placed = { x: number; y: number; w: number; h: number; col: number; row: number };
-type Arrow = { from: number; to: number; path: string; label: { x: number; y: number; text: string } | null };
+export function labelWidth(text: string): number {
+  return Math.min(200, Math.round(text.length * 6.8) + 20);
+}
+
+export function truncateLabel(text: string): string {
+  return text.length > 26 ? text.slice(0, 25) + "…" : text;
+}
+
+export type Placed = { x: number; y: number; w: number; h: number; rank: number };
+export type Arrow = { from: number; to: number; kind: "spec" | "dep" | "placeholder"; path: string; label: { x: number; y: number; text: string; full: string; w: number } | null };
 export type Layout = { pos: Record<number, Placed>; arrows: Arrow[]; width: number; height: number };
-export type Step = { col: number; tasks: CanvasTask[]; parallel: boolean };
 
-function columnsOf(tasks: CanvasTask[], edges: CanvasEdge[]): Record<number, number> {
+function ranksOf(tasks: CanvasTask[], edges: CanvasEdge[]): Record<number, number> {
   const incoming: Record<number, number[]> = {};
   for (const t of tasks) incoming[t.id] = [];
   for (const e of edges) incoming[e.to]?.push(e.from);
-  const col: Record<number, number> = {};
-  function colOf(id: number, seen: Set<number>): number {
-    if (col[id] !== undefined) return col[id]!;
-    if (seen.has(id)) return 0; // a cycle is a data bug; don't hang on it
-    seen.add(id);
-    let c = 0;
-    for (const from of incoming[id] ?? []) c = Math.max(c, colOf(from, seen) + 1);
-    col[id] = c;
-    return c;
+  const rank: Record<number, number> = {};
+  function rankOf(id: number, path: Set<number>): number {
+    if (rank[id] !== undefined) return rank[id]!;
+    if (path.has(id)) return 1; // a cycle is a data bug; don't hang on it
+    path.add(id);
+    let r = 1;
+    for (const from of incoming[id] ?? []) r = Math.max(r, rankOf(from, path) + 1);
+    path.delete(id);
+    rank[id] = r;
+    return r;
   }
-  for (const t of tasks) colOf(t.id, new Set());
-  return col;
+  for (const t of tasks) rankOf(t.id, new Set());
+  return rank;
 }
 
-export function computeLayout(tasks: CanvasTask[], edges: CanvasEdge[]): Layout {
-  const col = columnsOf(tasks, edges);
-  const incoming: Record<number, number[]> = {};
-  for (const t of tasks) incoming[t.id] = [];
-  for (const e of edges) incoming[e.to]?.push(e.from);
-  const columns: number[][] = [];
-  for (const t of tasks) (columns[col[t.id]!] ??= []).push(t.id);
-  const rowOf: Record<number, number> = {};
-  const pos: Record<number, Placed> = {};
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  columns.forEach((ids, c) => {
+function arrowPath(a: Placed, b: Placed): { x1: number; y1: number; x2: number; y2: number; path: string } {
+  const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y - 6;
+  const dy = Math.max(24, (y2 - y1) / 2);
+  return { x1, y1, x2, y2, path: `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}` };
+}
+
+export function computeLayout(spec: { id: number } | null, tasks: CanvasTask[], edges: CanvasEdge[], placeholder: boolean): Layout {
+  const taskIds = new Set(tasks.map((t) => t.id));
+  const depEdges = edges.filter((e) => taskIds.has(e.from) && taskIds.has(e.to));
+  const taskRank = ranksOf(tasks, depEdges);
+  const heightOf: Record<number, number> = {};
+  const rows: number[][] = [];
+  if (spec) { rows[0] = [spec.id]; heightOf[spec.id] = SPEC_H; }
+  for (const t of tasks) { (rows[taskRank[t.id]!] ??= []).push(t.id); heightOf[t.id] = taskHeight(t.subtasks.length); }
+  if (placeholder) { (rows[1] ??= []).push(PLACEHOLDER_ID); heightOf[PLACEHOLDER_ID] = PLACEHOLDER_H; }
+
+  const preds: Record<number, number[]> = {};
+  for (const e of depEdges) (preds[e.to] ??= []).push(e.from);
+  const order: Record<number, number> = {};
+  if (spec) order[spec.id] = 0;
+  const ranks = rows.map((ids, r) => ({ r, ids: ids ?? [] })).filter((row) => row.ids.length > 0);
+  for (const { ids } of ranks) {
     const mean = (id: number) => {
-      const rows = (incoming[id] ?? []).filter((f) => rowOf[f] !== undefined).map((f) => rowOf[f]!);
-      return rows.length ? rows.reduce((s, r) => s + r, 0) / rows.length : id;
+      const ps = (preds[id] ?? []).filter((p) => order[p] !== undefined).map((p) => order[p]!);
+      if (!ps.length) return 0; // no placed predecessor: the spec (order 0) is its parent
+      return ps.reduce((s, o) => s + o, 0) / ps.length;
     };
     ids.sort((a, b) => mean(a) - mean(b) || a - b);
-    let y = PAD;
-    ids.forEach((id, i) => {
-      rowOf[id] = i;
-      const h = boxHeight(byId.get(id)!.subtasks.length);
-      pos[id] = { x: PAD + c * (BOX_W + GAP_X), y, w: BOX_W, h, col: c, row: i };
-      y += h + GAP_Y;
-    });
-  });
-  const width = PAD * 2 + columns.length * BOX_W + Math.max(0, columns.length - 1) * GAP_X;
-  const height = PAD * 2 + Math.max(0, ...Object.values(pos).map((p) => p.y + p.h));
-  const arrows: Arrow[] = edges.map((e) => {
-    const a = pos[e.from]!, b = pos[e.to]!;
-    const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2;
-    const midX = x1 + GAP_X / 2;
-    const path = `M${x1},${y1} L${midX},${y1} L${midX},${y2} L${x2},${y2}`;
-    const label = e.carries ? { x: midX, y: (y1 + y2) / 2, text: e.carries } : null;
-    return { from: e.from, to: e.to, path, label };
-  });
-  return { pos, arrows, width, height };
-}
+    ids.forEach((id, i) => { order[id] = i; });
+  }
 
-export function stepsFromColumns(tasks: CanvasTask[], edges: CanvasEdge[]): Step[] {
-  const col = columnsOf(tasks, edges);
-  const byCol = new Map<number, CanvasTask[]>();
-  for (const t of tasks) { const list = byCol.get(col[t.id]!) ?? []; list.push(t); byCol.set(col[t.id]!, list); }
-  return [...byCol.entries()].sort(([a], [b]) => a - b).map(([c, ts]) => ({
-    col: c, tasks: [...ts].sort((a, b) => a.id - b.id), parallel: ts.length > 1,
-  }));
+  const rowWidth = (n: number) => n * NODE_W + (n - 1) * GAP_X;
+  const inner = Math.max(0, ...ranks.map(({ ids }) => rowWidth(ids.length)));
+  const pos: Record<number, Placed> = {};
+  let y = PAD;
+  let bottom = PAD;
+  for (const { r, ids } of ranks) {
+    const rowH = Math.max(...ids.map((id) => heightOf[id]!));
+    const x0 = PAD + (inner - rowWidth(ids.length)) / 2;
+    ids.forEach((id, i) => { pos[id] = { x: x0 + i * (NODE_W + GAP_X), y, w: NODE_W, h: heightOf[id]!, rank: r }; });
+    bottom = y + rowH;
+    y = bottom + GAP_Y;
+  }
+
+  const arrows: Arrow[] = [];
+  if (spec) {
+    for (const t of tasks) {
+      if (taskRank[t.id] !== 1) continue;
+      arrows.push({ from: spec.id, to: t.id, kind: "spec", path: arrowPath(pos[spec.id]!, pos[t.id]!).path, label: null });
+    }
+    if (placeholder) arrows.push({ from: spec.id, to: PLACEHOLDER_ID, kind: "placeholder", path: arrowPath(pos[spec.id]!, pos[PLACEHOLDER_ID]!).path, label: null });
+  }
+  for (const e of depEdges) {
+    const { x1, y1, x2, y2, path } = arrowPath(pos[e.from]!, pos[e.to]!);
+    const text = e.carries ? truncateLabel(e.carries) : null;
+    const label = e.carries && text ? { x: (x1 + x2) / 2, y: (y1 + y2) / 2, text, full: e.carries, w: labelWidth(text) } : null;
+    arrows.push({ from: e.from, to: e.to, kind: "dep", path, label });
+  }
+  return { pos, arrows, width: inner + 2 * PAD, height: bottom + PAD };
 }

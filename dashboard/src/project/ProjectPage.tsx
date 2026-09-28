@@ -5,7 +5,6 @@ import { useApi } from "../hooks";
 import { authed, currentProject, projectId, projects, refreshTick, toast } from "../state";
 import { buildCanvasData, type Graph, type FullNode } from "../canvas/canvasData";
 import { Canvas } from "../canvas/Canvas";
-import { PhoneFlow } from "../canvas/PhoneFlow";
 import { CardRail } from "../cards/CardRail";
 import { cardsFromInbox, type Inbox, type Revision, type NodesById } from "../cards/cardsFromInbox";
 import { AddForm } from "../canvas/AddForm";
@@ -21,8 +20,6 @@ import { ActivityBar } from "./ActivityBar";
 import { LogSheet } from "./LogSheet";
 import { NextStepBar } from "./NextStepBar";
 import { nextStep, runBlockReason, type NextStepInput } from "./nextStep";
-
-const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 
 export function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = useState(false);
@@ -92,49 +89,46 @@ export function ProjectPage() {
     if (ok) { toast("run started"); markLaunched({ kind: "run", nodeId: null, label: "the run" }, activity); }
   }
 
+  const openAddTask = () => setAddingTask(true);
+
   return (
     <div class="page-canvas">
-      <div class="row between" style={{ padding: "16px 16px 0" }}>
-        <h1 class="page-title">{p.goal}</h1>
-        <div class="row">
-          {authed.value && data?.spec && data.spec.status !== "pending" ? (
-            <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
+      <div class="project-layout">
+        <div class="project-main">
+          <div class="row between" style={{ padding: "16px 16px 0" }}>
+            <h1 class="page-title">{p.goal}</h1>
+            <div class="row">
+              {authed.value && data?.spec && data.spec.status !== "pending" ? (
+                <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
+              ) : null}
+              <Button variant="filled" busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
+              {reason ? <span class="caption" data-run-reason>{reason}</span> : null}
+            </div>
+          </div>
+          {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
+          {hasFakeAgent ? <div class="callout" data-fake-notice style={{ margin: "0 16px" }}>Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.</div> : null}
+          <NextStepBar step={step} authed={authed.value} projectId={pid!} specId={data?.spec?.id ?? null} activity={activity} onAddTask={openAddTask} />
+          <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
+          <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
+            <StatusLine phase={p.phase} done={done} total={total} working={working} />
+          </button>
+          {authed.value && addingTask && data?.spec ? (
+            <div style={{ padding: "0 16px 16px" }}>
+              <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
+            </div>
           ) : null}
-          <Button variant="filled" busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
-          {reason ? <span class="caption" data-run-reason>{reason}</span> : null}
+          {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : step.id === "write_spec" ? (
+            <div style={{ padding: "0 16px 16px" }}>
+              <SubmitSpecForm projectId={pid!} />
+            </div>
+          ) : (
+            <div style={{ padding: "0 16px 16px" }}>
+              <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} onAddTask={openAddTask} />
+            </div>
+          )}
         </div>
+        <CardRail cards={cards} />
       </div>
-      {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
-      {hasFakeAgent ? <div class="callout" data-fake-notice style={{ margin: "0 16px" }}>Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.</div> : null}
-      <NextStepBar step={step} authed={authed.value} projectId={pid!} specId={data?.spec?.id ?? null} activity={activity} onAddTask={() => setAddingTask(true)} />
-      <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
-      <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
-        <StatusLine phase={p.phase} done={done} total={total} working={working} />
-      </button>
-      {authed.value && addingTask && data?.spec ? (
-        <div style={{ padding: "0 16px 16px" }}>
-          <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
-        </div>
-      ) : null}
-      {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : step.id === "write_spec" ? (
-        <div style={{ padding: "0 16px 16px" }}>
-          <SubmitSpecForm projectId={pid!} />
-        </div>
-      ) : isPhone() ? (
-        <div class="stack">
-          <CardRail cards={cards} />
-          <div style={{ padding: "0 16px 16px" }}>
-            <PhoneFlow data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
-          </div>
-        </div>
-      ) : (
-        <div class="row" style={{ alignItems: "flex-start", flexWrap: "nowrap" }}>
-          <div style={{ flex: 1, minWidth: 0, padding: "0 16px 16px" }}>
-            <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
-          </div>
-          <CardRail cards={cards} />
-        </div>
-      )}
       {agentsSheet ? <AgentsSheet projectId={pid!} onClose={() => setAgentsSheet(false)} /> : null}
       {openLog ? <LogSheet log={openLog} onClose={() => setOpenLog(null)} /> : null}
     </div>

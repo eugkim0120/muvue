@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { post } from "../api/client";
 import { routes } from "../api/routes";
-import { authed, refresh, toast } from "../state";
+import { refresh, toast } from "../state";
 import type { CanvasSpec } from "./canvasData";
 import { purposeLine } from "./canvasData";
 import { openNode } from "../router";
@@ -29,16 +29,14 @@ export function SubmitSpecForm({ projectId }: { projectId: number }) {
   );
 }
 
-export function SpecRoot({ spec, projectId, taskCount, projectPhase }: { spec: CanvasSpec | null; projectId: number; taskCount: number; projectPhase: string }) {
-  if (!spec) return authed.value ? <SubmitSpecForm projectId={projectId} /> : <div class="spec-root-card"><p class="muted">No spec yet.</p></div>;
-
+export function SpecRoot({ spec, style }: { spec: CanvasSpec; style?: Record<string, string | number> }) {
   return (
-    <div class="spec-root-card stack" tabIndex={0} onClick={() => openNode(spec.id)} onKeyDown={(e) => { if (e.key === "Enter") openNode(spec.id); }}>
-      <div class="row between">
-        <span class="title grow">{spec.title}</span>
+    <div class="spec-root-card" style={style} tabIndex={0} onClick={() => openNode(spec.id)} onKeyDown={(e) => { if (e.key === "Enter") openNode(spec.id); }}>
+      <div class="row between" style={{ flexWrap: "nowrap", alignItems: "flex-start" }}>
+        <span class="title grow clamp-2">{spec.title}</span>
         <Pill status={spec.status} />
       </div>
-      {spec.body_md ? <div class="caption">{purposeLine(spec.body_md)}</div> : null}
+      {spec.body_md ? <div class="caption clamp-1">{purposeLine(spec.body_md)}</div> : null}
       {spec.agent ? <div class="caption">{`planned by ${spec.agent}`}</div> : null}
     </div>
   );

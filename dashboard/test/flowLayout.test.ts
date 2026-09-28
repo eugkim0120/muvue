@@ -1,4 +1,4 @@
-import { computeLayout, stepsFromColumns, boxHeight, BOX_W, GAP_X } from "../src/canvas/flowLayout";
+import { computeLayout, taskHeight, labelWidth, truncateLabel, NODE_W, GAP_X, PLACEHOLDER_ID, TASK_H_BASE, SUBTASK_ROW_H } from "../src/canvas/flowLayout";
 import type { CanvasTask, CanvasEdge } from "../src/canvas/canvasData";
 
 const task = (id: number, subtaskCount = 0): CanvasTask => ({
@@ -6,66 +6,55 @@ const task = (id: number, subtaskCount = 0): CanvasTask => ({
   body_md: null, criteria_hash: null, block_reason: null,
   subtasks: Array.from({ length: subtaskCount }, (_, i) => ({ id: id * 100 + i, title: "s" + i, status: "ready" as const, parent_id: id })),
 });
+const spec = { id: 1 };
+const overlaps = (a: { x: number; y: number; w: number; h: number }, b: typeof a) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-test("a task with no deps sits in column 0; a dependent sits one column later", () => {
-  const tasks = [task(1), task(2)];
-  const edges: CanvasEdge[] = [{ from: 1, to: 2, carries: null }];
-  const lay = computeLayout(tasks, edges);
-  expect(lay.pos[1]!.col).toBe(0);
-  expect(lay.pos[2]!.col).toBe(1);
-  expect(lay.pos[2]!.x).toBeGreaterThan(lay.pos[1]!.x + BOX_W);
+test("spec sits alone on top; a chain goes straight down with spec + dep arrows", () => {
+  const edges: CanvasEdge[] = [{ from: 2, to: 3, carries: "audio frames" }, { from: 3, to: 4, carries: "notes" }];
+  const lay = computeLayout(spec, [task(2), task(3), task(4)], edges, false);
+  expect([1, 2, 3, 4].map((id) => lay.pos[id]!.rank)).toEqual([0, 1, 2, 3]);
+  expect(lay.pos[2]!.y).toBeGreaterThan(lay.pos[1]!.y + lay.pos[1]!.h);
+  expect(lay.arrows.map((a) => a.kind).sort()).toEqual(["dep", "dep", "spec"]);
+  expect(lay.arrows.find((a) => a.kind === "dep" && a.from === 2)!.label!.text).toBe("audio frames");
 });
 
-test("box height grows with subtask count, capped at 4 rows plus a +N more row", () => {
-  expect(boxHeight(0)).toBeLessThan(boxHeight(2));
-  expect(boxHeight(4)).toBeLessThan(boxHeight(10));
-  // a 5th+ subtask adds exactly one more row (the "+N more" row), not one per extra subtask
-  expect(boxHeight(5)).toBe(boxHeight(10));
+test("parallel tasks share a row side by side and never overlap", () => {
+  const lay = computeLayout(spec, [task(2, 5), task(3), task(4, 2)], [], false);
+  const boxes = [1, 2, 3, 4].map((id) => lay.pos[id]!);
+  expect(new Set([2, 3, 4].map((id) => lay.pos[id]!.y)).size).toBe(1);
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) expect(overlaps(boxes[i]!, boxes[j]!)).toBe(false);
+  expect(lay.pos[3]!.x - lay.pos[2]!.x).toBe(NODE_W + GAP_X);
+  expect(lay.arrows.filter((a) => a.kind === "spec")).toHaveLength(3);
 });
 
-test("within a column, order follows mean predecessor row, then id", () => {
-  const tasks = [task(1), task(2), task(3), task(4)];
-  // 3 depends on 1 (row 0), 4 depends on 2 (row 1) -> in column 1, 3 should sit above 4
-  const edges: CanvasEdge[] = [{ from: 1, to: 3, carries: null }, { from: 2, to: 4, carries: null }];
-  const lay = computeLayout(tasks, edges);
-  expect(lay.pos[3]!.y).toBeLessThan(lay.pos[4]!.y);
+test("rows are centered and the layout width fits the widest row", () => {
+  const lay = computeLayout(spec, [task(2), task(3)], [], false);
+  const specCenter = lay.pos[1]!.x + NODE_W / 2;
+  const rowCenter = (lay.pos[2]!.x + lay.pos[3]!.x + NODE_W) / 2;
+  expect(specCenter).toBeCloseTo(rowCenter);
+  expect(lay.width).toBe(16 * 2 + 2 * NODE_W + GAP_X);
 });
 
-test("a dep cycle does not hang layout and produces a defined column for every node", () => {
-  const tasks = [task(1), task(2)];
-  const edges: CanvasEdge[] = [{ from: 1, to: 2, carries: null }, { from: 2, to: 1, carries: null }];
-  const lay = computeLayout(tasks, edges);
-  expect(Number.isFinite(lay.pos[1]!.col)).toBe(true);
-  expect(Number.isFinite(lay.pos[2]!.col)).toBe(true);
+test("with no tasks, a placeholder node hangs under the spec with a dashed arrow", () => {
+  const lay = computeLayout(spec, [], [], true);
+  expect(lay.pos[PLACEHOLDER_ID]!.rank).toBe(1);
+  expect(lay.arrows).toEqual([expect.objectContaining({ from: 1, to: PLACEHOLDER_ID, kind: "placeholder" })]);
 });
 
-test("a cycle elsewhere does not corrupt the column of a non-cyclic ancestor feeding into it", () => {
-  const tasks = [task(4), task(3), task(2), task(1)]; // 1 -> 2 -> 3, plus 3 <-> 4 cycle; order forces 2 mid-recursion when cycle hits
-  const edges: CanvasEdge[] = [
-    { from: 1, to: 2, carries: null }, { from: 2, to: 3, carries: null },
-    { from: 3, to: 4, carries: null }, { from: 4, to: 3, carries: null },
-  ];
-  const lay = computeLayout(tasks, edges);
-  expect(lay.pos[2]!.col).toBe(1); // 2's column must stay correct regardless of the cycle at 3/4
+test("box height is fixed by subtask count, capped at 3 rows plus a +N more row", () => {
+  expect(taskHeight(0)).toBe(TASK_H_BASE);
+  expect(taskHeight(2)).toBe(TASK_H_BASE + 2 * SUBTASK_ROW_H);
+  expect(taskHeight(4)).toBe(taskHeight(10));
 });
 
-test("an arrow has an orthogonal path and a label point only when carries is set", () => {
-  const tasks = [task(1), task(2), task(3)];
-  const edges: CanvasEdge[] = [{ from: 1, to: 2, carries: "audio frames" }, { from: 1, to: 3, carries: null }];
-  const lay = computeLayout(tasks, edges);
-  const withLabel = lay.arrows.find((a) => a.from === 1 && a.to === 2)!;
-  const noLabel = lay.arrows.find((a) => a.from === 1 && a.to === 3)!;
-  expect(withLabel.path.split(" ").length).toBeGreaterThanOrEqual(3); // M, L, L: at least two segments
-  expect(withLabel.label?.text).toBe("audio frames");
-  expect(noLabel.label).toBeNull();
+test("labels are sized to their text and long ones are truncated", () => {
+  expect(labelWidth("notes")).toBeLessThan(labelWidth("audio frames"));
+  expect(truncateLabel("a".repeat(40))).toHaveLength(26);
+  expect(truncateLabel("short")).toBe("short");
 });
 
-test("stepsFromColumns groups same-column tasks as one parallel step", () => {
-  const tasks = [task(1), task(2), task(3)];
-  const edges: CanvasEdge[] = [{ from: 1, to: 3, carries: null }, { from: 2, to: 3, carries: null }];
-  const steps = stepsFromColumns(tasks, edges);
-  expect(steps[0]!.tasks.map((t) => t.id).sort()).toEqual([1, 2]);
-  expect(steps[0]!.parallel).toBe(true);
-  expect(steps[1]!.tasks.map((t) => t.id)).toEqual([3]);
-  expect(steps[1]!.parallel).toBe(false);
+test("a dependency cycle does not hang and still ranks every node", () => {
+  const lay = computeLayout(spec, [task(2), task(3)], [{ from: 2, to: 3, carries: null }, { from: 3, to: 2, carries: null }], false);
+  expect(Number.isFinite(lay.pos[2]!.rank)).toBe(true);
+  expect(Number.isFinite(lay.pos[3]!.rank)).toBe(true);
 });

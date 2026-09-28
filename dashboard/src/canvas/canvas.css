@@ -1,26 +1,42 @@
 /* dashboard/src/canvas/canvas.css */
-.canvas-wrap { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); min-height: 60dvh; }
-.canvas-viewport { width: 100%; height: 100%; min-height: 60dvh; overflow: hidden; touch-action: none; cursor: grab; }
-.canvas-viewport:active { cursor: grabbing; }
+.project-layout { display: flex; flex-direction: column; }
+.project-layout > .card-rail, .project-layout > .card-rail-empty, .project-layout > .card-rail-pill { order: -1; }
+@media (min-width: 900px) {
+  .project-layout { flex-direction: row; align-items: flex-start; }
+  .project-main { flex: 1; min-width: 0; }
+  .project-layout > .card-rail, .project-layout > .card-rail-empty, .project-layout > .card-rail-pill { order: 0; position: sticky; top: 0; max-height: 100dvh; }
+}
+.canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
+.canvas-viewport { position: relative; width: 100%; overflow: hidden; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
-.canvas-spec-slot { position: absolute; top: 0; left: 0; right: 0; }
-.canvas-arrows { position: absolute; pointer-events: none; }
-.canvas-arrows path.flow-arrow { fill: none; stroke: var(--border); stroke-width: 1.5; }
-.canvas-arrows .arrow-label-bg { fill: var(--surface-2); stroke: var(--border); }
-.canvas-arrows .arrow-label { font-size: 11px; fill: var(--text-2); }
-.canvas-boxes { position: absolute; top: 0; left: 0; }
+.canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 2; }
+.canvas-arrows path.flow-arrow.placeholder { stroke-dasharray: 6 5; }
+.canvas-arrows .dag-arrowhead { fill: var(--text-2); }
+.canvas-arrows .arrow-label-bg { fill: var(--surface); stroke: var(--text-2); }
+.canvas-arrows .arrow-label { font-size: 12px; fill: var(--text); }
 .canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
-.spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; cursor: pointer; box-shadow: var(--shadow); }
-.spec-root-card { margin: 0 16px; }
+.spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; cursor: pointer; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
+.spec-root-card { border-top: 4px solid var(--accent); }
 .task-box { border-left: 4px solid var(--st-pending); }
+.task-box.running { box-shadow: 0 0 0 2px var(--st-in_progress), var(--shadow); }
+.clamp-1, .clamp-2 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.clamp-1 { -webkit-line-clamp: 1; } .clamp-2 { -webkit-line-clamp: 2; }
+.dag-empty { border-style: dashed; border-left-width: 1px; cursor: default; background: color-mix(in srgb, var(--surface) 70%, transparent); }
+/* Inside a fixed-height box nothing may widen or push past the box: the chip
+   wraps instead of running off the right edge and sits at the box's bottom,
+   and a long subtask title ends in an ellipsis rather than growing its row. */
+.task-box .agent-chip { white-space: normal; max-width: 100%; align-self: flex-start; margin-top: auto; }
+.task-box .subtask-list { margin: 0; }
+.task-box .subtask-row .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dag-empty .btn { width: 100%; }
+.dag-skeleton { height: 10px; border-radius: 5px; background: var(--border); animation: pulse 1.2s ease-in-out infinite; }
 .task-box.st-bar-ready { border-left-color: var(--st-ready); }
 .task-box.st-bar-in_progress { border-left-color: var(--st-in_progress); }
 .task-box.st-bar-review { border-left-color: var(--st-review); }
 .task-box.st-bar-done { border-left-color: var(--st-done); }
 .task-box.st-bar-blocked, .task-box.st-bar-failed { border-left-color: var(--st-blocked); }
 .task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.task-box.ghost { opacity: .7; border-style: dashed; cursor: default; }
-.task-box.ghost-error { border-color: var(--danger); opacity: 1; }
 .purpose { margin: 2px 0 6px; }
 .subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
 .subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
@@ -28,17 +44,7 @@
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
 .agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
-/* Own row, deliberately separate from .agent-chip's row so its height is
-   deterministic (two 44px-min-height buttons, not dependent on whether they
-   wrap at the box's 240px width alongside the chip) -- flowLayout.ts's
-   BOX_H_BASE bakes this row's real measured height in. */
-.task-box-actions { margin-top: 4px; flex-wrap: nowrap; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
-.phone-flow .task-box { width: 100%; }
-.phone-step { border-left: 2px dashed var(--border); padding-left: 10px; }
-.phone-step-row { display: flex; gap: 10px; flex-wrap: wrap; }
-.phone-step-row .task-box { flex: 1 1 260px; }
-.parallel-label { text-transform: uppercase; letter-spacing: .04em; }
 .status-line { padding: 4px 16px; }
 .status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
 .spec-body { padding: 8px 0; }
