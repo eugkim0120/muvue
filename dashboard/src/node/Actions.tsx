@@ -5,9 +5,10 @@ import { authed, refresh, toast } from "../state";
 import { Button } from "../ui/Button";
 import { Confirm } from "../ui/Confirm";
 import { StartPicker } from "./StartPicker";
-import { markLaunched, type Activity } from "../project/activity";
+import type { Activity } from "../project/activity";
 import type { NodeDetail } from "./NodeSheet";
 import { useAction } from "../ui/useAction";
+import { AddForm, BreakdownButton } from "../canvas/AddForm";
 
 export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDone: () => void; activity?: Activity | null }) {
   const n = detail.node;
@@ -15,10 +16,10 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
   const [feedback, setFeedback] = useState("");
   const [starting, setStarting] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [addingSubtask, setAddingSubtask] = useState(false);
   const approveA = useAction();
   const rejectA = useAction();
   const removeA = useAction();
-  const breakdownA = useAction();
   if (!authed.value) return null;
 
   async function approve(target: string, label: string) {
@@ -34,12 +35,6 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
     const ok = await removeA.run(() => post(routes.nodeRemove(n.id)));
     if (ok) { setRemoving(false); toast("removed"); refresh(); onDone(); }
   }
-  async function breakDown() {
-    const ok = await breakdownA.run(async () => {
-      await post(routes.nodeBreakdown(n.id), {});
-    });
-    if (ok) { markLaunched({ kind: "breakdown", nodeId: n.id, label: "planning" }, activity ?? null); refresh(); }
-  }
 
   const buttons = [];
   if (n.status === "review") {
@@ -49,7 +44,11 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
   if (n.status === "awaiting_approval") buttons.push(<Button variant="filled" busy={approveA.busy} busyLabel="Approving…" onClick={() => approve("node", "criteria approved")}>Approve changed criteria</Button>);
   if (n.kind === "spec" && n.status === "pending") buttons.push(<Button variant="filled" busy={approveA.busy} busyLabel="Approving…" onClick={() => approve("spec", "spec approved")}>Approve spec</Button>);
   if (n.status === "ready") buttons.push(<Button variant="filled" onClick={() => setStarting(true)}>Start with agent</Button>);
-  if ((n.kind === "spec" || n.kind === "task") && n.deleted_at === null) buttons.push(<Button variant="outline" busy={breakdownA.busy} busyLabel="Starting…" onClick={breakDown}>✨ Break down with agent</Button>);
+  if (n.kind === "spec" && n.deleted_at === null) buttons.push(<BreakdownButton nodeId={n.id} activity={activity ?? null} label="✨ Plan more tasks with agent" />);
+  if (n.kind === "task" && n.deleted_at === null) {
+    buttons.push(<BreakdownButton nodeId={n.id} activity={activity ?? null} label="✨ Split into subtasks with agent" />);
+    buttons.push(<Button variant="outline" onClick={() => setAddingSubtask((v) => !v)}>+ Add subtask</Button>);
+  }
   if (n.criteria_hash === null && n.deleted_at === null && n.kind !== "spec") buttons.push(<Button variant="danger" onClick={() => setRemoving(true)}>Remove</Button>);
   if (!buttons.length) return null;
 
@@ -57,7 +56,7 @@ export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDo
     <div class="stack tight">
       <div class="actions">{buttons}</div>
       {approveA.error ? <div class="callout danger">{approveA.error}</div> : null}
-      {breakdownA.error ? <div class="callout danger">{breakdownA.error}</div> : null}
+      {addingSubtask ? <AddForm parentId={n.id} kind="subtask" candidates={[]} onClose={() => setAddingSubtask(false)} /> : null}
       {rejecting ? (
         <div class="stack tight">
           <textarea placeholder="what should change?" value={feedback} onInput={(e) => setFeedback((e.target as HTMLTextAreaElement).value)} />

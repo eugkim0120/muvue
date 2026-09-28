@@ -2549,10 +2549,10 @@ function Actions({ detail, onDone, activity }) {
   const [feedback, setFeedback] = d$2("");
   const [starting, setStarting] = d$2(false);
   const [removing, setRemoving] = d$2(false);
+  const [addingSubtask, setAddingSubtask] = d$2(false);
   const approveA = useAction();
   const rejectA = useAction();
   const removeA = useAction();
-  const breakdownA = useAction();
   if (!authed.value) return null;
   async function approve(target, label) {
     const ok = await approveA.run(() => post(routes.nodeApprove(n2.id), { target }));
@@ -2580,15 +2580,6 @@ function Actions({ detail, onDone, activity }) {
       onDone();
     }
   }
-  async function breakDown() {
-    const ok = await breakdownA.run(async () => {
-      await post(routes.nodeBreakdown(n2.id), {});
-    });
-    if (ok) {
-      markLaunched({ kind: "breakdown", nodeId: n2.id, label: "planning" }, activity ?? null);
-      refresh();
-    }
-  }
   const buttons = [];
   if (n2.status === "review") {
     buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("review", "approved"), children: "Approve" }));
@@ -2597,13 +2588,17 @@ function Actions({ detail, onDone, activity }) {
   if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
   if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
   if (n2.status === "ready") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => setStarting(true), children: "Start with agent" }));
-  if ((n2.kind === "spec" || n2.kind === "task") && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", busy: breakdownA.busy, busyLabel: "Starting…", onClick: breakDown, children: "✨ Break down with agent" }));
+  if (n2.kind === "spec" && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, activity: activity ?? null, label: "✨ Plan more tasks with agent" }));
+  if (n2.kind === "task" && n2.deleted_at === null) {
+    buttons.push(/* @__PURE__ */ u$1(BreakdownButton, { nodeId: n2.id, activity: activity ?? null, label: "✨ Split into subtasks with agent" }));
+    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingSubtask((v2) => !v2), children: "+ Add subtask" }));
+  }
   if (n2.criteria_hash === null && n2.deleted_at === null && n2.kind !== "spec") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRemoving(true), children: "Remove" }));
   if (!buttons.length) return null;
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "actions", children: buttons }),
     approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
-    breakdownA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: breakdownA.error }) : null,
+    addingSubtask ? /* @__PURE__ */ u$1(AddForm, { parentId: n2.id, kind: "subtask", candidates: [], onClose: () => setAddingSubtask(false) }) : null,
     rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("textarea", { placeholder: "what should change?", value: feedback, onInput: (e2) => setFeedback(e2.target.value) }),
       rejectA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: rejectA.error }) : null,
@@ -2761,6 +2756,34 @@ function Flow({ receivesFrom, sendsTo }) {
     ] }))
   ] });
 }
+const RUN_TITLES = {
+  "node.start": "Started",
+  "node.done": "Finished",
+  "node.fail": "Failed",
+  "breakdown.started": "Planning started",
+  "breakdown.finished": "Planning finished",
+  "breakdown.failed": "Planning failed"
+};
+function runCaption(r2) {
+  const actor = r2.actor.replace(/^runner:/, "");
+  if (r2.type === "breakdown.failed") {
+    let reason = "";
+    try {
+      reason = JSON.parse(r2.payload).reason ?? "";
+    } catch {
+    }
+    return reason ? `${actor} · ${r2.ts} · ${reason}` : `${actor} · ${r2.ts}`;
+  }
+  if (r2.type === "breakdown.finished") {
+    let created = [];
+    try {
+      created = JSON.parse(r2.payload).created ?? [];
+    } catch {
+    }
+    return `${actor} · ${r2.ts} · added ${created.length}`;
+  }
+  return `${actor} · ${r2.ts}`;
+}
 function Runs({ nodeId }) {
   const [runs, setRuns] = d$2(null);
   const [error, setError] = d$2(null);
@@ -2787,12 +2810,8 @@ function Runs({ nodeId }) {
   if (!runs.length) return /* @__PURE__ */ u$1("p", { class: "muted", children: "no runs yet" });
   return /* @__PURE__ */ u$1("div", { class: "list", children: [
     runs.map((r2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", style: { cursor: "default" }, onClick: () => setOpen(open === r2.id ? null : r2.id), children: /* @__PURE__ */ u$1("span", { class: "grow", children: [
-      /* @__PURE__ */ u$1("span", { class: "title", children: r2.type }),
-      /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: [
-        r2.actor.replace(/^runner:/, ""),
-        " · ",
-        r2.ts
-      ] })
+      /* @__PURE__ */ u$1("span", { class: "title", children: RUN_TITLES[r2.type] ?? r2.type }),
+      /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: runCaption(r2) })
     ] }) })),
     open !== null ? /* @__PURE__ */ u$1(Logs, { nodeId }) : null
   ] });
@@ -2861,11 +2880,21 @@ function Details({ nodeId, predictedTouches }) {
     ] }) : null
   ] });
 }
+function flowLinks(graph, nodeId) {
+  const titleById = new Map(graph.nodes.map((n2) => [n2.id, n2.title]));
+  const deps = graph.edges.filter((e2) => e2.kind === "dep");
+  const link = (id, carries) => ({ id, title: titleById.get(id) ?? "", carries: carries ?? null });
+  const receivesFrom = deps.filter((e2) => e2.to === nodeId).map((e2) => link(e2.from, e2.carries)).sort((a2, b2) => a2.id - b2.id);
+  const sendsTo = deps.filter((e2) => e2.from === nodeId).map((e2) => link(e2.to, e2.carries)).sort((a2, b2) => a2.id - b2.id);
+  return { receivesFrom, sendsTo };
+}
 function NodeSheet() {
   const id = Number(route.value.query.get("node"));
   const [detail, setDetail] = d$2(null);
   const [error, setError] = d$2(null);
   const activity = useActivity(detail?.node.project_id ?? null);
+  const projectId2 = detail?.node.project_id ?? null;
+  const graphQ = useApi(() => projectId2 ? api(routes.graph(projectId2)) : Promise.resolve({ nodes: [], edges: [] }), [projectId2, refreshTick.value]);
   h$2(() => {
     let alive = true;
     api(routes.node(id)).then(
@@ -2900,7 +2929,13 @@ function NodeSheet() {
     ] }) : null,
     /* @__PURE__ */ u$1(Actions, { detail, onDone: closeNode, activity }),
     detail.node.kind === "spec" ? /* @__PURE__ */ u$1(SpecBody, { nodeId: id, bodyMd: detail.node.body_md, notes: detail.notes }) : /* @__PURE__ */ u$1(Overview, { detail }),
-    /* @__PURE__ */ u$1(Flow, { receivesFrom: [], sendsTo: [] }),
+    (() => {
+      const links = flowLinks(graphQ.data ?? { nodes: [], edges: [] }, id);
+      return links.receivesFrom.length || links.sendsTo.length ? /* @__PURE__ */ u$1("section", { children: [
+        /* @__PURE__ */ u$1("h3", { children: "Flow" }),
+        /* @__PURE__ */ u$1(Flow, { receivesFrom: links.receivesFrom, sendsTo: links.sendsTo })
+      ] }) : null;
+    })(),
     /* @__PURE__ */ u$1("section", { children: [
       /* @__PURE__ */ u$1("h3", { children: "Runs" }),
       /* @__PURE__ */ u$1(Runs, { nodeId: id })

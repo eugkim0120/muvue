@@ -13,6 +13,9 @@ import { Runs } from "./Runs";
 import { Discussion } from "./Discussion";
 import { Details } from "./Details";
 import { useActivity } from "../project/activity";
+import { useApi } from "../hooks";
+import { flowLinks } from "./flowLinks";
+import type { Graph } from "../canvas/canvasData";
 
 export type NodeDetail = {
   node: NodeRow & { body_md: string | null; criteria_json: string | null; criteria_mode: string; summary: string | null; block_reason: string | null; criteria_hash: string | null; deleted_at: string | null };
@@ -27,6 +30,8 @@ export function NodeSheet() {
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activity = useActivity(detail?.node.project_id ?? null);
+  const projectId = detail?.node.project_id ?? null;
+  const graphQ = useApi<Graph>(() => (projectId ? api(routes.graph(projectId)) : Promise.resolve({ nodes: [], edges: [] })), [projectId, refreshTick.value]);
   useEffect(() => {
     let alive = true;
     api<NodeDetail>(routes.node(id)).then(
@@ -48,7 +53,12 @@ export function NodeSheet() {
           {detail.node.block_reason ? <div class="callout danger">blocked: {detail.node.block_reason}</div> : null}
           <Actions detail={detail} onDone={closeNode} activity={activity} />
           {detail.node.kind === "spec" ? <SpecBody nodeId={id} bodyMd={detail.node.body_md} notes={detail.notes} /> : <Overview detail={detail} />}
-          <Flow receivesFrom={[]} sendsTo={[]} />
+          {(() => {
+            const links = flowLinks(graphQ.data ?? { nodes: [], edges: [] }, id);
+            return links.receivesFrom.length || links.sendsTo.length ? (
+              <section><h3>Flow</h3><Flow receivesFrom={links.receivesFrom} sendsTo={links.sendsTo} /></section>
+            ) : null;
+          })()}
           <section><h3>Runs</h3><Runs nodeId={id} /></section>
           <section><h3>Discussion</h3><Discussion nodeId={id} notes={detail.notes} /></section>
           <Details nodeId={id} predictedTouches={detail.predicted_touches} />

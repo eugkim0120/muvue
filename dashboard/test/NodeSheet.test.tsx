@@ -8,14 +8,16 @@ function detail(status: string, kind = "task", extra: { criteria_hash?: string |
   return { node: { id: 7, project_id: 1, parent_id: 1, kind, title: "Do it", status, risk_tier: "low", owner: null, body_md: "body", criteria_json: '["a","b"]', criteria_mode: "auto", summary: null, block_reason: null, criteria_hash: extra.criteria_hash ?? null, deleted_at: extra.deleted_at ?? null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
 }
 
-function stubApi(status: string, kind = "task") {
+function stubApi(status: string, kind = "task", graph: { nodes: unknown[]; edges: unknown[] } = { nodes: [], edges: [] }) {
   const calls: { url: string; init?: RequestInit }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const json = url.startsWith("/nodes/7/diff") ? { source: "none", diff: "", truncated: false }
       : url === "/agents" ? { agents: ["claude", "fake"] }
       : url.startsWith("/nodes/7/approve") || url.startsWith("/nodes/7/reject") ? { ok: 1 }
+      : url.startsWith("/graph") ? graph
       : url.includes("/activity") ? { active: [], breakdowns: [], working: [] }
+      : url.startsWith("/nodes/7/runs") ? { runs: [] }
       : detail(status, kind);
     const isText = url.startsWith("/nodes/7/logs");
     return { ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": isText ? "text/plain" : "application/json" }), json: async () => json, text: async () => "log line" };
@@ -105,4 +107,19 @@ test("a spec node's sheet shows SpecBody instead of the purpose/criteria section
   await screen.findByText("Approve spec");
   expect(screen.queryByText("Overview")).toBeNull();
   expect(container.querySelectorAll(".spec-line").length).toBeGreaterThan(0);
+});
+
+test("a task node's sheet offers the breakdown/subtask actions and real flow links", async () => {
+  const graph = {
+    nodes: [
+      { id: 2, project_id: 1, parent_id: 1, kind: "task", title: "Record voice", status: "ready", risk_tier: "low", owner: null, agent: null },
+      { id: 7, project_id: 1, parent_id: 1, kind: "task", title: "Do it", status: "ready", risk_tier: "low", owner: null, agent: null },
+    ],
+    edges: [{ from: 2, to: 7, kind: "dep", carries: "audio frames" }],
+  };
+  stubApi("ready", "task", graph);
+  render(<NodeSheet />);
+  await screen.findByText("✨ Split into subtasks with agent");
+  expect(screen.getByText("+ Add subtask")).toBeTruthy();
+  expect(await screen.findByText("receives audio frames from #2 Record voice")).toBeTruthy();
 });
