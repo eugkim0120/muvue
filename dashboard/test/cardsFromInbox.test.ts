@@ -27,8 +27,9 @@ test("review/blocked nodes map to task_review/blocked cards", () => {
 });
 
 test("an unapproved revision synthesizes a revision card; an approved one does not", () => {
-  const cards = cardsFromInbox(emptyInbox, { spec: null, taskCount: 0, projectPhase: "executing", revisions: [{ n: 1, approved_at: null }, { n: 2, approved_at: "2026-01-01" }], nodesById });
+  const cards = cardsFromInbox(emptyInbox, { spec: null, taskCount: 0, projectPhase: "executing", revisions: [{ n: 1, approved_at: null }, { n: 2, approved_at: "2026-01-01" }], nodesById, projectId: 1 });
   expect(cards.map((c) => c.kind)).toEqual(["revision"]);
+  expect(cards[0]!.nodeId).toBe(1);
 });
 
 test("structure/audit/signal/unattributed events all collapse into ack cards", () => {

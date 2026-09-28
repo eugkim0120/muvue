@@ -23,6 +23,7 @@ export const routes = {
   nodeDiff: (id: number) => `/nodes/${id}/diff`,
   nodeLogs: (id: number, lines = 200) => q(`/nodes/${id}/logs`, { lines }),
   nodeApprove: (id: number) => `/nodes/${id}/approve`,
+  approveRevision: (projectId: number) => `/nodes/${projectId}/approve`,
   nodeReject: (id: number) => `/nodes/${id}/reject`,
   nodeStart: (id: number, agent: string) => q(`/nodes/${id}/start`, { agent }),
   nodeComment: (id: number) => `/nodes/${id}/comment`,
