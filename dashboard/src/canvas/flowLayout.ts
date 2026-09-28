@@ -19,17 +19,12 @@ function columnsOf(tasks: CanvasTask[], edges: CanvasEdge[]): Record<number, num
   const col: Record<number, number> = {};
   function colOf(id: number, seen: Set<number>): number {
     if (col[id] !== undefined) return col[id]!;
-    if (seen.has(id)) {
-      // cycle detected: mark all nodes in the cycle as column 0
-      for (const node of seen) col[node] = 0;
-      col[id] = 0;
-      return 0;
-    }
+    if (seen.has(id)) return 0; // a cycle is a data bug; don't hang on it
     seen.add(id);
     let c = 0;
     for (const from of incoming[id] ?? []) c = Math.max(c, colOf(from, seen) + 1);
-    if (col[id] === undefined) col[id] = c;
-    return col[id]!;
+    col[id] = c;
+    return c;
   }
   for (const t of tasks) colOf(t.id, new Set());
   return col;

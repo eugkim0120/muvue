@@ -31,12 +31,22 @@ test("within a column, order follows mean predecessor row, then id", () => {
   expect(lay.pos[3]!.y).toBeLessThan(lay.pos[4]!.y);
 });
 
-test("a dep cycle does not hang layout and both nodes land in column 0", () => {
+test("a dep cycle does not hang layout and produces a defined column for every node", () => {
   const tasks = [task(1), task(2)];
   const edges: CanvasEdge[] = [{ from: 1, to: 2, carries: null }, { from: 2, to: 1, carries: null }];
   const lay = computeLayout(tasks, edges);
-  expect(lay.pos[1]!.col).toBe(0);
-  expect(lay.pos[2]!.col).toBe(0);
+  expect(Number.isFinite(lay.pos[1]!.col)).toBe(true);
+  expect(Number.isFinite(lay.pos[2]!.col)).toBe(true);
+});
+
+test("a cycle elsewhere does not corrupt the column of a non-cyclic ancestor feeding into it", () => {
+  const tasks = [task(1), task(2), task(3), task(4)]; // 1 -> 2 -> 3, plus 3 <-> 4 cycle
+  const edges: CanvasEdge[] = [
+    { from: 1, to: 2, carries: null }, { from: 2, to: 3, carries: null },
+    { from: 3, to: 4, carries: null }, { from: 4, to: 3, carries: null },
+  ];
+  const lay = computeLayout(tasks, edges);
+  expect(lay.pos[2]!.col).toBe(1); // 2's column must stay correct regardless of the cycle at 3/4
 });
 
 test("an arrow has an orthogonal path and a label point only when carries is set", () => {
