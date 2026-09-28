@@ -1786,6 +1786,19 @@ function activityItems(a2, launched, now, titles, dismissed, projectId2) {
   }
   return items;
 }
+function planningNodeIds(a2, launched) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const p2 of a2?.active ?? []) {
+    if (p2.kind === "breakdown" && p2.node_id !== null) ids.add(p2.node_id);
+  }
+  const now = Date.now();
+  for (const l2 of launched) {
+    if (l2.kind !== "breakdown" || l2.nodeId === null) continue;
+    if (confirmed(l2, a2)) continue;
+    if (now - l2.at < LAUNCH_TIMEOUT_MS) ids.add(l2.nodeId);
+  }
+  return ids;
+}
 function useActivity(projectId2) {
   const [activity, setActivity] = d$2(null);
   const [tick, setTick] = d$2(0);
@@ -1874,7 +1887,7 @@ function AddForm({ parentId, kind, candidates, onClose }) {
     ] })
   ] });
 }
-function BreakdownButton({ nodeId, disabled, caption, activity }) {
+function BreakdownButton({ nodeId, disabled, caption, activity, label }) {
   const a2 = useAction();
   async function run() {
     const ok = await a2.run(async () => {
@@ -1886,7 +1899,7 @@ function BreakdownButton({ nodeId, disabled, caption, activity }) {
     }
   }
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: "✨ Break down with agent" }),
+    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: label ?? "✨ Break down with agent" }),
     disabled && caption ? /* @__PURE__ */ u$1("div", { class: "caption", children: caption }) : null,
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
@@ -1945,26 +1958,8 @@ function SubmitSpecForm({ projectId: projectId2 }) {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Submitting…", children: "Submit spec" }) })
   ] });
 }
-function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase, activity }) {
-  const approveSpecA = useAction();
-  const approveTasksA = useAction();
+function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
   if (!spec) return authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: projectId2 }) : /* @__PURE__ */ u$1("div", { class: "spec-root-card", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "No spec yet." }) });
-  const canApproveSpec = authed.value && spec.status === "pending";
-  const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && projectPhase === "planning";
-  async function approveSpec() {
-    const ok = await approveSpecA.run(() => post(routes.nodeApprove(spec.id), { target: "spec" }));
-    if (ok) {
-      toast("spec approved");
-      refresh();
-    }
-  }
-  async function approveTasks() {
-    const ok = await approveTasksA.run(() => post(routes.nodeApprove(projectId2), { target: "gate2" }));
-    if (ok) {
-      toast("task list approved; criteria frozen");
-      refresh();
-    }
-  }
   return /* @__PURE__ */ u$1("div", { class: "spec-root-card stack", tabIndex: 0, onClick: () => openNode(spec.id), onKeyDown: (e2) => {
     if (e2.key === "Enter") openNode(spec.id);
   }, children: [
@@ -1973,20 +1968,7 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase, activi
       /* @__PURE__ */ u$1(Pill, { status: spec.status })
     ] }),
     spec.body_md ? /* @__PURE__ */ u$1("div", { class: "caption", children: purposeLine(spec.body_md) }) : null,
-    spec.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: `planned by ${spec.agent}` }) : null,
-    /* @__PURE__ */ u$1("div", { class: "row between", children: /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: (e2) => {
-        e2.stopPropagation();
-        void approveSpec();
-      }, children: "Approve spec" }) : null,
-      canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: (e2) => {
-        e2.stopPropagation();
-        void approveTasks();
-      }, children: "Approve task list" }) : null
-    ] }) }),
-    approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null,
-    approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null,
-    authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id, activity: activity ?? null }) }) : null
+    spec.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: `planned by ${spec.agent}` }) : null
   ] });
 }
 function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
@@ -2022,7 +2004,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom in", onClick: () => setZoom((z2) => Math.min(2, z2 + 0.1)), children: "+" })
     ] }),
     /* @__PURE__ */ u$1("div", { class: "canvas-viewport", onPointerDown, onPointerMove, onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: lay.width + "px", height: lay.height + 96 + "px" }, children: [
-      /* @__PURE__ */ u$1("div", { class: "canvas-spec-slot", children: /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase, activity }) }),
+      /* @__PURE__ */ u$1("div", { class: "canvas-spec-slot", children: /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }) }),
       /* @__PURE__ */ u$1("svg", { class: "canvas-arrows", width: lay.width, height: lay.height, style: { marginTop: "96px" }, children: lay.arrows.map((a2) => /* @__PURE__ */ u$1(S$1, { children: [
         /* @__PURE__ */ u$1("path", { class: "flow-arrow", d: a2.path }),
         a2.label ? /* @__PURE__ */ u$1("g", { transform: `translate(${a2.label.x},${a2.label.y})`, children: [
@@ -2037,7 +2019,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
 function PhoneFlow({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
   const steps = stepsFromColumns(data.tasks, data.edges);
   return /* @__PURE__ */ u$1("div", { class: "stack phone-flow", children: [
-    /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase, activity }),
+    /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }),
     steps.map((step) => /* @__PURE__ */ u$1("div", { class: "phone-step stack tight", children: [
       step.parallel ? /* @__PURE__ */ u$1("div", { class: "caption parallel-label", children: "parallel" }) : null,
       /* @__PURE__ */ u$1("div", { class: step.parallel ? "phone-step-row" : "stack tight", children: step.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, activity })) })
@@ -2082,8 +2064,8 @@ function Discuss({ card, onSent }) {
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
-const APPROVE_TARGET = { spec_review: "spec", gate2_review: "gate2", task_review: "review", awaiting_approval: "node" };
-const CAPTION = { spec_review: "Spec awaiting approval", gate2_review: "Task list awaiting Gate 2", task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
+const APPROVE_TARGET = { task_review: "review", awaiting_approval: "node" };
+const CAPTION = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
 function Card({ card, onActed }) {
   const [rejecting, setRejecting] = d$2(false);
   const [reason, setReason] = d$2("");
@@ -2097,7 +2079,7 @@ function Card({ card, onActed }) {
     else if (card.kind === "ack") fn = () => post(routes.eventAck(Number(card.id.split(":").pop())));
     else {
       const target = APPROVE_TARGET[card.kind];
-      const id = card.kind === "gate2_review" ? card.projectId : card.nodeId;
+      const id = card.nodeId;
       if (target && id) fn = () => post(routes.nodeApprove(id), { target });
     }
     if (!fn) return;
@@ -2164,12 +2146,6 @@ function payloadOf(ev) {
 }
 function cardsFromInbox(inbox, ctx) {
   const cards = [];
-  if (ctx.spec && ctx.spec.status === "pending") {
-    cards.push({ id: "spec_review:" + ctx.spec.id, kind: "spec_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: "spec awaiting approval", agent: "", ts: "" });
-  }
-  if (ctx.spec && ctx.spec.status !== "pending" && ctx.taskCount > 0 && ctx.projectPhase === "planning") {
-    cards.push({ id: "gate2_review:" + ctx.spec.id, kind: "gate2_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: `${ctx.taskCount} tasks awaiting Gate 2`, agent: "", ts: "" });
-  }
   for (const q2 of inbox.questions) {
     const n2 = ctx.nodesById[q2.node_id];
     cards.push({ id: "question:" + q2.id, kind: "question", nodeId: q2.node_id, projectId: n2?.project_id ?? null, title: n2?.title ?? `#${q2.node_id}`, context: q2.text, agent: "", ts: "" });
@@ -2262,6 +2238,119 @@ function Logs({ nodeId, path }) {
 function LogSheet({ log, onClose }) {
   return /* @__PURE__ */ u$1(Sheet, { title: log.kind === "node" ? `Log · #${log.nodeId}` : "Run log", onClose, children: /* @__PURE__ */ u$1(Logs, { path: log.kind === "node" ? routes.nodeLogs(log.nodeId) : routes.projectLogs(log.projectId) }) });
 }
+function NextStepBar({
+  step,
+  authed: authed2,
+  projectId: projectId2,
+  specId,
+  activity,
+  onAddTask
+}) {
+  const approveSpecA = useAction();
+  const approveTasksA = useAction();
+  async function approveSpec() {
+    if (specId === null) return;
+    const ok = await approveSpecA.run(() => post(routes.nodeApprove(specId), { target: "spec" }));
+    if (ok) {
+      toast("Spec approved");
+      refresh();
+    }
+  }
+  async function approveTasks() {
+    const ok = await approveTasksA.run(() => post(routes.nodeApprove(projectId2), { target: "gate2" }));
+    if (ok) {
+      toast("Task list approved");
+      refresh();
+    }
+  }
+  return /* @__PURE__ */ u$1("section", { class: "next-step card", "data-next-step": step.id, children: [
+    /* @__PURE__ */ u$1("span", { class: "caption", children: "Next" }),
+    /* @__PURE__ */ u$1("h2", { children: step.title }),
+    /* @__PURE__ */ u$1("p", { class: "muted", children: step.detail }),
+    authed2 ? /* @__PURE__ */ u$1(S$1, { children: [
+      step.id === "approve_spec" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: approveSpec, children: "Approve spec" }),
+        approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null
+      ] }) : null,
+      step.id === "plan_tasks" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        /* @__PURE__ */ u$1(BreakdownButton, { nodeId: specId, activity, label: "✨ Plan tasks with agent" }),
+        /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: onAddTask, children: "+ Add task myself" })
+      ] }) : null,
+      step.id === "approve_tasks" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: approveTasks, children: "Approve task list" }),
+        approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null
+      ] }) : null
+    ] }) : /* @__PURE__ */ u$1("p", { class: "caption", children: "Read-only. Open the link printed by muvue serve to act." })
+  ] });
+}
+function nextStep(i2) {
+  if (i2.phase === "closed") return { id: "closed", title: "Project closed", detail: "Nothing more to do here." };
+  if (!i2.spec) return { id: "write_spec", title: "Write the spec", detail: "Describe what to build, one requirement per line." };
+  if (i2.spec.status === "pending") {
+    return { id: "approve_spec", title: "Approve the spec", detail: "Read it (tap the spec box), comment on any line, then approve so tasks can be planned." };
+  }
+  if (i2.planning) {
+    return { id: "planning", title: "Planning tasks…", detail: "An agent is splitting the spec into tasks. They appear in the diagram when it finishes." };
+  }
+  if (i2.phase === "planning" && i2.taskCount === 0) {
+    return { id: "plan_tasks", title: "Plan the tasks", detail: "Let an agent propose tasks from the spec, or add them yourself." };
+  }
+  if (i2.phase === "planning") {
+    return {
+      id: "approve_tasks",
+      title: "Approve the task list",
+      detail: `Check the ${i2.taskCount} task${i2.taskCount === 1 ? "" : "s"} in the diagram. Approving freezes their criteria and lets Run start them.`
+    };
+  }
+  if (i2.phase === "paused") return { id: "paused", title: "Paused", detail: "Resume from the project menu to continue." };
+  if (i2.workingCount > 0) {
+    return {
+      id: "running",
+      title: "Agents are working",
+      detail: `${i2.workingCount} task${i2.workingCount === 1 ? " is" : "s are"} in progress. Watch the diagram or open a task for its log.`
+    };
+  }
+  if (i2.reviewCount > 0) {
+    return {
+      id: "review",
+      title: "Review finished work",
+      detail: `${i2.reviewCount} task${i2.reviewCount === 1 ? " waits" : "s wait"} for your review in Needs you.`
+    };
+  }
+  if (i2.readyCount > 0) {
+    return {
+      id: "run",
+      title: "Run the tasks",
+      detail: `${i2.readyCount} task${i2.readyCount === 1 ? " is" : "s are"} ready. Press ▶ Run tasks to start agents on them.`
+    };
+  }
+  if (i2.taskCount > 0 && i2.doneCount === i2.taskCount) return { id: "all_done", title: "All tasks done", detail: "Close the project from the project menu." };
+  return { id: "stuck", title: "Nothing can run", detail: "The remaining tasks are blocked or waiting on earlier tasks. Open a task to see why." };
+}
+function runBlockReason(step) {
+  switch (step.id) {
+    case "run":
+      return null;
+    case "write_spec":
+    case "approve_spec":
+    case "planning":
+    case "plan_tasks":
+    case "approve_tasks":
+      return "Run starts after the task list is approved.";
+    case "paused":
+      return "The project is paused.";
+    case "running":
+      return "Already running.";
+    case "review":
+      return "Waiting on your review.";
+    case "all_done":
+      return "Nothing left to run.";
+    case "closed":
+      return "The project is closed.";
+    case "stuck":
+      return "Nothing is ready to run.";
+  }
+}
 const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = d$2(false);
@@ -2292,8 +2381,8 @@ function ProjectPage() {
   const nodesById = T(() => Object.fromEntries((allNodesQ.data ?? []).map((n2) => [n2.id, { title: n2.title, project_id: n2.project_id }])), [allNodesQ.data]);
   const cards = T(() => {
     if (!inboxQ.data || !pid) return [];
-    return cardsFromInbox(inboxQ.data, { spec: data?.spec ?? null, taskCount: data?.tasks.length ?? 0, projectPhase: p2?.phase ?? "planning", revisions: revisionsQ.data ?? [], nodesById, projectId: pid }).filter((c2) => c2.projectId === null || c2.projectId === pid);
-  }, [inboxQ.data, data, p2?.phase, revisionsQ.data, nodesById, pid]);
+    return cardsFromInbox(inboxQ.data, { revisions: revisionsQ.data ?? [], nodesById, projectId: pid }).filter((c2) => c2.projectId === null || c2.projectId === pid);
+  }, [inboxQ.data, revisionsQ.data, nodesById, pid]);
   const needsYou = new Set(cards.map((c2) => c2.nodeId).filter((id) => id !== null));
   if (!projects.value.length) return /* @__PURE__ */ u$1(NewProject, {});
   if (!p2) return /* @__PURE__ */ u$1(NewProject, {});
@@ -2301,6 +2390,21 @@ function ProjectPage() {
   const total = (nodesQ.data ?? []).filter((n2) => n2.kind === "task").length;
   const working = (nodesQ.data ?? []).filter((n2) => n2.status === "in_progress").length;
   const hasFakeAgent = (graphQ.data?.nodes ?? []).some((n2) => n2.agent === "fake");
+  const taskAndSubtaskNodes = (nodesQ.data ?? []).filter((n2) => n2.kind === "task" || n2.kind === "subtask");
+  const readyCount = taskAndSubtaskNodes.filter((n2) => n2.status === "ready").length;
+  const workingCount = taskAndSubtaskNodes.filter((n2) => n2.status === "in_progress").length;
+  const reviewCount = taskAndSubtaskNodes.filter((n2) => n2.status === "review").length;
+  const step = nextStep({
+    phase: p2.phase,
+    spec: data?.spec ? { id: data.spec.id, status: data.spec.status } : null,
+    taskCount: total,
+    readyCount,
+    workingCount,
+    reviewCount,
+    doneCount: done,
+    planning: data?.spec ? planningNodeIds(activity, launches.value).has(data.spec.id) : false
+  });
+  const reason = runBlockReason(step);
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
@@ -2314,15 +2418,17 @@ function ProjectPage() {
       /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
       /* @__PURE__ */ u$1("div", { class: "row", children: [
         authed.value && data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-        /* @__PURE__ */ u$1(Button, { variant: "filled", busy: runA.busy, busyLabel: "Starting…", onClick: run, children: "▶ Run" })
+        /* @__PURE__ */ u$1(Button, { variant: "filled", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
+        reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
       ] })
     ] }),
     runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", style: { margin: "0 16px" }, children: runA.error }) : null,
     hasFakeAgent ? /* @__PURE__ */ u$1("div", { class: "callout", "data-fake-notice": true, style: { margin: "0 16px" }, children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' }) : null,
+    /* @__PURE__ */ u$1(NextStepBar, { step, authed: authed.value, projectId: pid, specId: data?.spec?.id ?? null, activity, onAddTask: () => setAddingTask(true) }),
     /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
     authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
-    graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : step.id === "write_spec" ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: pid }) }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
       /* @__PURE__ */ u$1(CardRail, { cards }),
       /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(PhoneFlow, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity }) })
     ] }) : /* @__PURE__ */ u$1("div", { class: "row", style: { alignItems: "flex-start", flexWrap: "nowrap" }, children: [
@@ -3115,6 +3221,9 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius); font-size: 14px; background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid var(--st-in_progress); box-shadow: var(--shadow); }
 .activity-item.error { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: var(--danger); }
 .activity-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--danger); color: #fff; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
+.next-step h2 { margin: 2px 0 4px; }
+[data-run-reason] { max-width: 220px; }
 /* dashboard/src/cards/cards.css */
 .card-rail { width: 320px; flex: none; padding: 12px; border-left: 1px solid var(--border); overflow-y: auto; }
 .card-rail-empty { padding: 12px; }

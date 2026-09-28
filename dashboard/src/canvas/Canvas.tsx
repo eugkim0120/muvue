@@ -38,7 +38,7 @@ export function Canvas({ data, projectId, projectPhase, needsYou, activity }: { 
       </div>
       <div class="canvas-viewport" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onWheel={onWheel}>
         <div class="canvas-frame" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: lay.width + "px", height: lay.height + 96 + "px" }}>
-          <div class="canvas-spec-slot"><SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} activity={activity} /></div>
+          <div class="canvas-spec-slot"><SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} /></div>
           <svg class="canvas-arrows" width={lay.width} height={lay.height} style={{ marginTop: "96px" }}>
             {lay.arrows.map((a) => (
               <>

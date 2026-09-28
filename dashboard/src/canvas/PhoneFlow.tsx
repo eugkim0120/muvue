@@ -8,7 +8,7 @@ export function PhoneFlow({ data, projectId, projectPhase, needsYou, activity }:
   const steps = stepsFromColumns(data.tasks, data.edges);
   return (
     <div class="stack phone-flow">
-      <SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} activity={activity} />
+      <SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} />
       {steps.map((step) => (
         <div class="phone-step stack tight">
           {step.parallel ? <div class="caption parallel-label">parallel</div> : null}

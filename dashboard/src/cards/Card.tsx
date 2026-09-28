@@ -8,8 +8,8 @@ import { Discuss } from "./Discuss";
 import { useAction } from "../ui/useAction";
 import type { Card as CardT } from "./cardsFromInbox";
 
-const APPROVE_TARGET: Record<string, string> = { spec_review: "spec", gate2_review: "gate2", task_review: "review", awaiting_approval: "node" };
-const CAPTION: Record<CardT["kind"], string> = { spec_review: "Spec awaiting approval", gate2_review: "Task list awaiting Gate 2", task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
+const APPROVE_TARGET: Record<string, string> = { task_review: "review", awaiting_approval: "node" };
+const CAPTION: Record<CardT["kind"], string> = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
 
 export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
   const [rejecting, setRejecting] = useState(false);
@@ -25,7 +25,7 @@ export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
     else if (card.kind === "ack") fn = () => post(routes.eventAck(Number(card.id.split(":").pop())));
     else {
       const target = APPROVE_TARGET[card.kind];
-      const id = card.kind === "gate2_review" ? card.projectId : card.nodeId;
+      const id = card.nodeId;
       if (target && id) fn = () => post(routes.nodeApprove(id), { target });
     }
     if (!fn) return;

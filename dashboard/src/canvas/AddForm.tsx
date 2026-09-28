@@ -60,7 +60,7 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
   );
 }
 
-export function BreakdownButton({ nodeId, disabled, caption, activity }: { nodeId: number; disabled?: boolean; caption?: string; activity: Activity | null }) {
+export function BreakdownButton({ nodeId, disabled, caption, activity, label }: { nodeId: number; disabled?: boolean; caption?: string; activity: Activity | null; label?: string }) {
   const a = useAction();
   async function run() {
     const ok = await a.run(async () => {
@@ -70,7 +70,7 @@ export function BreakdownButton({ nodeId, disabled, caption, activity }: { nodeI
   }
   return (
     <div class="stack tight">
-      <Button variant="outline" disabled={disabled} busy={a.busy} busyLabel="Starting…" onClick={run}>✨ Break down with agent</Button>
+      <Button variant="outline" disabled={disabled} busy={a.busy} busyLabel="Starting…" onClick={run}>{label ?? "✨ Break down with agent"}</Button>
       {disabled && caption ? <div class="caption">{caption}</div> : null}
       {a.error ? <div class="callout danger">{a.error}</div> : null}
     </div>

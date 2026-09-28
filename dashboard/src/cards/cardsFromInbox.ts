@@ -1,5 +1,4 @@
 import type { NodeRow } from "../state";
-import type { CanvasSpec } from "../canvas/canvasData";
 
 type Ev = { id: number; ts: string; node_id: number | null; project_id: number | null; type: string; payload: string };
 type Question = { id: number; node_id: number; text: string; default_answer: string | null; default_ok: boolean };
@@ -10,21 +9,15 @@ export type Inbox = {
 export type Revision = { n: number; approved_at: string | null };
 export type NodesById = Record<number, { title: string; project_id: number }>;
 
-export type CardKind = "spec_review" | "gate2_review" | "task_review" | "question" | "blocked" | "revision" | "ack" | "awaiting_approval";
+export type CardKind = "task_review" | "question" | "blocked" | "revision" | "ack" | "awaiting_approval";
 export type Card = { id: string; kind: CardKind; nodeId: number | null; projectId: number | null; title: string; context: string; agent: string; ts: string; raw?: unknown };
 
-export type Ctx = { spec: CanvasSpec | null; taskCount: number; projectPhase: string; revisions: Revision[]; nodesById: NodesById; projectId: number };
+export type Ctx = { revisions: Revision[]; nodesById: NodesById; projectId: number };
 
 function payloadOf(ev: Ev): Record<string, unknown> { try { return JSON.parse(ev.payload || "{}"); } catch { return {}; } }
 
 export function cardsFromInbox(inbox: Inbox, ctx: Ctx): Card[] {
   const cards: Card[] = [];
-  if (ctx.spec && ctx.spec.status === "pending") {
-    cards.push({ id: "spec_review:" + ctx.spec.id, kind: "spec_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: "spec awaiting approval", agent: "", ts: "" });
-  }
-  if (ctx.spec && ctx.spec.status !== "pending" && ctx.taskCount > 0 && ctx.projectPhase === "planning") {
-    cards.push({ id: "gate2_review:" + ctx.spec.id, kind: "gate2_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: `${ctx.taskCount} tasks awaiting Gate 2`, agent: "", ts: "" });
-  }
   for (const q of inbox.questions) {
     const n = ctx.nodesById[q.node_id];
     cards.push({ id: "question:" + q.id, kind: "question", nodeId: q.node_id, projectId: n?.project_id ?? null, title: n?.title ?? `#${q.node_id}`, context: q.text, agent: "", ts: "" });
