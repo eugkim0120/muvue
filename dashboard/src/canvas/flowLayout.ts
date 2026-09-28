@@ -1,6 +1,6 @@
 import type { CanvasTask, CanvasEdge } from "./canvasData";
 
-export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 22, BOX_H_BASE = 64, MAX_SUBTASK_ROWS = 4;
+export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 64, MAX_SUBTASK_ROWS = 4;
 
 export function boxHeight(subtaskCount: number): number {
   const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
