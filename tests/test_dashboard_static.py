@@ -38,11 +38,23 @@ def test_token_never_reaches_persistent_storage():
     `localStorage` is also used for an unrelated, non-secret per-viewer
     convenience -- which activity-bar items were dismissed
     (dashboard/src/project/activity.ts) -- so the check has to be that no
-    persistent-storage call carries the token, not that the APIs are absent."""
+    persistent-storage call carries the token, not that the APIs are absent.
+
+    This is a textual guard, not a true data-flow check: it scans the
+    source text of each `localStorage`/`sessionStorage` call statement for
+    "token"/"authorization", so it can still be fooled by, say, storing a
+    token under a name with neither substring (`btoa(secret)`). It is
+    still worth keeping because it catches the direct, common-refactor
+    ways this could regress; it is not a substitute for not writing the
+    bug in the first place."""
     html = INDEX.read_text()
     assert "document.cookie" not in html
     assert "indexedDB" not in html
-    for call in re.findall(r"(?:localStorage|sessionStorage)\.[a-zA-Z]+\([^)]*\)", html):
+    # Capture the whole statement -- up to the next `;`, not just the
+    # first balanced `)` -- so a nested call as an earlier argument (e.g.
+    # `localStorage.setItem(deriveKey(a, b), token)`) doesn't truncate the
+    # match before the sensitive argument is reached.
+    for call in re.findall(r"(?:localStorage|sessionStorage)\.[a-zA-Z]+\([^;]*;?", html):
         assert "token" not in call.lower()
         assert "authorization" not in call.lower()
 
