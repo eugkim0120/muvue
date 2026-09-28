@@ -958,7 +958,7 @@ function parseHash(hash) {
   const raw = hash.replace(/^#\/?/, "");
   const [pathPart = "", queryPart = ""] = raw.split("?");
   const parts = pathPart.split("/").filter(Boolean);
-  if (!parts.length || parts[0].startsWith("n=")) return { page: "plan", params: [], query: new URLSearchParams(queryPart) };
+  if (!parts.length || parts[0].startsWith("n=")) return { page: "", params: [], query: new URLSearchParams(queryPart) };
   return { page: parts[0], params: parts.slice(1), query: new URLSearchParams(queryPart) };
 }
 const route = y(parseHash(typeof window === "undefined" ? "" : window.location.hash));
@@ -969,20 +969,25 @@ if (typeof window !== "undefined") window.addEventListener("hashchange", resetRo
 function navigate(hash) {
   window.location.hash = hash;
 }
-function currentPath() {
-  const r2 = parseHash(window.location.hash);
-  return "#/" + [r2.page, ...r2.params].join("/");
+function openProject(id) {
+  navigate("#/p/" + id);
 }
 function openNode(id) {
   const r2 = parseHash(window.location.hash);
-  r2.query.set("node", String(id));
-  navigate(currentPath() + "?" + r2.query.toString());
+  const q2 = new URLSearchParams(r2.query);
+  q2.set("node", String(id));
+  navigate("#/" + [r2.page, ...r2.params].join("/") + "?" + q2.toString());
 }
 function closeNode() {
   const r2 = parseHash(window.location.hash);
-  r2.query.delete("node");
-  const q2 = r2.query.toString();
-  navigate(currentPath() + (q2 ? "?" + q2 : ""));
+  const q2 = new URLSearchParams(r2.query);
+  q2.delete("node");
+  const qs = q2.toString();
+  navigate("#/" + [r2.page, ...r2.params].join("/") + (qs ? "?" + qs : ""));
+}
+const LEGACY_PAGES = /* @__PURE__ */ new Set(["plan", "inbox", "activity", "spend"]);
+function isLegacyRoute(r2) {
+  return LEGACY_PAGES.has(r2.page) || r2.page === "spec";
 }
 class ApiError extends Error {
   constructor(message, status) {
@@ -1027,6 +1032,7 @@ const routes = {
   authExchange: () => "/auth/exchange",
   eventsStream: () => "/events/stream",
   projects: () => "/projects",
+  projectSpec: (id) => `/projects/${id}/spec`,
   agents: () => "/agents",
   inbox: () => "/inbox",
   kpis: () => "/kpis",
@@ -1037,6 +1043,7 @@ const routes = {
   nodeDiff: (id) => `/nodes/${id}/diff`,
   nodeLogs: (id, lines = 200) => q(`/nodes/${id}/logs`, { lines }),
   nodeApprove: (id) => `/nodes/${id}/approve`,
+  approveRevision: (projectId2) => `/nodes/${projectId2}/approve`,
   nodeReject: (id) => `/nodes/${id}/reject`,
   nodeStart: (id, agent) => q(`/nodes/${id}/start`, { agent }),
   nodeComment: (id) => `/nodes/${id}/comment`,
@@ -1046,13 +1053,19 @@ const routes = {
   projectPause: (projectId2) => `/projects/${projectId2}/pause`,
   projectResume: (projectId2) => `/projects/${projectId2}/resume`,
   closePreview: (projectId2) => `/projects/${projectId2}/close-preview`,
-  projectClose: (projectId2) => `/projects/${projectId2}/close`
+  projectClose: (projectId2) => `/projects/${projectId2}/close`,
+  nodeChildren: (id) => `/nodes/${id}/children`,
+  nodeRemove: (id) => `/nodes/${id}/remove`,
+  nodeEdit: (id) => `/nodes/${id}/edit`,
+  nodeBreakdown: (id) => `/nodes/${id}/breakdown`,
+  projectRun: (id) => `/projects/${id}/run`,
+  agentsStatus: (projectId2) => q("/agents/status", { project_id: projectId2 }),
+  nodeRuns: (id) => `/nodes/${id}/runs`
 };
 const projects = y([]);
 const projectId = y(null);
 const currentProject = g(() => projects.value.find((p2) => p2.id === projectId.value) ?? null);
 const authed = y(false);
-const inboxCount = y(0);
 const refreshTick = y(0);
 const protocolVersion = y(null);
 function refresh() {
@@ -1185,807 +1198,48 @@ function CloseSheet({ projectId: projectId2, onClose }) {
     ] })
   ] }) });
 }
-function ProjectMenu({ onClose }) {
-  const [confirmPause, setConfirmPause] = d$2(false);
-  const [closing, setClosing] = d$2(false);
-  const p2 = currentProject.value;
-  async function pause() {
-    if (!p2) return;
-    try {
-      const r2 = await post(routes.projectPause(p2.id));
-      const stopped = (r2.result ?? r2).stopped_runners ?? [];
-      toast(`paused; stopped ${stopped.length} runner process(es)`);
-      refresh();
-      onClose();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  async function resume() {
-    if (!p2) return;
-    try {
-      await post(routes.projectResume(p2.id));
-      toast("resumed");
-      refresh();
-      onClose();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  if (closing && p2) return /* @__PURE__ */ u$1(CloseSheet, { projectId: p2.id, onClose: () => {
-    setClosing(false);
-    onClose();
-  } });
-  if (confirmPause) {
-    return /* @__PURE__ */ u$1(Confirm, { title: "Pause project?", body: "Running agents are stopped and their tasks go back to ready.", confirmLabel: "Pause", danger: true, onConfirm: pause, onCancel: () => setConfirmPause(false) });
-  }
-  return /* @__PURE__ */ u$1(Sheet, { title: "Project", onClose, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
-    /* @__PURE__ */ u$1("div", { class: "list", children: projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
-      projectId.value = pr.id;
-      refresh();
-      onClose();
-    }, children: [
-      /* @__PURE__ */ u$1("span", { class: "grow", children: /* @__PURE__ */ u$1("span", { class: "title", children: [
-        "#",
-        pr.id,
-        " ",
-        pr.goal
-      ] }) }),
-      /* @__PURE__ */ u$1(Pill, { status: pr.phase })
-    ] })) }),
-    authed.value && p2 ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      p2.phase !== "paused" && p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setConfirmPause(true), children: "Pause" }) : null,
-      p2.phase === "paused" ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: resume, children: "Resume" }) : null,
-      p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { onClick: () => setClosing(true), children: "Close project…" }) : null
-    ] }) : null
-  ] }) });
-}
-const NAV = [
-  { page: "plan", label: "Plan", icon: "plan" },
-  { page: "inbox", label: "Inbox", icon: "inbox" },
-  { page: "activity", label: "Activity", icon: "activity" },
-  { page: "spend", label: "Spend", icon: "spend" }
-];
-function isActive(page, current) {
-  return current === page || page === "plan" && current === "spec";
-}
-function Sidebar() {
-  const [menu, setMenu] = d$2(false);
-  const p2 = currentProject.value;
-  return /* @__PURE__ */ u$1("aside", { class: "sidebar", children: [
-    /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
-      /* @__PURE__ */ u$1("span", { class: "grow", children: [
-        /* @__PURE__ */ u$1("span", { class: "project-goal", children: p2 ? p2.goal : "no project" }),
-        p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
-      ] }),
-      /* @__PURE__ */ u$1(Icon, { name: "more" })
+function AgentsSheet({ projectId: projectId2, onClose }) {
+  const [agents, setAgents] = d$2(null);
+  const [error, setError] = d$2(null);
+  h$2(() => {
+    let alive = true;
+    api(routes.agentsStatus(projectId2)).then(
+      (r2) => {
+        if (!alive) return;
+        setAgents(r2.agents);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [projectId2]);
+  return /* @__PURE__ */ u$1(Sheet, { title: "Agents", onClose, children: error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : !agents ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : /* @__PURE__ */ u$1("div", { class: "list", children: agents.map((a2) => /* @__PURE__ */ u$1("div", { class: "list-row", style: { cursor: "default" }, children: /* @__PURE__ */ u$1("span", { class: "grow", children: [
+    /* @__PURE__ */ u$1("span", { class: "title", children: [
+      a2.name,
+      " ",
+      /* @__PURE__ */ u$1("span", { class: "caption", children: a2.roles.join(", ") })
     ] }),
-    /* @__PURE__ */ u$1("nav", { children: NAV.map((n2) => /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item" + (isActive(n2.page, route.value.page) ? " on" : ""), onClick: () => navigate("#/" + n2.page), children: [
-      /* @__PURE__ */ u$1(Icon, { name: n2.icon }),
-      /* @__PURE__ */ u$1("span", { class: "grow", children: n2.label }),
-      n2.page === "inbox" && inboxCount.value > 0 ? /* @__PURE__ */ u$1("span", { class: "badge", children: inboxCount.value }) : null
-    ] })) }),
-    /* @__PURE__ */ u$1("div", { class: "sidebar-foot caption", children: [
-      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : "read-only" }),
-      protocolVersion.value !== null ? /* @__PURE__ */ u$1("div", { children: [
-        "protocol v",
-        protocolVersion.value
-      ] }) : null
+    /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: a2.current ? `#${a2.current.node_id} ${a2.current.title} · ${a2.current.elapsed_s}s` : "idle" }),
+    /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: [
+      a2.runs_today,
+      " runs today · $",
+      a2.spend.toFixed(2),
+      " of $",
+      a2.budget.toFixed(2)
     ] }),
-    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
-  ] });
-}
-function TabBar() {
-  return /* @__PURE__ */ u$1("nav", { class: "tabbar", children: NAV.map((n2) => /* @__PURE__ */ u$1("button", { type: "button", class: "tab" + (isActive(n2.page, route.value.page) ? " on" : ""), onClick: () => navigate("#/" + n2.page), "aria-label": n2.label, children: [
-    /* @__PURE__ */ u$1("span", { class: "tab-icon", children: [
-      /* @__PURE__ */ u$1(Icon, { name: n2.icon }),
-      n2.page === "inbox" && inboxCount.value > 0 ? /* @__PURE__ */ u$1("span", { class: "badge", children: inboxCount.value }) : null
-    ] }),
-    /* @__PURE__ */ u$1("span", { class: "tab-label", children: n2.label })
-  ] })) });
-}
-function TopBar({ onSearch }) {
-  const [menu, setMenu] = d$2(false);
-  const p2 = currentProject.value;
-  return /* @__PURE__ */ u$1("header", { class: "topbar", children: [
-    /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
-      /* @__PURE__ */ u$1("span", { class: "grow project-goal", children: p2 ? p2.goal : "no project" }),
-      p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
-    ] }),
-    /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "search", onClick: onSearch, children: /* @__PURE__ */ u$1(Icon, { name: "search" }) }),
-    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
-  ] });
-}
-async function checkAuth() {
-  try {
-    await api(routes.authCheck());
-    return true;
-  } catch (e2) {
-    if (e2 instanceof ApiError && (e2.status === 401 || e2.status === 403)) return false;
-    throw e2;
-  }
-}
-async function exchangeFragmentNonce() {
-  const match = (window.location.hash || "").match(/(?:^#|[&#])n=([^&]+)/);
-  if (!match) return checkAuth();
-  const embedded = window.top !== window.self;
-  history.replaceState(null, "", window.location.pathname + window.location.search);
-  const r2 = await fetch(routes.authExchange(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({ nonce: decodeURIComponent(match[1]), header: embedded })
-  });
-  if (r2.ok) {
-    const body = await r2.json();
-    if (body.token) setToken(body.token);
-  }
-  return checkAuth();
-}
-function TokenBanner() {
-  const [value, setValue] = d$2("");
-  async function use() {
-    setToken(value.trim());
-    setValue("");
-    try {
-      setAuthed(await checkAuth());
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  return /* @__PURE__ */ u$1("form", { class: "token-banner", onSubmit: (e2) => {
-    e2.preventDefault();
-    void use();
-  }, children: [
-    /* @__PURE__ */ u$1("div", { class: "caption", children: [
-      "Read-only. Paste the api token printed by ",
-      /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
-      " to act. It stays in this tab's memory only."
-    ] }),
-    /* @__PURE__ */ u$1("div", { class: "row", children: [
-      /* @__PURE__ */ u$1("input", { type: "password", placeholder: "api token printed by muvue serve", value, onInput: (e2) => setValue(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Use token" })
-    ] })
-  ] });
-}
-function Toasts() {
-  return /* @__PURE__ */ u$1("div", { class: "toasts", "aria-live": "polite", children: toasts.value.map((t2) => /* @__PURE__ */ u$1("button", { type: "button", class: "toast " + t2.kind, onClick: () => dismissToast(t2.id), children: t2.text }, t2.id)) });
-}
-function Segmented({ options, value, onChange }) {
-  return /* @__PURE__ */ u$1("div", { class: "segmented", role: "tablist", children: options.map((o2) => /* @__PURE__ */ u$1("button", { type: "button", role: "tab", "aria-selected": o2.value === value, class: o2.value === value ? "on" : "", onClick: () => onChange(o2.value), children: o2.label })) });
+    a2.last_error ? /* @__PURE__ */ u$1("span", { class: "caption danger", style: { display: "block" }, children: a2.last_error }) : null
+  ] }) })) }) });
 }
 function Empty({ text, check }) {
   return /* @__PURE__ */ u$1("div", { class: "empty", children: [
     check ? /* @__PURE__ */ u$1(Icon, { name: "check" }) : null,
     /* @__PURE__ */ u$1("div", { children: text })
   ] });
-}
-const BOX_W = 200, BOX_H = 52, GAP_X = 28, GAP_Y = 64, PAD = 16;
-function layout(graph) {
-  var _a;
-  const incoming = {};
-  for (const n2 of graph.nodes) incoming[n2.id] = [];
-  for (const e2 of graph.edges) incoming[e2.to]?.push(e2.from);
-  const depth = {};
-  function depthOf(id, seen) {
-    if (depth[id] !== void 0) return depth[id];
-    if (seen.has(id)) return 0;
-    seen.add(id);
-    let d2 = 0;
-    for (const from of incoming[id] ?? []) d2 = Math.max(d2, depthOf(from, seen) + 1);
-    depth[id] = d2;
-    return d2;
-  }
-  for (const n2 of graph.nodes) depthOf(n2.id, /* @__PURE__ */ new Set());
-  const layers = [];
-  for (const n2 of graph.nodes) (layers[_a = depth[n2.id]] ?? (layers[_a] = [])).push(n2.id);
-  const pos = {};
-  layers.forEach((layer, y2) => {
-    const center = (id) => {
-      const xs = (incoming[id] ?? []).filter((f2) => pos[f2]).map((f2) => pos[f2].i);
-      return xs.length ? xs.reduce((s2, x2) => s2 + x2, 0) / xs.length : id;
-    };
-    layer.sort((a2, b2) => center(a2) - center(b2) || a2 - b2);
-    layer.forEach((id, i2) => {
-      pos[id] = { i: i2, layer: y2, x: 0, y: 0 };
-    });
-  });
-  const widest = Math.max(1, ...layers.map((l2) => l2.length));
-  const width = PAD * 2 + widest * BOX_W + (widest - 1) * GAP_X;
-  layers.forEach((layer) => {
-    const rowWidth = layer.length * BOX_W + (layer.length - 1) * GAP_X;
-    const left = (width - rowWidth) / 2;
-    layer.forEach((id, i2) => {
-      pos[id].x = left + i2 * (BOX_W + GAP_X);
-      pos[id].y = PAD + pos[id].layer * (BOX_H + GAP_Y);
-    });
-  });
-  return { pos, width, height: PAD * 2 + layers.length * BOX_H + Math.max(0, layers.length - 1) * GAP_Y };
-}
-function Diagram({ graph }) {
-  const lay = layout(graph);
-  return /* @__PURE__ */ u$1("div", { class: "dag-wrap", children: /* @__PURE__ */ u$1("svg", { class: "dag", width: lay.width, height: lay.height, viewBox: `0 0 ${lay.width} ${lay.height}`, role: "img", "aria-label": "plan diagram", children: [
-    graph.edges.map((e2) => {
-      const a2 = lay.pos[e2.from], b2 = lay.pos[e2.to];
-      const x1 = a2.x + BOX_W / 2, y1 = a2.y + BOX_H, x2 = b2.x + BOX_W / 2, y2 = b2.y, mid = (y1 + y2) / 2;
-      return /* @__PURE__ */ u$1("path", { class: "edge " + e2.kind, d: `M${x1},${y1} C${x1},${mid} ${x2},${mid} ${x2},${y2}` });
-    }),
-    graph.nodes.map((n2) => {
-      const p2 = lay.pos[n2.id];
-      const text = `#${n2.id} ${n2.title}`;
-      return /* @__PURE__ */ u$1("g", { class: "node", transform: `translate(${p2.x},${p2.y})`, tabIndex: 0, onClick: () => openNode(n2.id), onKeyDown: (e2) => {
-        if (e2.key === "Enter") openNode(n2.id);
-      }, children: [
-        /* @__PURE__ */ u$1("title", { children: `${text} (${n2.status}, ${n2.risk_tier} risk)` }),
-        /* @__PURE__ */ u$1("rect", { width: BOX_W, height: BOX_H, rx: 10 }),
-        /* @__PURE__ */ u$1("rect", { class: "bar", width: 4, height: BOX_H, rx: 2, style: { fill: `var(--st-${n2.status})` } }),
-        /* @__PURE__ */ u$1("circle", { cx: 18, cy: 18, r: 5, style: { fill: `var(--st-${n2.status})` } }),
-        /* @__PURE__ */ u$1("text", { x: 30, y: 22, children: text.length > 24 ? text.slice(0, 23) + "…" : text }),
-        /* @__PURE__ */ u$1("text", { x: 30, y: 40, class: "sub", children: `${n2.kind} · ${n2.status.replace(/_/g, " ")} · ${n2.risk_tier}` })
-      ] });
-    })
-  ] }) });
-}
-function NodeRowItem({ node, right, sub }) {
-  return /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => openNode(node.id), children: [
-    /* @__PURE__ */ u$1("span", { class: "dot", style: { background: `var(--st-${node.status})` } }),
-    /* @__PURE__ */ u$1("span", { class: "grow", children: [
-      /* @__PURE__ */ u$1("span", { class: "title", children: [
-        "#",
-        node.id,
-        " ",
-        node.title
-      ] }),
-      sub ? /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: sub }) : null
-    ] }),
-    right,
-    /* @__PURE__ */ u$1("span", { class: "chev", children: /* @__PURE__ */ u$1(Icon, { name: "chevron" }) })
-  ] });
-}
-const STATUS_ORDER = ["review", "awaiting_approval", "blocked", "in_progress", "ready", "pending", "done", "failed"];
-function TaskList({ nodes }) {
-  const groups = STATUS_ORDER.map((s2) => ({ status: s2, items: nodes.filter((n2) => n2.status === s2) })).filter((g2) => g2.items.length);
-  return /* @__PURE__ */ u$1("div", { class: "stack", children: groups.map((g2) => /* @__PURE__ */ u$1("section", { children: [
-    /* @__PURE__ */ u$1("h3", { class: "group-head", style: { color: `var(--st-${g2.status})` }, children: [
-      g2.status.replace(/_/g, " "),
-      " · ",
-      g2.items.length
-    ] }),
-    /* @__PURE__ */ u$1("div", { class: "list", children: g2.items.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2, right: /* @__PURE__ */ u$1(Tier, { tier: n2.risk_tier }), sub: n2.block_reason ? "blocked: " + n2.block_reason : void 0 })) })
-  ] })) });
-}
-function SpecCard({ spec, taskCount }) {
-  const p2 = currentProject.value;
-  const canApproveSpec = authed.value && spec.status === "pending";
-  const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && p2?.phase === "planning";
-  const preview = (spec.body_md || "").split("\n").filter((l2) => l2.trim()).slice(0, 3).join("\n");
-  async function approveSpec() {
-    try {
-      await post(routes.nodeApprove(spec.id), { target: "spec" });
-      toast("spec approved");
-      refresh();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  async function approveTasks() {
-    if (!p2) return;
-    try {
-      await post(routes.nodeApprove(p2.id), { target: "gate2" });
-      toast("task list approved; criteria frozen");
-      refresh();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  return /* @__PURE__ */ u$1("section", { class: "card stack", children: [
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("h2", { children: [
-        "#",
-        spec.id,
-        " ",
-        spec.title
-      ] }),
-      /* @__PURE__ */ u$1(Pill, { status: spec.status })
-    ] }),
-    preview ? /* @__PURE__ */ u$1("pre", { class: "spec-preview", children: preview }) : null,
-    /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: approveSpec, children: "Approve spec" }) : null,
-      canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: approveTasks, children: "Approve task list" }) : null,
-      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => navigate("#/spec/" + spec.id), children: "Read spec" })
-    ] }),
-    canApproveTasks ? /* @__PURE__ */ u$1("div", { class: "caption", children: "Approving freezes each task's acceptance criteria." }) : null
-  ] });
-}
-const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
-function buildTaskGraph(graph) {
-  const tasks = graph.nodes.filter((n2) => n2.kind !== "spec");
-  const taskIds = new Set(tasks.map((n2) => n2.id));
-  const edges = graph.edges.filter((e2) => taskIds.has(e2.from) && taskIds.has(e2.to));
-  return { nodes: tasks, edges };
-}
-function PlanPage() {
-  const [graph, setGraph] = d$2(null);
-  const [specs, setSpecs] = d$2([]);
-  const [error, setError] = d$2(null);
-  const [mode, setMode] = d$2(isPhone() ? "list" : "diagram");
-  h$2(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const g2 = await api(routes.graph(projectId.value));
-        const specRows = g2.nodes.filter((n2) => n2.kind === "spec");
-        const full = await Promise.all(specRows.map((s2) => api(routes.node(s2.id)).then((d2) => d2.node)));
-        if (!alive) return;
-        setGraph(g2);
-        setSpecs(full);
-        setError(null);
-      } catch (e2) {
-        if (alive) {
-          setError(e2 instanceof Error ? e2.message : String(e2));
-          toastError(e2);
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [projectId.value, refreshTick.value]);
-  if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
-  if (!graph) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
-  const tasks = graph.nodes.filter((n2) => n2.kind !== "spec");
-  const taskGraph = buildTaskGraph(graph);
-  return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
-    /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Plan" }),
-    specs.length ? specs.map((s2) => /* @__PURE__ */ u$1(SpecCard, { spec: s2, taskCount: tasks.length })) : /* @__PURE__ */ u$1(Empty, { text: "No spec yet. Create one with muvue spec <project>." }),
-    tasks.length ? /* @__PURE__ */ u$1(S$1, { children: [
-      /* @__PURE__ */ u$1("div", { class: "row between", children: [
-        /* @__PURE__ */ u$1("h2", { children: [
-          "Tasks · ",
-          tasks.length
-        ] }),
-        /* @__PURE__ */ u$1(Segmented, { options: [{ value: "diagram", label: "Diagram" }, { value: "list", label: "List" }], value: mode, onChange: setMode })
-      ] }),
-      mode === "diagram" ? /* @__PURE__ */ u$1(Diagram, { graph: taskGraph }) : /* @__PURE__ */ u$1(TaskList, { nodes: tasks })
-    ] }) : specs.length ? /* @__PURE__ */ u$1(Empty, { text: "No tasks yet. They appear here once the spec is decomposed." }) : null
-  ] });
-}
-function StartPicker({ nodeId, onClose, onStarted }) {
-  const [agents, setAgents] = d$2(null);
-  h$2(() => {
-    api(routes.agents()).then((r2) => setAgents(r2.agents), toastError);
-  }, []);
-  async function start(agent) {
-    try {
-      const r2 = await post(routes.nodeStart(nodeId, agent));
-      toast(`started runner pid ${r2.spawned.pid}`);
-      refresh();
-      onStarted();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  return /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "caption", children: "Agent from config.toml [agents.*]" }),
-    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list", children: agents.map((a2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => start(a2), children: /* @__PURE__ */ u$1("span", { class: "grow title", children: a2 }) })) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
-    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" }) })
-  ] });
-}
-function Actions({ detail, onDone }) {
-  const n2 = detail.node;
-  const [rejecting, setRejecting] = d$2(false);
-  const [feedback, setFeedback] = d$2("");
-  const [starting, setStarting] = d$2(false);
-  if (!authed.value) return null;
-  async function approve(target, label) {
-    try {
-      await post(routes.nodeApprove(n2.id), { target });
-      toast(label);
-      refresh();
-      onDone();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  async function reject() {
-    if (!feedback.trim()) return;
-    try {
-      await post(routes.nodeReject(n2.id), { feedback });
-      toast("sent back with feedback");
-      refresh();
-      onDone();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  const buttons = [];
-  if (n2.status === "review") {
-    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("review", "approved"), children: "Approve" }));
-    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRejecting(true), children: "Reject" }));
-  }
-  if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
-  if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
-  if (n2.status === "ready") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => setStarting(true), children: "Start with agent" }));
-  if (!buttons.length) return null;
-  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "actions", children: buttons }),
-    rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-      /* @__PURE__ */ u$1("textarea", { placeholder: "what should change?", value: feedback, onInput: (e2) => setFeedback(e2.target.value) }),
-      /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: reject, children: "Send" }),
-        /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setRejecting(false), children: "Cancel" })
-      ] })
-    ] }) : null,
-    starting ? /* @__PURE__ */ u$1(StartPicker, { nodeId: n2.id, onClose: () => setStarting(false), onStarted: onDone }) : null
-  ] });
-}
-function SpecPage() {
-  var _a;
-  const id = Number(route.value.params[0]);
-  const [detail, setDetail] = d$2(null);
-  const [error, setError] = d$2(null);
-  const [openLine, setOpenLine] = d$2(null);
-  const [draft, setDraft] = d$2("");
-  const [general, setGeneral] = d$2("");
-  h$2(() => {
-    let alive = true;
-    api(routes.node(id)).then(
-      (d2) => {
-        if (!alive) return;
-        setDetail(d2);
-        setError(null);
-      },
-      (e2) => {
-        if (!alive) return;
-        setError(e2.message);
-      }
-    );
-    return () => {
-      alive = false;
-    };
-  }, [id, refreshTick.value]);
-  async function send(text, line) {
-    if (!text.trim()) return;
-    try {
-      await post(routes.nodeComment(id), line === void 0 ? { text } : { text, line });
-      toast("comment saved");
-      setDraft("");
-      setGeneral("");
-      setOpenLine(null);
-      refresh();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
-  if (!detail) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
-  const byLine = {};
-  const generalNotes = [];
-  for (const note of detail.notes.filter((n2) => n2.kind === "feedback")) {
-    const m2 = note.text.match(/^\[L(\d+)\] ([\s\S]*)$/);
-    if (m2) (byLine[_a = Number(m2[1])] ?? (byLine[_a] = [])).push(m2[2]);
-    else generalNotes.push(note.text);
-  }
-  const lines = (detail.node.body_md || "").split("\n");
-  return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
-    /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => navigate("#/plan"), children: "‹ Plan" }),
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("h1", { class: "page-title", children: [
-        "#",
-        detail.node.id,
-        " ",
-        detail.node.title
-      ] }),
-      /* @__PURE__ */ u$1(Pill, { status: detail.node.status })
-    ] }),
-    /* @__PURE__ */ u$1(Actions, { detail, onDone: () => navigate("#/plan") }),
-    /* @__PURE__ */ u$1("div", { class: "caption", children: "Tap a line to comment on it. The agent sees comments in its brief." }),
-    /* @__PURE__ */ u$1("div", { class: "card spec-body", children: lines.map((text, i2) => {
-      const n2 = i2 + 1;
-      return /* @__PURE__ */ u$1(S$1, { children: [
-        /* @__PURE__ */ u$1("button", { type: "button", class: "spec-line", onClick: () => setOpenLine(openLine === n2 ? null : n2), children: [
-          /* @__PURE__ */ u$1("span", { class: "ln", children: n2 }),
-          /* @__PURE__ */ u$1("span", { class: "tx", children: text || " " })
-        ] }),
-        (byLine[n2] ?? []).map((c2) => /* @__PURE__ */ u$1("div", { class: "callout spec-comment", children: c2 })),
-        openLine === n2 && authed.value ? /* @__PURE__ */ u$1("form", { class: "spec-form row", onSubmit: (e2) => {
-          e2.preventDefault();
-          void send(draft, n2);
-        }, children: [
-          /* @__PURE__ */ u$1("input", { placeholder: `comment on line ${n2}`, value: draft, onInput: (e2) => setDraft(e2.target.value) }),
-          /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Comment" })
-        ] }) : null
-      ] });
-    }) }),
-    generalNotes.length ? /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
-      /* @__PURE__ */ u$1("h3", { children: "General comments" }),
-      generalNotes.map((c2) => /* @__PURE__ */ u$1("div", { class: "callout", children: c2 }))
-    ] }) : null,
-    authed.value ? /* @__PURE__ */ u$1("form", { class: "stack tight", onSubmit: (e2) => {
-      e2.preventDefault();
-      void send(general);
-    }, children: [
-      /* @__PURE__ */ u$1("textarea", { placeholder: "general comment on this spec", value: general, onInput: (e2) => setGeneral(e2.target.value) }),
-      /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", children: "Comment" }) })
-    ] }) : null
-  ] });
-}
-function classifyDiffLine(line) {
-  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
-  if (line.startsWith("@@")) return "d-hunk";
-  if (line.startsWith("+")) return "d-add";
-  if (line.startsWith("-")) return "d-del";
-  return "";
-}
-function countInbox(d2) {
-  return d2.questions.length + d2.review.length + d2.unverified_external.length + d2.awaiting_approval.length + d2.blocked.length + d2.structure_updates.length + d2.audit_items.length + d2.signals.length + d2.unattributed_commits.length;
-}
-function payloadOf(ev) {
-  try {
-    return JSON.parse(ev.payload || "{}");
-  } catch {
-    return {};
-  }
-}
-function Section({ title, count, children }) {
-  if (!count) return null;
-  return /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1("h2", { children: [
-      title,
-      " ",
-      /* @__PURE__ */ u$1("span", { class: "caption", children: count })
-    ] }),
-    children
-  ] });
-}
-function AckCard({ ev, summary, children }) {
-  async function ack() {
-    try {
-      await post(routes.eventAck(ev.id));
-      toast("acknowledged");
-      refresh();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  return /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("div", { children: summary }),
-      authed.value ? /* @__PURE__ */ u$1(Button, { onClick: ack, children: "Ack" }) : null
-    ] }),
-    /* @__PURE__ */ u$1("div", { class: "caption", children: [
-      ev.ts,
-      ev.node_id ? ` · task #${ev.node_id}` : ""
-    ] }),
-    children
-  ] });
-}
-function QuestionCard({ q: q2 }) {
-  const [answer, setAnswer] = d$2("");
-  async function send() {
-    if (!answer.trim()) return;
-    try {
-      await post(routes.questionAnswer(q2.id), { text: answer });
-      toast("answered");
-      setAnswer("");
-      refresh();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
-  return /* @__PURE__ */ u$1("form", { class: "card stack tight", onSubmit: (e2) => {
-    e2.preventDefault();
-    void send();
-  }, children: [
-    /* @__PURE__ */ u$1("div", { children: q2.text }),
-    /* @__PURE__ */ u$1("div", { class: "caption", children: [
-      "task #",
-      q2.node_id,
-      " · default: ",
-      q2.default_answer || "none",
-      q2.default_ok ? " (safe to default)" : ""
-    ] }),
-    authed.value ? /* @__PURE__ */ u$1("div", { class: "row", style: { flexWrap: "nowrap" }, children: [
-      /* @__PURE__ */ u$1("input", { placeholder: "answer", value: answer, onInput: (e2) => setAnswer(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Answer" })
-    ] }) : null
-  ] });
-}
-function InboxPage() {
-  const [data, setData] = d$2(null);
-  const [error, setError] = d$2(null);
-  h$2(() => {
-    let alive = true;
-    api(routes.inbox()).then(
-      (d2) => {
-        if (!alive) return;
-        setData(d2);
-        setError(null);
-        inboxCount.value = countInbox(d2);
-      },
-      (e2) => {
-        if (!alive) return;
-        setError(e2.message);
-      }
-    );
-    return () => {
-      alive = false;
-    };
-  }, [refreshTick.value]);
-  if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
-  if (!data) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
-  const rowOf = (n2) => ({ id: n2.node_id, title: n2.title, project_id: 0, parent_id: null, kind: "task", status: "review", risk_tier: "low", owner: null });
-  return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
-    /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Inbox" }),
-    countInbox(data) === 0 ? /* @__PURE__ */ u$1(Empty, { text: "Nothing waiting on you.", check: true }) : null,
-    /* @__PURE__ */ u$1(Section, { title: "Questions", count: data.questions.length, children: data.questions.map((q2) => /* @__PURE__ */ u$1(QuestionCard, { q: q2 }, q2.id)) }),
-    /* @__PURE__ */ u$1(Section, { title: "Awaiting review", count: data.review.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.review.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2, right: /* @__PURE__ */ u$1(Tier, { tier: n2.risk_tier }) })) }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Unverified external criteria", count: data.unverified_external.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.unverified_external.map((u2) => /* @__PURE__ */ u$1(NodeRowItem, { node: rowOf(u2), sub: "muvue could not run these checks; verify before approving" })) }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Criteria changed, awaiting approval", count: data.awaiting_approval.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.awaiting_approval.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2 })) }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Blocked", count: data.blocked.length, children: /* @__PURE__ */ u$1("div", { class: "list", children: data.blocked.map((n2) => /* @__PURE__ */ u$1(NodeRowItem, { node: n2, sub: n2.block_reason || void 0 })) }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Structure updates", count: data.structure_updates.length, children: data.structure_updates.map((ev) => {
-      const p2 = payloadOf(ev);
-      return /* @__PURE__ */ u$1(AckCard, { ev, summary: `structure diff on ${p2.ref} (${String(p2.sha || "").slice(0, 12)})`, children: [
-        p2.message ? /* @__PURE__ */ u$1("div", { class: "muted", children: String(p2.message) }) : null,
-        (() => {
-          if (!p2.pr_url) return null;
-          const url = typeof p2.pr_url === "string" && /^https?:\/\//i.test(p2.pr_url) ? p2.pr_url : null;
-          return url ? /* @__PURE__ */ u$1("a", { href: url, target: "_blank", rel: "noopener", children: url }) : /* @__PURE__ */ u$1("span", { class: "muted", children: String(p2.pr_url) });
-        })(),
-        p2.pr_error ? /* @__PURE__ */ u$1("div", { class: "muted", children: [
-          "PR not opened: ",
-          String(p2.pr_error)
-        ] }) : null
-      ] });
-    }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Audit drafts", count: data.audit_items.length, children: data.audit_items.map((ev) => {
-      const p2 = payloadOf(ev);
-      return /* @__PURE__ */ u$1(AckCard, { ev, summary: `component #${p2.component_id} ${p2.name || ""}: ${p2.message || "re-verify"}`, children: /* @__PURE__ */ u$1("details", { children: [
-        /* @__PURE__ */ u$1("summary", { class: "caption", children: "diff" }),
-        /* @__PURE__ */ u$1("pre", { class: "scroll-x", children: String(p2.diff || "").split("\n").map((l2) => /* @__PURE__ */ u$1("span", { class: classifyDiffLine(l2), children: l2 + "\n" })) })
-      ] }) });
-    }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Commits touching components without a task", count: data.signals.length, children: data.signals.map((ev) => {
-      const p2 = payloadOf(ev);
-      return /* @__PURE__ */ u$1(AckCard, { ev, summary: `${String(p2.sha || "").slice(0, 12)} touched ${(p2.files || []).join(", ")}` });
-    }) }),
-    /* @__PURE__ */ u$1(Section, { title: "Unattributed commits", count: data.unattributed_commits.length, children: data.unattributed_commits.map((ev) => {
-      const p2 = payloadOf(ev);
-      return /* @__PURE__ */ u$1(AckCard, { ev, summary: `${String(p2.sha || "").slice(0, 12)} has no resolvable Muvue-Node trailer`, children: /* @__PURE__ */ u$1("div", { class: "muted", children: (p2.files || []).join(", ") }) });
-    }) })
-  ] });
-}
-const VERIFICATION = { checked_by_muvue: "checked by muvue", unverified: "unverified", human: "human" };
-function Overview({ detail }) {
-  const n2 = detail.node;
-  let criteria = [];
-  try {
-    criteria = JSON.parse(n2.criteria_json || "[]");
-  } catch {
-    criteria = [n2.criteria_json];
-  }
-  return /* @__PURE__ */ u$1("div", { class: "stack", children: [
-    n2.body_md ? /* @__PURE__ */ u$1("section", { children: [
-      /* @__PURE__ */ u$1("h3", { children: "Body" }),
-      /* @__PURE__ */ u$1("pre", { children: n2.body_md })
-    ] }) : null,
-    /* @__PURE__ */ u$1("section", { children: [
-      /* @__PURE__ */ u$1("h3", { children: [
-        "Criteria ",
-        /* @__PURE__ */ u$1("span", { class: "caption", children: [
-          "(",
-          n2.criteria_mode,
-          ", ",
-          VERIFICATION[detail.verification] ?? detail.verification,
-          ")"
-        ] })
-      ] }),
-      criteria.length ? /* @__PURE__ */ u$1("ul", { class: "criteria", children: criteria.map((c2) => /* @__PURE__ */ u$1("li", { children: typeof c2 === "string" ? c2 : JSON.stringify(c2) })) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "none" })
-    ] }),
-    n2.summary ? /* @__PURE__ */ u$1("section", { children: [
-      /* @__PURE__ */ u$1("h3", { children: "Summary" }),
-      /* @__PURE__ */ u$1("pre", { children: n2.summary })
-    ] }) : null,
-    /* @__PURE__ */ u$1("section", { children: [
-      /* @__PURE__ */ u$1("h3", { children: "Predicted touches" }),
-      /* @__PURE__ */ u$1("pre", { children: detail.predicted_touches.join("\n") || "none" })
-    ] }),
-    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
-      /* @__PURE__ */ u$1("h3", { children: "Notes" }),
-      detail.notes.length ? detail.notes.map((note) => /* @__PURE__ */ u$1("div", { class: "card", children: [
-        /* @__PURE__ */ u$1("div", { class: "caption", children: [
-          note.kind,
-          note.pinned ? " · pinned" : "",
-          " · ",
-          note.created_at
-        ] }),
-        /* @__PURE__ */ u$1("div", { children: note.text })
-      ] })) : /* @__PURE__ */ u$1("p", { class: "muted", children: "none" })
-    ] }),
-    /* @__PURE__ */ u$1("section", { children: [
-      /* @__PURE__ */ u$1("h3", { children: "Commits" }),
-      /* @__PURE__ */ u$1("pre", { class: "mono", children: detail.commits.map((c2) => c2.sha.slice(0, 12)).join("\n") || "none" })
-    ] })
-  ] });
-}
-const LABEL = { commits: "patches of the linked commits", worktree: "worktree against its branch point", none: "nothing committed yet" };
-function DiffView({ nodeId }) {
-  const [d2, setD] = d$2(null);
-  const [error, setError] = d$2(null);
-  h$2(() => {
-    api(routes.nodeDiff(nodeId)).then(setD, (e2) => setError(e2.message));
-  }, [nodeId]);
-  if (error) return /* @__PURE__ */ u$1("div", { class: "callout danger", children: error });
-  if (!d2) return /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" });
-  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "caption", children: [
-      LABEL[d2.source] ?? d2.source,
-      d2.truncated ? " (truncated)" : ""
-    ] }),
-    /* @__PURE__ */ u$1("pre", { class: "scroll-x", children: d2.diff ? d2.diff.split("\n").map((line) => /* @__PURE__ */ u$1("span", { class: classifyDiffLine(line), children: line + "\n" })) : "(no diff)" })
-  ] });
-}
-function Logs({ nodeId }) {
-  const [text, setText] = d$2("loading…");
-  const pre = A(null);
-  function load() {
-    api(routes.nodeLogs(nodeId)).then((t2) => {
-      setText(t2 || "(no driver output yet)");
-      requestAnimationFrame(() => {
-        if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
-      });
-    }, (e2) => setText(e2.message));
-  }
-  h$2(load, [nodeId, refreshTick.value]);
-  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("span", { class: "caption", children: "last 200 lines" }),
-      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: load, children: "Refresh" })
-    ] }),
-    /* @__PURE__ */ u$1("pre", { ref: pre, class: "scroll-x logs", children: text })
-  ] });
-}
-function NodeSheet() {
-  const id = Number(route.value.query.get("node"));
-  const [detail, setDetail] = d$2(null);
-  const [error, setError] = d$2(null);
-  const [seg, setSeg] = d$2("overview");
-  h$2(() => {
-    let alive = true;
-    api(routes.node(id)).then(
-      (d2) => {
-        if (!alive) return;
-        setDetail(d2);
-        setError(null);
-      },
-      (e2) => {
-        if (!alive) return;
-        setError(e2.message);
-      }
-    );
-    return () => {
-      alive = false;
-    };
-  }, [id, refreshTick.value]);
-  const title = detail ? `#${detail.node.id} ${detail.node.title}` : `#${id}`;
-  return /* @__PURE__ */ u$1(Sheet, { title, onClose: closeNode, children: error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : !detail ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : /* @__PURE__ */ u$1("div", { class: "stack", children: [
-    /* @__PURE__ */ u$1("div", { class: "row", children: [
-      /* @__PURE__ */ u$1(Pill, { status: detail.node.status }),
-      /* @__PURE__ */ u$1(Tier, { tier: detail.node.risk_tier }),
-      /* @__PURE__ */ u$1("span", { class: "caption", children: [
-        detail.node.kind,
-        detail.node.owner ? ` · owner ${detail.node.owner}` : "",
-        detail.node.parent_id ? ` · parent #${detail.node.parent_id}` : ""
-      ] })
-    ] }),
-    detail.node.block_reason ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: [
-      "blocked: ",
-      detail.node.block_reason
-    ] }) : null,
-    /* @__PURE__ */ u$1(Actions, { detail, onDone: closeNode }),
-    /* @__PURE__ */ u$1(Segmented, { options: [{ value: "overview", label: "Overview" }, { value: "diff", label: "Diff" }, { value: "logs", label: "Logs" }], value: seg, onChange: setSeg }),
-    seg === "overview" ? /* @__PURE__ */ u$1(Overview, { detail }) : seg === "diff" ? /* @__PURE__ */ u$1(DiffView, { nodeId: id }) : /* @__PURE__ */ u$1(Logs, { nodeId: id })
-  ] }) });
 }
 const PREFIX = { node: "task", review: "review", runner: "runner", commit: "commit", question: "question", project: "project" };
 function familyOf(type) {
@@ -2058,83 +1312,1128 @@ function Timeline() {
     ] })) : /* @__PURE__ */ u$1(Empty, { text: "No events yet." })
   ] });
 }
-function KeyValues({ value }) {
-  if (typeof value !== "object" || value === null) return /* @__PURE__ */ u$1("pre", { children: JSON.stringify(value) });
-  return /* @__PURE__ */ u$1("dl", { class: "kv", children: Object.entries(value).map(([k2, v2]) => /* @__PURE__ */ u$1(S$1, { children: [
-    /* @__PURE__ */ u$1("dt", { children: k2 }),
-    /* @__PURE__ */ u$1("dd", { children: typeof v2 === "object" ? JSON.stringify(v2, null, 1) : String(v2) })
-  ] })) });
+function HistorySheet({ onClose }) {
+  return /* @__PURE__ */ u$1(Sheet, { title: "History", onClose, children: /* @__PURE__ */ u$1(Timeline, {}) });
 }
-function Revisions() {
-  const [revs, setRevs] = d$2(null);
-  const [error, setError] = d$2(null);
-  const pid = projectId.value;
-  h$2(() => {
-    if (pid === null) {
-      setRevs([]);
-      return;
+function ProjectMenu({ onClose }) {
+  const [confirmPause, setConfirmPause] = d$2(false);
+  const [closing, setClosing] = d$2(false);
+  const [agents, setAgents] = d$2(false);
+  const [history2, setHistory] = d$2(false);
+  const p2 = currentProject.value;
+  async function pause() {
+    if (!p2) return;
+    try {
+      const r2 = await post(routes.projectPause(p2.id));
+      const stopped = (r2.result ?? r2).stopped_runners ?? [];
+      toast(`paused; stopped ${stopped.length} runner process(es)`);
+      refresh();
+      onClose();
+    } catch (e2) {
+      toastError(e2);
     }
+  }
+  async function resume() {
+    if (!p2) return;
+    try {
+      await post(routes.projectResume(p2.id));
+      toast("resumed");
+      refresh();
+      onClose();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  if (agents && p2) return /* @__PURE__ */ u$1(AgentsSheet, { projectId: p2.id, onClose: () => {
+    setAgents(false);
+    onClose();
+  } });
+  if (history2) return /* @__PURE__ */ u$1(HistorySheet, { onClose: () => {
+    setHistory(false);
+    onClose();
+  } });
+  if (closing && p2) return /* @__PURE__ */ u$1(CloseSheet, { projectId: p2.id, onClose: () => {
+    setClosing(false);
+    onClose();
+  } });
+  if (confirmPause) {
+    return /* @__PURE__ */ u$1(Confirm, { title: "Pause project?", body: "Running agents are stopped and their tasks go back to ready.", confirmLabel: "Pause", danger: true, onConfirm: pause, onCancel: () => setConfirmPause(false) });
+  }
+  return /* @__PURE__ */ u$1(Sheet, { title: "Project", onClose, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    /* @__PURE__ */ u$1("div", { class: "list", children: projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
+      projectId.value = pr.id;
+      refresh();
+      onClose();
+    }, children: [
+      /* @__PURE__ */ u$1("span", { class: "grow", children: /* @__PURE__ */ u$1("span", { class: "title", children: [
+        "#",
+        pr.id,
+        " ",
+        pr.goal
+      ] }) }),
+      /* @__PURE__ */ u$1(Pill, { status: pr.phase })
+    ] })) }),
+    authed.value && p2 ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      p2.phase !== "paused" && p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setConfirmPause(true), children: "Pause" }) : null,
+      p2.phase === "paused" ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: resume, children: "Resume" }) : null,
+      p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { onClick: () => setClosing(true), children: "Close project…" }) : null,
+      /* @__PURE__ */ u$1(Button, { onClick: () => setAgents(true), children: "Agents" }),
+      /* @__PURE__ */ u$1(Button, { onClick: () => setHistory(true), children: "History" })
+    ] }) : null
+  ] }) });
+}
+function Sidebar() {
+  const [menu, setMenu] = d$2(false);
+  const p2 = currentProject.value;
+  return /* @__PURE__ */ u$1("aside", { class: "sidebar", children: [
+    /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
+      /* @__PURE__ */ u$1("span", { class: "grow", children: [
+        /* @__PURE__ */ u$1("span", { class: "project-goal", children: p2 ? p2.goal : "no project" }),
+        p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
+      ] }),
+      /* @__PURE__ */ u$1(Icon, { name: "more" })
+    ] }),
+    /* @__PURE__ */ u$1("nav", { children: [
+      projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
+        projectId.value = pr.id;
+        refresh();
+        openProject(pr.id);
+      }, children: [
+        /* @__PURE__ */ u$1("span", { class: "dot", style: { background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" } }),
+        /* @__PURE__ */ u$1("span", { class: "grow", children: pr.goal })
+      ] })),
+      /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item", onClick: () => openProject(0), children: [
+        /* @__PURE__ */ u$1(Icon, { name: "plan" }),
+        /* @__PURE__ */ u$1("span", { class: "grow", children: "+ New project" })
+      ] })
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "sidebar-foot caption", children: [
+      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : "read-only" }),
+      protocolVersion.value !== null ? /* @__PURE__ */ u$1("div", { children: [
+        "protocol v",
+        protocolVersion.value
+      ] }) : null
+    ] }),
+    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
+  ] });
+}
+function TopBar({ onSearch }) {
+  const [menu, setMenu] = d$2(false);
+  const p2 = currentProject.value;
+  return /* @__PURE__ */ u$1("header", { class: "topbar", children: [
+    /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
+      /* @__PURE__ */ u$1("span", { class: "grow project-goal", children: p2 ? p2.goal : "no project" }),
+      p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
+    ] }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "search", onClick: onSearch, children: /* @__PURE__ */ u$1(Icon, { name: "search" }) }),
+    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
+  ] });
+}
+async function checkAuth() {
+  try {
+    await api(routes.authCheck());
+    return true;
+  } catch (e2) {
+    if (e2 instanceof ApiError && (e2.status === 401 || e2.status === 403)) return false;
+    throw e2;
+  }
+}
+async function exchangeFragmentNonce() {
+  const match = (window.location.hash || "").match(/(?:^#|[&#])n=([^&]+)/);
+  if (!match) return checkAuth();
+  const embedded = window.top !== window.self;
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  const r2 = await fetch(routes.authExchange(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ nonce: decodeURIComponent(match[1]), header: embedded })
+  });
+  if (r2.ok) {
+    const body = await r2.json();
+    if (body.token) setToken(body.token);
+  }
+  return checkAuth();
+}
+function TokenBanner() {
+  const [value, setValue] = d$2("");
+  async function use() {
+    setToken(value.trim());
+    setValue("");
+    try {
+      setAuthed(await checkAuth());
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("form", { class: "token-banner", onSubmit: (e2) => {
+    e2.preventDefault();
+    void use();
+  }, children: [
+    /* @__PURE__ */ u$1("div", { class: "caption", children: [
+      "Read-only. Paste the api token printed by ",
+      /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
+      " to act. It stays in this tab's memory only."
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "row", children: [
+      /* @__PURE__ */ u$1("input", { type: "password", placeholder: "api token printed by muvue serve", value, onInput: (e2) => setValue(e2.target.value) }),
+      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Use token" })
+    ] })
+  ] });
+}
+function Toasts() {
+  return /* @__PURE__ */ u$1("div", { class: "toasts", "aria-live": "polite", children: toasts.value.map((t2) => /* @__PURE__ */ u$1("button", { type: "button", class: "toast " + t2.kind, onClick: () => dismissToast(t2.id), children: t2.text }, t2.id)) });
+}
+function useApi(fetcher, deps) {
+  const [data, setData] = d$2(null);
+  const [error, setError] = d$2(null);
+  const [tick, setTick] = d$2(0);
+  h$2(() => {
     let alive = true;
-    api(routes.revisions(pid)).then(
-      (r2) => {
-        if (!alive) return;
-        setRevs(r2);
-        setError(null);
+    fetcher().then(
+      (d2) => {
+        if (alive) {
+          setData(d2);
+          setError(null);
+        }
       },
       (e2) => {
-        if (!alive) return;
-        setError(e2.message);
+        if (alive) setError(e2 instanceof Error ? e2.message : String(e2));
       }
     );
     return () => {
       alive = false;
     };
-  }, [pid, refreshTick.value]);
-  async function approve(n2) {
-    if (pid === null) return;
+  }, [...deps, tick]);
+  return { data, error, reload: () => setTick((t2) => t2 + 1) };
+}
+function purposeLine(bodyMd) {
+  return (bodyMd || "").split("\n").find((l2) => l2.trim())?.trim() ?? "";
+}
+function buildCanvasData(graph, fullNodes) {
+  const agentById = new Map(graph.nodes.map((n2) => [n2.id, n2.agent]));
+  const byId = new Map(fullNodes.map((n2) => [n2.id, n2]));
+  const specRow = fullNodes.find((n2) => n2.kind === "spec") ?? null;
+  const spec = specRow ? { id: specRow.id, title: specRow.title, body_md: specRow.body_md, status: specRow.status, agent: agentById.get(specRow.id) ?? null } : null;
+  const subtasksByParent = /* @__PURE__ */ new Map();
+  for (const n2 of fullNodes) {
+    if (n2.kind !== "subtask" || n2.parent_id === null) continue;
+    const list = subtasksByParent.get(n2.parent_id) ?? [];
+    list.push({ id: n2.id, title: n2.title, status: n2.status, parent_id: n2.parent_id });
+    subtasksByParent.set(n2.parent_id, list);
+  }
+  const tasks = fullNodes.filter((n2) => n2.kind === "task").map((n2) => ({
+    id: n2.id,
+    title: n2.title,
+    status: n2.status,
+    risk_tier: n2.risk_tier,
+    owner: n2.owner,
+    agent: agentById.get(n2.id) ?? null,
+    body_md: n2.body_md,
+    criteria_hash: n2.criteria_hash,
+    block_reason: n2.block_reason,
+    subtasks: (subtasksByParent.get(n2.id) ?? []).sort((a2, b2) => a2.id - b2.id)
+  }));
+  const taskIds = new Set(tasks.map((t2) => t2.id));
+  const edges = graph.edges.filter((e2) => e2.kind === "dep" && taskIds.has(e2.from) && taskIds.has(e2.to) && byId.has(e2.from) && byId.has(e2.to)).map((e2) => ({ from: e2.from, to: e2.to, carries: e2.carries ?? null }));
+  return { spec, tasks, edges };
+}
+const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 197, MAX_SUBTASK_ROWS = 4;
+function boxHeight(subtaskCount) {
+  const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
+  return BOX_H_BASE + rows * SUBTASK_ROW_H;
+}
+function columnsOf(tasks, edges) {
+  const incoming = {};
+  for (const t2 of tasks) incoming[t2.id] = [];
+  for (const e2 of edges) incoming[e2.to]?.push(e2.from);
+  const col = {};
+  function colOf(id, seen) {
+    if (col[id] !== void 0) return col[id];
+    if (seen.has(id)) return 0;
+    seen.add(id);
+    let c2 = 0;
+    for (const from of incoming[id] ?? []) c2 = Math.max(c2, colOf(from, seen) + 1);
+    col[id] = c2;
+    return c2;
+  }
+  for (const t2 of tasks) colOf(t2.id, /* @__PURE__ */ new Set());
+  return col;
+}
+function computeLayout(tasks, edges) {
+  var _a;
+  const col = columnsOf(tasks, edges);
+  const incoming = {};
+  for (const t2 of tasks) incoming[t2.id] = [];
+  for (const e2 of edges) incoming[e2.to]?.push(e2.from);
+  const columns = [];
+  for (const t2 of tasks) (columns[_a = col[t2.id]] ?? (columns[_a] = [])).push(t2.id);
+  const rowOf = {};
+  const pos = {};
+  const byId = new Map(tasks.map((t2) => [t2.id, t2]));
+  columns.forEach((ids, c2) => {
+    const mean = (id) => {
+      const rows = (incoming[id] ?? []).filter((f2) => rowOf[f2] !== void 0).map((f2) => rowOf[f2]);
+      return rows.length ? rows.reduce((s2, r2) => s2 + r2, 0) / rows.length : id;
+    };
+    ids.sort((a2, b2) => mean(a2) - mean(b2) || a2 - b2);
+    let y2 = PAD;
+    ids.forEach((id, i2) => {
+      rowOf[id] = i2;
+      const h2 = boxHeight(byId.get(id).subtasks.length);
+      pos[id] = { x: PAD + c2 * (BOX_W + GAP_X), y: y2, w: BOX_W, h: h2, col: c2, row: i2 };
+      y2 += h2 + GAP_Y;
+    });
+  });
+  const width = PAD * 2 + columns.length * BOX_W + Math.max(0, columns.length - 1) * GAP_X;
+  const height = PAD * 2 + Math.max(0, ...Object.values(pos).map((p2) => p2.y + p2.h));
+  const arrows = edges.map((e2) => {
+    const a2 = pos[e2.from], b2 = pos[e2.to];
+    const x1 = a2.x + a2.w, y1 = a2.y + a2.h / 2, x2 = b2.x, y2 = b2.y + b2.h / 2;
+    const midX = x1 + GAP_X / 2;
+    const path = `M${x1},${y1} L${midX},${y1} L${midX},${y2} L${x2},${y2}`;
+    const label = e2.carries ? { x: midX, y: (y1 + y2) / 2, text: e2.carries } : null;
+    return { from: e2.from, to: e2.to, path, label };
+  });
+  return { pos, arrows, width, height };
+}
+function stepsFromColumns(tasks, edges) {
+  const col = columnsOf(tasks, edges);
+  const byCol = /* @__PURE__ */ new Map();
+  for (const t2 of tasks) {
+    const list = byCol.get(col[t2.id]) ?? [];
+    list.push(t2);
+    byCol.set(col[t2.id], list);
+  }
+  return [...byCol.entries()].sort(([a2], [b2]) => a2 - b2).map(([c2, ts]) => ({
+    col: c2,
+    tasks: [...ts].sort((a2, b2) => a2.id - b2.id),
+    parallel: ts.length > 1
+  }));
+}
+const LABEL$1 = {
+  queued: "queued",
+  running: "running",
+  waiting_on_you: "waiting on you",
+  done: "done",
+  failed: "failed",
+  paused: "paused",
+  unassigned: "unassigned"
+};
+function AgentChip({ agent, state }) {
+  return /* @__PURE__ */ u$1("span", { class: "chip agent-chip st-" + state, children: [
+    state === "running" ? /* @__PURE__ */ u$1("span", { class: "pulse", "aria-hidden": "true" }) : null,
+    agent ? `${agent} · ${LABEL$1[state]}` : LABEL$1[state]
+  ] });
+}
+function agentStateOf(node, projectPhase, needsYou) {
+  if (!node.agent) return "unassigned";
+  if (projectPhase === "paused" && (node.status === "in_progress" || node.status === "ready")) return "paused";
+  if (node.status === "done") return "done";
+  if (node.status === "failed") return "failed";
+  if (needsYou || node.status === "review" || node.status === "awaiting_approval") return "waiting_on_you";
+  if (node.status === "in_progress") return "running";
+  return "queued";
+}
+const GLYPH = { done: "✓", in_progress: "●", review: "●", pending: "○", ready: "○", blocked: "⚠", failed: "⚠", awaiting_approval: "●" };
+function SubtaskRow({ subtask, needsYou }) {
+  return /* @__PURE__ */ u$1("button", { type: "button", class: "subtask-row", onClick: (e2) => {
+    e2.stopPropagation();
+    openNode(subtask.id);
+  }, children: [
+    /* @__PURE__ */ u$1("span", { class: "glyph", style: { color: `var(--st-${subtask.status})` }, children: GLYPH[subtask.status] ?? "○" }),
+    /* @__PURE__ */ u$1("span", { class: "grow title", children: subtask.title }),
+    needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+  ] });
+}
+const pendingCreates = y({});
+const pendingBreakdowns = y({});
+function startCreate(key, p2) {
+  pendingCreates.value = { ...pendingCreates.value, [key]: p2 };
+}
+function resolveCreate(key) {
+  const { [key]: _removed, ...rest } = pendingCreates.value;
+  pendingCreates.value = rest;
+}
+function failCreate(key, error) {
+  const existing = pendingCreates.value[key];
+  if (existing) pendingCreates.value = { ...pendingCreates.value, [key]: { ...existing, error } };
+}
+function startBreakdown(nodeId, p2) {
+  pendingBreakdowns.value = { ...pendingBreakdowns.value, [nodeId]: p2 };
+}
+function clearBreakdown(nodeId) {
+  const { [nodeId]: _removed, ...rest } = pendingBreakdowns.value;
+  pendingBreakdowns.value = rest;
+}
+function shouldClearBreakdown(p2, currentChildIds) {
+  return currentChildIds.size > p2.startChildIds.size;
+}
+function AddForm({ parentId, kind, candidates, onClose }) {
+  const [title, setTitle] = d$2("");
+  const [purpose, setPurpose] = d$2("");
+  const [criteria, setCriteria] = d$2("");
+  const [receives, setReceives] = d$2([]);
+  function toggle(id) {
+    setReceives((r2) => r2.some((x2) => x2.id === id) ? r2.filter((x2) => x2.id !== id) : [...r2, { id, carries: "" }]);
+  }
+  function setCarries(id, carries) {
+    setReceives((r2) => r2.map((x2) => x2.id === id ? { ...x2, carries } : x2));
+  }
+  async function save() {
+    if (!title.trim()) return;
+    const key = `${kind}:${parentId}:new`;
+    startCreate(key, { kind, parentId, title });
     try {
-      await post(routes.nodeApprove(pid), { target: "revision", n: n2 });
-      toast(`revision ${n2} approved`);
+      await post(routes.nodeChildren(parentId), {
+        title,
+        body_md: purpose,
+        criteria: criteria.split("\n").map((l2) => l2.trim()).filter(Boolean),
+        depends_on: receives.map((r2) => ({ id: r2.id, carries: r2.carries || null })),
+        predicted_touches: []
+      });
+      resolveCreate(key);
+      refresh();
+      onClose();
+    } catch (e2) {
+      failCreate(key, e2 instanceof Error ? e2.message : String(e2));
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("form", { class: "card stack tight add-form", onSubmit: (e2) => {
+    e2.preventDefault();
+    void save();
+  }, children: [
+    /* @__PURE__ */ u$1("input", { placeholder: "title", value: title, onInput: (e2) => setTitle(e2.target.value) }),
+    /* @__PURE__ */ u$1("input", { placeholder: "purpose", value: purpose, onInput: (e2) => setPurpose(e2.target.value) }),
+    /* @__PURE__ */ u$1("textarea", { placeholder: "one per line", value: criteria, onInput: (e2) => setCriteria(e2.target.value) }),
+    candidates.length ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("div", { class: "caption", children: "Receives from" }),
+      candidates.map((c2) => {
+        const picked = receives.find((r2) => r2.id === c2.id);
+        return /* @__PURE__ */ u$1("div", { class: "row", children: [
+          /* @__PURE__ */ u$1("label", { class: "row", style: { flex: 1, minHeight: "44px", alignItems: "center" }, children: [
+            /* @__PURE__ */ u$1("input", { type: "checkbox", "aria-label": `receives from ${c2.title}`, style: { width: "auto", minHeight: 0 }, checked: !!picked, onChange: () => toggle(c2.id) }),
+            c2.title
+          ] }),
+          picked ? /* @__PURE__ */ u$1("input", { placeholder: "carrying ___", value: picked.carries, onInput: (e2) => setCarries(c2.id, e2.target.value) }) : null
+        ] });
+      })
+    ] }) : null,
+    /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Save" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" })
+    ] })
+  ] });
+}
+function BreakdownButton({ nodeId, disabled, caption }) {
+  const [error, setError] = d$2(null);
+  async function run() {
+    setError(null);
+    try {
+      const r2 = await post(routes.nodeBreakdown(nodeId), {});
+      startBreakdownGhosts(nodeId, r2.spawned.agent, r2.spawned.log);
+      refresh();
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : String(e2));
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, onClick: run, children: "✨ Break down with agent" }),
+    disabled && caption ? /* @__PURE__ */ u$1("div", { class: "caption", children: caption }) : null,
+    error ? /* @__PURE__ */ u$1("div", { class: "caption danger", children: error }) : null
+  ] });
+}
+function startBreakdownGhosts(nodeId, agent, log) {
+  startBreakdown(nodeId, { nodeId, agent, log, startChildIds: /* @__PURE__ */ new Set() });
+}
+function stopBubble(e2) {
+  e2.stopPropagation();
+}
+function TaskBox({ task, needsYou, projectPhase, style }) {
+  const [addingSubtask, setAddingSubtask] = d$2(false);
+  const [breakingDown, setBreakingDown] = d$2(false);
+  const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
+  const more = task.subtasks.length - shown.length;
+  const state = agentStateOf(task, projectPhase, needsYou.has(task.id));
+  return /* @__PURE__ */ u$1("div", { class: "task-box st-bar-" + task.status, style, tabIndex: 0, onClick: () => openNode(task.id), onKeyDown: (e2) => {
+    if (e2.key === "Enter") openNode(task.id);
+  }, children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", children: [
+      /* @__PURE__ */ u$1("span", { class: "title grow", children: task.title }),
+      needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+    ] }),
+    task.body_md ? /* @__PURE__ */ u$1("div", { class: "caption purpose", children: purposeLine(task.body_md) }) : null,
+    shown.length ? /* @__PURE__ */ u$1("div", { class: "subtask-list", children: [
+      shown.map((s2) => /* @__PURE__ */ u$1(SubtaskRow, { subtask: s2, needsYou: needsYou.has(s2.id) })),
+      more > 0 ? /* @__PURE__ */ u$1("div", { class: "caption more-row", children: [
+        "+",
+        more,
+        " more"
+      ] }) : null
+    ] }) : null,
+    /* @__PURE__ */ u$1(AgentChip, { agent: task.agent, state }),
+    authed.value ? /* @__PURE__ */ u$1("div", { class: "row task-box-actions", onClick: stopBubble, onKeyDown: stopBubble, children: [
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setAddingSubtask((a2) => !a2), children: "+ Subtask" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setBreakingDown((b2) => !b2), children: "✨" })
+    ] }) : null,
+    authed.value && addingSubtask ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(AddForm, { parentId: task.id, kind: "subtask", candidates: [], onClose: () => setAddingSubtask(false) }) }) : null,
+    authed.value && breakingDown ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: task.id }) }) : null
+  ] });
+}
+function SubmitSpecForm({ projectId: projectId2 }) {
+  const [title, setTitle] = d$2("");
+  const [body, setBody] = d$2("");
+  const [busy, setBusy] = d$2(false);
+  async function submit(e2) {
+    e2.preventDefault();
+    if (!title.trim() || !body.trim()) return;
+    setBusy(true);
+    try {
+      await post(routes.projectSpec(projectId2), { title, body_md: body });
+      toast("spec submitted");
+      refresh();
+    } catch (e22) {
+      toastError(e22);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return /* @__PURE__ */ u$1("form", { class: "spec-root-card stack", onSubmit: submit, children: [
+    /* @__PURE__ */ u$1("input", { placeholder: "title", value: title, onInput: (e2) => setTitle(e2.target.value) }),
+    /* @__PURE__ */ u$1("textarea", { placeholder: "one requirement per line", value: body, onInput: (e2) => setBody(e2.target.value) }),
+    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Submit spec" }) })
+  ] });
+}
+function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
+  if (!spec) return authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: projectId2 }) : /* @__PURE__ */ u$1("div", { class: "spec-root-card", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "No spec yet." }) });
+  const canApproveSpec = authed.value && spec.status === "pending";
+  const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && projectPhase === "planning";
+  const state = agentStateOf({ status: spec.status, agent: spec.agent }, projectPhase, false);
+  async function approveSpec() {
+    try {
+      await post(routes.nodeApprove(spec.id), { target: "spec" });
+      toast("spec approved");
       refresh();
     } catch (e2) {
       toastError(e2);
     }
   }
-  if (error) return /* @__PURE__ */ u$1("div", { class: "callout danger", children: error });
-  if (!revs) return /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" });
-  if (!revs.length) return /* @__PURE__ */ u$1(Empty, { text: "No plan revisions yet." });
-  return /* @__PURE__ */ u$1("div", { class: "stack", children: revs.map((rev) => /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
+  async function approveTasks() {
+    try {
+      await post(routes.nodeApprove(projectId2), { target: "gate2" });
+      toast("task list approved; criteria frozen");
+      refresh();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "spec-root-card stack", tabIndex: 0, onClick: () => openNode(spec.id), onKeyDown: (e2) => {
+    if (e2.key === "Enter") openNode(spec.id);
+  }, children: [
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("h3", { children: [
-        "Revision ",
-        rev.n
-      ] }),
-      /* @__PURE__ */ u$1("span", { class: "caption", children: rev.approved_at ? `approved ${rev.approved_at}` : "pending" })
+      /* @__PURE__ */ u$1("span", { class: "title grow", children: spec.title }),
+      /* @__PURE__ */ u$1(Pill, { status: spec.status })
     ] }),
-    /* @__PURE__ */ u$1(KeyValues, { value: rev.diff }),
-    !rev.approved_at && authed.value ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve(rev.n), children: "Approve revision" }) }) : null
-  ] })) });
-}
-function ActivityPage() {
-  const seg = route.value.params[0] === "revisions" ? "revisions" : "timeline";
-  return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
+    spec.body_md ? /* @__PURE__ */ u$1("div", { class: "caption", children: purposeLine(spec.body_md) }) : null,
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Activity" }),
-      /* @__PURE__ */ u$1(Segmented, { options: [{ value: "timeline", label: "Timeline" }, { value: "revisions", label: "Revisions" }], value: seg, onChange: (v2) => navigate(v2 === "revisions" ? "#/activity/revisions" : "#/activity") })
+      /* @__PURE__ */ u$1(AgentChip, { agent: spec.agent, state }),
+      /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: (e2) => {
+          e2.stopPropagation();
+          void approveSpec();
+        }, children: "Approve spec" }) : null,
+        canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: (e2) => {
+          e2.stopPropagation();
+          void approveTasks();
+        }, children: "Approve task list" }) : null
+      ] })
     ] }),
-    seg === "timeline" ? /* @__PURE__ */ u$1(Timeline, {}) : /* @__PURE__ */ u$1(Revisions, {})
+    authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id }) }) : null
   ] });
 }
-const pct = (x2) => (x2 * 100).toFixed(1) + "%";
-function SpendPage() {
-  const [k2, setK] = d$2(null);
-  const [error, setError] = d$2(null);
+function GhostBox({ title, caption, error, onRetry, logLink, style }) {
+  return /* @__PURE__ */ u$1("div", { class: "task-box ghost" + (error ? " ghost-error" : ""), style, children: [
+    /* @__PURE__ */ u$1("div", { class: "title", children: title }),
+    error ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("div", { class: "caption danger", children: error }),
+      onRetry ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onRetry, children: "Retry" }) : null
+    ] }) : /* @__PURE__ */ u$1("div", { class: "row", children: [
+      /* @__PURE__ */ u$1("span", { class: "pulse", "aria-hidden": "true" }),
+      /* @__PURE__ */ u$1("span", { class: "caption", children: caption }),
+      logLink ? /* @__PURE__ */ u$1("a", { href: logLink, class: "caption", children: "view log" }) : null
+    ] })
+  ] });
+}
+function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
+  const lay = computeLayout(data.tasks, data.edges);
+  const [zoom, setZoom] = d$2(1);
+  const [pan, setPan] = d$2({ x: 0, y: 0 });
+  const dragging = A(null);
+  function onPointerDown(e2) {
+    if (e2.target.closest(".task-box, .spec-root-card, button")) return;
+    dragging.current = { x: e2.clientX - pan.x, y: e2.clientY - pan.y };
+    e2.target.setPointerCapture(e2.pointerId);
+  }
+  function onPointerMove(e2) {
+    if (!dragging.current) return;
+    setPan({ x: e2.clientX - dragging.current.x, y: e2.clientY - dragging.current.y });
+  }
+  function onPointerUp() {
+    dragging.current = null;
+  }
+  function onWheel(e2) {
+    if (!e2.ctrlKey) return;
+    e2.preventDefault();
+    setZoom((z2) => Math.min(2, Math.max(0.4, z2 - e2.deltaY * 1e-3)));
+  }
+  const fit = () => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+  const pendingCreateGhosts = Object.entries(pendingCreates.value).filter(([, p2]) => p2.kind === "task");
+  const breakdownGhosts = Object.entries(pendingBreakdowns.value).filter(([nodeId]) => Number(nodeId) === data.spec?.id);
+  const ghostY = (i2) => PAD + lay.height + i2 * (BOX_H_BASE + GAP_Y);
+  return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
+    /* @__PURE__ */ u$1("div", { class: "canvas-zoom-controls", children: [
+      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom out", onClick: () => setZoom((z2) => Math.max(0.4, z2 - 0.1)), children: "−" }),
+      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "fit", onClick: fit, children: /* @__PURE__ */ u$1(Icon, { name: "activity" }) }),
+      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom in", onClick: () => setZoom((z2) => Math.min(2, z2 + 0.1)), children: "+" })
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", onPointerDown, onPointerMove, onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: lay.width + "px", height: lay.height + 96 + "px" }, children: [
+      /* @__PURE__ */ u$1("div", { class: "canvas-spec-slot", children: /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }) }),
+      /* @__PURE__ */ u$1("svg", { class: "canvas-arrows", width: lay.width, height: lay.height, style: { marginTop: "96px" }, children: lay.arrows.map((a2) => /* @__PURE__ */ u$1(S$1, { children: [
+        /* @__PURE__ */ u$1("path", { class: "flow-arrow", d: a2.path }),
+        a2.label ? /* @__PURE__ */ u$1("g", { transform: `translate(${a2.label.x},${a2.label.y})`, children: [
+          /* @__PURE__ */ u$1("rect", { class: "arrow-label-bg", x: -40, y: -10, width: 80, height: 20, rx: 10 }),
+          /* @__PURE__ */ u$1("text", { class: "arrow-label", textAnchor: "middle", dy: "4", children: a2.label.text })
+        ] }) : null
+      ] })) }),
+      /* @__PURE__ */ u$1("div", { class: "canvas-boxes", style: { marginTop: "96px" }, children: [
+        data.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, style: { position: "absolute", left: lay.pos[t2.id].x + "px", top: lay.pos[t2.id].y + "px", width: lay.pos[t2.id].w + "px" } })),
+        pendingCreateGhosts.map(([key, p2], i2) => /* @__PURE__ */ u$1(GhostBox, { title: p2.title, caption: "creating…", error: p2.error, style: { position: "absolute", left: PAD + "px", top: ghostY(i2) + "px", width: BOX_W + "px" } }, key)),
+        breakdownGhosts.flatMap(([, p2], gi) => [0, 1, 2].map((i2) => /* @__PURE__ */ u$1(GhostBox, { title: "…", caption: `${p2.agent} is breaking this down…`, logLink: p2.log, style: { position: "absolute", left: PAD + "px", top: ghostY(pendingCreateGhosts.length + gi * 3 + i2) + "px", width: BOX_W + "px" } }, p2.nodeId + ":" + i2)))
+      ] })
+    ] }) })
+  ] });
+}
+function PhoneFlow({ data, projectId: projectId2, projectPhase, needsYou }) {
+  const steps = stepsFromColumns(data.tasks, data.edges);
+  return /* @__PURE__ */ u$1("div", { class: "stack phone-flow", children: [
+    /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }),
+    steps.map((step) => /* @__PURE__ */ u$1("div", { class: "phone-step stack tight", children: [
+      step.parallel ? /* @__PURE__ */ u$1("div", { class: "caption parallel-label", children: "parallel" }) : null,
+      /* @__PURE__ */ u$1("div", { class: step.parallel ? "phone-step-row" : "stack tight", children: step.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase })) })
+    ] }))
+  ] });
+}
+function Discuss({ card, onSent }) {
+  const [detail, setDetail] = d$2(null);
+  const [reply, setReply] = d$2("");
   h$2(() => {
     let alive = true;
-    api(routes.kpis()).then(
+    if (card.nodeId) api(routes.node(card.nodeId)).then(
       (d2) => {
+        if (alive) setDetail(d2);
+      },
+      (e2) => {
+        if (alive) toastError(e2);
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [card.nodeId]);
+  async function send() {
+    if (!reply.trim()) return;
+    try {
+      if (card.kind === "question") await post(routes.questionAnswer(Number(card.id.split(":")[1])), { text: reply });
+      else if (card.nodeId) await post(routes.nodeComment(card.nodeId), { text: reply });
+      setReply("");
+      onSent();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack tight discuss", children: [
+    detail ? detail.notes.filter((n2) => n2.kind === "feedback").map((n2) => /* @__PURE__ */ u$1("div", { class: "callout", children: n2.text })) : null,
+    /* @__PURE__ */ u$1("div", { class: "row", style: { flexWrap: "nowrap" }, children: [
+      /* @__PURE__ */ u$1("input", { placeholder: "reply", value: reply, onInput: (e2) => setReply(e2.target.value) }),
+      /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: send, children: "Send" })
+    ] })
+  ] });
+}
+const APPROVE_TARGET = { spec_review: "spec", gate2_review: "gate2", task_review: "review", awaiting_approval: "node" };
+const CAPTION = { spec_review: "Spec awaiting approval", gate2_review: "Task list awaiting Gate 2", task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
+function Card({ card, onActed }) {
+  const [busy, setBusy] = d$2(null);
+  const [rejecting, setRejecting] = d$2(false);
+  const [reason, setReason] = d$2("");
+  const [discussing, setDiscussing] = d$2(false);
+  const [error, setError] = d$2(null);
+  async function run(label, fn) {
+    setBusy(label);
+    setError(null);
+    try {
+      await fn();
+      toast(label.toLowerCase());
+      onActed();
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : String(e2));
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function approve() {
+    if (card.kind === "revision") return run("Approve", () => post(routes.approveRevision(card.projectId), { target: "revision", n: Number(card.id.split(":")[1]) }));
+    if (card.kind === "ack") return run("Acknowledge", () => post(routes.eventAck(Number(card.id.split(":").pop()))));
+    const target = APPROVE_TARGET[card.kind];
+    if (!target) return;
+    const id = card.kind === "gate2_review" ? card.projectId : card.nodeId;
+    if (!id) return;
+    return run("Approve", () => post(routes.nodeApprove(id), { target }));
+  }
+  async function reject() {
+    if (!reason.trim() || !card.nodeId) return;
+    return run("Send back", () => post(routes.nodeReject(card.nodeId), { feedback: reason }));
+  }
+  return /* @__PURE__ */ u$1("div", { class: "card stack tight notif-card", children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", children: [
+      /* @__PURE__ */ u$1("span", { class: "caption", children: CAPTION[card.kind] }),
+      /* @__PURE__ */ u$1("span", { class: "caption", children: card.ts })
+    ] }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "notif-title", disabled: !card.nodeId, onClick: () => card.nodeId && openNode(card.nodeId), children: card.title }),
+    /* @__PURE__ */ u$1("div", { children: card.context }),
+    card.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: card.agent }) : null,
+    error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : null,
+    card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", disabled: !!busy, onClick: approve, children: busy ? "…" : "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      /* @__PURE__ */ u$1(Button, { variant: "filled", disabled: !!busy, onClick: approve, children: busy === "Approve" ? "…" : "Approve" }),
+      card.kind === "task_review" ? /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !!busy, onClick: () => setRejecting((r2) => !r2), children: "Reject" }) : null,
+      card.kind !== "revision" ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: "Discuss" }) : null
+    ] }),
+    rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("input", { placeholder: "why?", value: reason, onInput: (e2) => setReason(e2.target.value) }),
+      /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !reason.trim(), onClick: reject, children: "Send" })
+    ] }) : null,
+    discussing ? /* @__PURE__ */ u$1(Discuss, { card, onSent: onActed }) : null
+  ] });
+}
+function CardRail({ cards }) {
+  const [collapsed, setCollapsed] = d$2(false);
+  if (!cards.length) return /* @__PURE__ */ u$1("div", { class: "card-rail-empty caption", children: "Nothing waiting on you" });
+  if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
+    cards.length,
+    " need you"
+  ] });
+  return /* @__PURE__ */ u$1("div", { class: "card-rail stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", children: [
+      /* @__PURE__ */ u$1("span", { class: "caption", children: [
+        "Needs you · ",
+        cards.length
+      ] }),
+      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "collapse", onClick: () => setCollapsed(true), children: "—" })
+    ] }),
+    cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, onActed: refresh }, c2.id))
+  ] });
+}
+function payloadOf(ev) {
+  try {
+    return JSON.parse(ev.payload || "{}");
+  } catch {
+    return {};
+  }
+}
+function cardsFromInbox(inbox, ctx) {
+  const cards = [];
+  if (ctx.spec && ctx.spec.status === "pending") {
+    cards.push({ id: "spec_review:" + ctx.spec.id, kind: "spec_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: "spec awaiting approval", agent: "", ts: "" });
+  }
+  if (ctx.spec && ctx.spec.status !== "pending" && ctx.taskCount > 0 && ctx.projectPhase === "planning") {
+    cards.push({ id: "gate2_review:" + ctx.spec.id, kind: "gate2_review", nodeId: ctx.spec.id, projectId: ctx.nodesById[ctx.spec.id]?.project_id ?? null, title: ctx.spec.title, context: `${ctx.taskCount} tasks awaiting Gate 2`, agent: "", ts: "" });
+  }
+  for (const q2 of inbox.questions) {
+    const n2 = ctx.nodesById[q2.node_id];
+    cards.push({ id: "question:" + q2.id, kind: "question", nodeId: q2.node_id, projectId: n2?.project_id ?? null, title: n2?.title ?? `#${q2.node_id}`, context: q2.text, agent: "", ts: "" });
+  }
+  for (const n2 of inbox.review) cards.push({ id: "task_review:" + n2.id, kind: "task_review", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "in review", agent: n2.owner ?? "", ts: "" });
+  for (const n2 of inbox.blocked) cards.push({ id: "blocked:" + n2.id, kind: "blocked", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: n2.block_reason ?? "blocked", agent: n2.owner ?? "", ts: "" });
+  for (const n2 of inbox.awaiting_approval) cards.push({ id: "awaiting_approval:" + n2.id, kind: "awaiting_approval", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "criteria changed, awaiting approval", agent: n2.owner ?? "", ts: "" });
+  for (const r2 of ctx.revisions.filter((r22) => r22.approved_at === null)) {
+    cards.push({ id: "revision:" + r2.n, kind: "revision", nodeId: null, projectId: ctx.projectId, title: `Revision ${r2.n}`, context: "plan revision proposed", agent: "", ts: "" });
+  }
+  const ackSources = [...inbox.structure_updates, ...inbox.audit_items, ...inbox.signals, ...inbox.unattributed_commits];
+  for (const ev of ackSources) {
+    const p2 = payloadOf(ev);
+    cards.push({ id: "ack:" + ev.id, kind: "ack", nodeId: ev.node_id, projectId: ev.project_id, title: ev.type, context: String(p2.message ?? ev.type), agent: "", ts: ev.ts, raw: ev });
+  }
+  for (const u2 of inbox.unverified_external) cards.push({ id: "ack:unverified:" + u2.node_id, kind: "ack", nodeId: u2.node_id, projectId: ctx.nodesById[u2.node_id]?.project_id ?? null, title: u2.title, context: "unverified external criteria", agent: "", ts: "" });
+  return cards;
+}
+function StatusLine({ phase, done, total, busyAgents, spend, budget }) {
+  const pct = budget > 0 ? spend / budget : 0;
+  const spendClass = pct >= 1 ? "spend-red" : pct >= 0.8 ? "spend-amber" : "";
+  return /* @__PURE__ */ u$1("div", { class: "status-line caption", children: [
+    phase,
+    " · ",
+    done,
+    "/",
+    total,
+    " done · ",
+    busyAgents,
+    " agents busy · ",
+    /* @__PURE__ */ u$1("span", { class: spendClass, children: [
+      "$",
+      spend.toFixed(2),
+      " of $",
+      budget.toFixed(2)
+    ] })
+  ] });
+}
+function NewProject() {
+  const [goal, setGoal] = d$2("");
+  const [busy, setBusy] = d$2(false);
+  async function create(e2) {
+    e2.preventDefault();
+    if (!goal.trim()) return;
+    setBusy(true);
+    try {
+      const r2 = await post(routes.projects(), { goal });
+      await loadProjects();
+      projectId.value = r2.project.id;
+      openProject(r2.project.id);
+    } catch (e22) {
+      toastError(e22);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("form", { class: "card stack", style: { maxWidth: 480, margin: "10dvh auto" }, onSubmit: create, children: [
+    /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Start a project" }),
+    /* @__PURE__ */ u$1("input", { placeholder: "goal", value: goal, onInput: (e2) => setGoal(e2.target.value) }),
+    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Create" }) })
+  ] }) });
+}
+const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
+function ProjectPage() {
+  const [agentsSheet, setAgentsSheet] = d$2(false);
+  const [addingTask, setAddingTask] = d$2(false);
+  const p2 = currentProject.value;
+  const pid = projectId.value;
+  const graphQ = useApi(() => api(routes.graph(pid)), [pid, refreshTick.value]);
+  const nodesQ = useApi(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
+  const inboxQ = useApi(() => api(routes.inbox()), [refreshTick.value]);
+  const revisionsQ = useApi(() => pid ? api(routes.revisions(pid)) : Promise.resolve([]), [pid, refreshTick.value]);
+  const allNodesQ = useApi(() => api(routes.nodes(null)), [refreshTick.value]);
+  const data = T(() => graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null, [graphQ.data, nodesQ.data]);
+  h$2(() => {
+    if (!data) return;
+    for (const [nodeId, pending] of Object.entries(pendingBreakdowns.value)) {
+      const currentChildIds = new Set(data.tasks.filter((t2) => String(t2.id) !== nodeId).map((t2) => t2.id));
+      if (shouldClearBreakdown(pending, currentChildIds)) clearBreakdown(Number(nodeId));
+    }
+  }, [data]);
+  const nodesById = T(() => Object.fromEntries((allNodesQ.data ?? []).map((n2) => [n2.id, { title: n2.title, project_id: n2.project_id }])), [allNodesQ.data]);
+  const cards = T(() => {
+    if (!inboxQ.data || !pid) return [];
+    return cardsFromInbox(inboxQ.data, { spec: data?.spec ?? null, taskCount: data?.tasks.length ?? 0, projectPhase: p2?.phase ?? "planning", revisions: revisionsQ.data ?? [], nodesById, projectId: pid }).filter((c2) => c2.projectId === null || c2.projectId === pid);
+  }, [inboxQ.data, data, p2?.phase, revisionsQ.data, nodesById, pid]);
+  const needsYou = new Set(cards.map((c2) => c2.nodeId).filter((id) => id !== null));
+  if (!projects.value.length) return /* @__PURE__ */ u$1(NewProject, {});
+  if (!p2) return /* @__PURE__ */ u$1(NewProject, {});
+  const done = (nodesQ.data ?? []).filter((n2) => n2.status === "done" && n2.kind === "task").length;
+  const total = (nodesQ.data ?? []).filter((n2) => n2.kind === "task").length;
+  const busyAgents = new Set((nodesQ.data ?? []).filter((n2) => n2.status === "in_progress").map((n2) => n2.owner)).size;
+  async function run() {
+    if (!pid) return;
+    try {
+      await post(routes.projectRun(pid), {});
+      toast("run started");
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "page-canvas", children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
+      /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
+      /* @__PURE__ */ u$1("div", { class: "row", children: [
+        authed.value && data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
+        /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: run, children: "▶ Run" })
+      ] })
+    ] }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, busyAgents, spend: 0, budget: 1 }) }),
+    authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
+    graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
+      /* @__PURE__ */ u$1(CardRail, { cards }),
+      /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(PhoneFlow, { data, projectId: pid, projectPhase: p2.phase, needsYou }) })
+    ] }) : /* @__PURE__ */ u$1("div", { class: "row", style: { alignItems: "flex-start", flexWrap: "nowrap" }, children: [
+      /* @__PURE__ */ u$1("div", { style: { flex: 1, minWidth: 0, padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou }) }),
+      /* @__PURE__ */ u$1(CardRail, { cards })
+    ] }),
+    agentsSheet ? /* @__PURE__ */ u$1(AgentsSheet, { projectId: pid, onClose: () => setAgentsSheet(false) }) : null
+  ] });
+}
+function StartPicker({ nodeId, onClose, onStarted }) {
+  const [agents, setAgents] = d$2(null);
+  h$2(() => {
+    api(routes.agents()).then((r2) => setAgents(r2.agents), toastError);
+  }, []);
+  async function start(agent) {
+    try {
+      const r2 = await post(routes.nodeStart(nodeId, agent));
+      toast(`started runner pid ${r2.spawned.pid}`);
+      refresh();
+      onStarted();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "caption", children: "Agent from config.toml [agents.*]" }),
+    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list", children: agents.map((a2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => start(a2), children: /* @__PURE__ */ u$1("span", { class: "grow title", children: a2 }) })) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
+    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" }) })
+  ] });
+}
+function Actions({ detail, onDone }) {
+  const n2 = detail.node;
+  const [rejecting, setRejecting] = d$2(false);
+  const [feedback, setFeedback] = d$2("");
+  const [starting, setStarting] = d$2(false);
+  const [removing, setRemoving] = d$2(false);
+  const [breakingDown, setBreakingDown] = d$2(false);
+  if (!authed.value) return null;
+  async function approve(target, label) {
+    try {
+      await post(routes.nodeApprove(n2.id), { target });
+      toast(label);
+      refresh();
+      onDone();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  async function reject() {
+    if (!feedback.trim()) return;
+    try {
+      await post(routes.nodeReject(n2.id), { feedback });
+      toast("sent back with feedback");
+      refresh();
+      onDone();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  async function remove() {
+    try {
+      await post(routes.nodeRemove(n2.id));
+      toast("removed");
+      refresh();
+      onDone();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  async function breakDown() {
+    setBreakingDown(true);
+    try {
+      const r2 = await post(routes.nodeBreakdown(n2.id), {});
+      startBreakdown(n2.id, { nodeId: n2.id, agent: r2.spawned.agent, log: r2.spawned.log, startChildIds: /* @__PURE__ */ new Set() });
+      toast("breakdown started");
+      refresh();
+    } catch (e2) {
+      toastError(e2);
+    } finally {
+      setBreakingDown(false);
+    }
+  }
+  const buttons = [];
+  if (n2.status === "review") {
+    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("review", "approved"), children: "Approve" }));
+    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRejecting(true), children: "Reject" }));
+  }
+  if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
+  if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
+  if (n2.status === "ready") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => setStarting(true), children: "Start with agent" }));
+  if ((n2.kind === "spec" || n2.kind === "task") && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", disabled: breakingDown, onClick: breakDown, children: "✨ Break down with agent" }));
+  if (n2.criteria_hash === null && n2.deleted_at === null && n2.kind !== "spec") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRemoving(true), children: "Remove" }));
+  if (!buttons.length) return null;
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "actions", children: buttons }),
+    rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("textarea", { placeholder: "what should change?", value: feedback, onInput: (e2) => setFeedback(e2.target.value) }),
+      /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: reject, children: "Send" }),
+        /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setRejecting(false), children: "Cancel" })
+      ] })
+    ] }) : null,
+    starting ? /* @__PURE__ */ u$1(StartPicker, { nodeId: n2.id, onClose: () => setStarting(false), onStarted: onDone }) : null,
+    removing ? /* @__PURE__ */ u$1(Confirm, { title: "Remove this task?", body: "It and its subtasks are soft-deleted; this cannot be undone from the page.", confirmLabel: "Remove", danger: true, onConfirm: () => {
+      setRemoving(false);
+      void remove();
+    }, onCancel: () => setRemoving(false) }) : null
+  ] });
+}
+const VERIFICATION = { checked_by_muvue: "checked by muvue", unverified: "unverified", human: "human" };
+function Overview({ detail }) {
+  const n2 = detail.node;
+  let criteria = [];
+  try {
+    criteria = JSON.parse(n2.criteria_json || "[]");
+  } catch {
+    criteria = [n2.criteria_json];
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    n2.body_md ? /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Body" }),
+      /* @__PURE__ */ u$1("pre", { children: n2.body_md })
+    ] }) : null,
+    /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: [
+        "Criteria ",
+        /* @__PURE__ */ u$1("span", { class: "caption", children: [
+          "(",
+          n2.criteria_mode,
+          ", ",
+          VERIFICATION[detail.verification] ?? detail.verification,
+          ")"
+        ] })
+      ] }),
+      criteria.length ? /* @__PURE__ */ u$1("ul", { class: "criteria", children: criteria.map((c2) => /* @__PURE__ */ u$1("li", { children: typeof c2 === "string" ? c2 : JSON.stringify(c2) })) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "none" })
+    ] }),
+    n2.summary ? /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Summary" }),
+      /* @__PURE__ */ u$1("pre", { children: n2.summary })
+    ] }) : null,
+    /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Predicted touches" }),
+      /* @__PURE__ */ u$1("pre", { children: detail.predicted_touches.join("\n") || "none" })
+    ] }),
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "Notes" }),
+      detail.notes.length ? detail.notes.map((note) => /* @__PURE__ */ u$1("div", { class: "card", children: [
+        /* @__PURE__ */ u$1("div", { class: "caption", children: [
+          note.kind,
+          note.pinned ? " · pinned" : "",
+          " · ",
+          note.created_at
+        ] }),
+        /* @__PURE__ */ u$1("div", { children: note.text })
+      ] })) : /* @__PURE__ */ u$1("p", { class: "muted", children: "none" })
+    ] }),
+    /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Commits" }),
+      /* @__PURE__ */ u$1("pre", { class: "mono", children: detail.commits.map((c2) => c2.sha.slice(0, 12)).join("\n") || "none" })
+    ] })
+  ] });
+}
+function SpecBody({ nodeId, bodyMd, notes }) {
+  var _a;
+  const [openLine, setOpenLine] = d$2(null);
+  const [draft, setDraft] = d$2("");
+  const [general, setGeneral] = d$2("");
+  async function send(text, line) {
+    if (!text.trim()) return;
+    try {
+      await post(routes.nodeComment(nodeId), line === void 0 ? { text } : { text, line });
+      toast("comment saved");
+      setDraft("");
+      setGeneral("");
+      setOpenLine(null);
+      refresh();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  const byLine = {};
+  const generalNotes = [];
+  for (const note of notes.filter((n2) => n2.kind === "feedback")) {
+    const m2 = note.text.match(/^\[L(\d+)\] ([\s\S]*)$/);
+    if (m2) (byLine[_a = Number(m2[1])] ?? (byLine[_a] = [])).push(m2[2]);
+    else generalNotes.push(note.text);
+  }
+  const lines = (bodyMd || "").split("\n");
+  return /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    /* @__PURE__ */ u$1("div", { class: "caption", children: "Tap a line to comment on it. The agent sees comments in its brief." }),
+    /* @__PURE__ */ u$1("div", { class: "card spec-body", children: lines.map((text, i2) => {
+      const n2 = i2 + 1;
+      return /* @__PURE__ */ u$1(S$1, { children: [
+        /* @__PURE__ */ u$1("button", { type: "button", class: "spec-line", onClick: () => setOpenLine(openLine === n2 ? null : n2), children: [
+          /* @__PURE__ */ u$1("span", { class: "ln", children: n2 }),
+          /* @__PURE__ */ u$1("span", { class: "tx", children: text || " " })
+        ] }),
+        (byLine[n2] ?? []).map((c2) => /* @__PURE__ */ u$1("div", { class: "callout spec-comment", children: c2 })),
+        openLine === n2 && authed.value ? /* @__PURE__ */ u$1("form", { class: "spec-form row", onSubmit: (e2) => {
+          e2.preventDefault();
+          void send(draft, n2);
+        }, children: [
+          /* @__PURE__ */ u$1("input", { placeholder: `comment on line ${n2}`, value: draft, onInput: (e2) => setDraft(e2.target.value) }),
+          /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Comment" })
+        ] }) : null
+      ] });
+    }) }),
+    generalNotes.length ? /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "General comments" }),
+      generalNotes.map((c2) => /* @__PURE__ */ u$1("div", { class: "callout", children: c2 }))
+    ] }) : null,
+    authed.value ? /* @__PURE__ */ u$1("form", { class: "stack tight", onSubmit: (e2) => {
+      e2.preventDefault();
+      void send(general);
+    }, children: [
+      /* @__PURE__ */ u$1("textarea", { placeholder: "general comment on this spec", value: general, onInput: (e2) => setGeneral(e2.target.value) }),
+      /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", children: "Comment" }) })
+    ] }) : null
+  ] });
+}
+function Flow({ receivesFrom, sendsTo }) {
+  if (!receivesFrom.length && !sendsTo.length) return null;
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    receivesFrom.map((l2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => openNode(l2.id), children: [
+      "receives ",
+      l2.carries ? l2.carries + " " : "",
+      "from #",
+      l2.id,
+      " ",
+      l2.title
+    ] })),
+    sendsTo.map((l2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => openNode(l2.id), children: [
+      "sends ",
+      l2.carries ? l2.carries + " " : "",
+      "to #",
+      l2.id,
+      " ",
+      l2.title
+    ] }))
+  ] });
+}
+function Logs({ nodeId }) {
+  const [text, setText] = d$2("loading…");
+  const pre = A(null);
+  function load() {
+    api(routes.nodeLogs(nodeId)).then((t2) => {
+      setText(t2 || "(no driver output yet)");
+      requestAnimationFrame(() => {
+        if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
+      });
+    }, (e2) => setText(e2.message));
+  }
+  h$2(load, [nodeId, refreshTick.value]);
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", children: [
+      /* @__PURE__ */ u$1("span", { class: "caption", children: "last 200 lines" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: load, children: "Refresh" })
+    ] }),
+    /* @__PURE__ */ u$1("pre", { ref: pre, class: "scroll-x logs", children: text })
+  ] });
+}
+function Runs({ nodeId }) {
+  const [runs, setRuns] = d$2(null);
+  const [error, setError] = d$2(null);
+  const [open, setOpen] = d$2(null);
+  h$2(() => {
+    let alive = true;
+    api(routes.nodeRuns(nodeId)).then(
+      (r2) => {
         if (!alive) return;
-        setK(d2);
+        setRuns(r2.runs);
         setError(null);
       },
       (e2) => {
@@ -2145,43 +2444,135 @@ function SpendPage() {
     return () => {
       alive = false;
     };
-  }, [refreshTick.value]);
-  if (error) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
-  if (!k2) return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) });
-  const cards = [
-    ["Components verified in the last 50 commits", pct(k2.drift_pct)],
-    ["Touches outside the prediction", pct(k2.touch_drift)],
-    ["Rubber-stamp rate (medium/high)", pct(k2.rubber_stamp_rate), `${k2.rubber_stamps} fast of ${k2.approvals_timed} timed approvals`],
-    ["Tokens per task", String(Math.round(k2.tokens_per_node))],
-    ["Worst agent spend vs budget", pct(k2.spend_vs_budget)]
-  ];
-  const drivers = Object.entries(k2.spend_by_driver || {});
-  return /* @__PURE__ */ u$1("div", { class: "page stack", children: [
-    /* @__PURE__ */ u$1("h1", { class: "page-title", children: "Spend" }),
-    /* @__PURE__ */ u$1("div", { class: "grid-kpi", children: cards.map(([label, value, sub]) => /* @__PURE__ */ u$1("div", { class: "card kpi", children: [
-      /* @__PURE__ */ u$1("div", { class: "kpi-value", children: value }),
-      /* @__PURE__ */ u$1("div", { class: "caption", children: label }),
-      sub ? /* @__PURE__ */ u$1("div", { class: "caption", children: sub }) : null
-    ] })) }),
-    /* @__PURE__ */ u$1("h2", { children: "Spend per agent" }),
-    drivers.length ? drivers.map(([name, d2]) => /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
-      /* @__PURE__ */ u$1("div", { class: "row between", children: [
-        /* @__PURE__ */ u$1("strong", { children: name }),
-        /* @__PURE__ */ u$1("span", { class: "caption", children: [
-          d2.spent,
-          " / ",
-          d2.limit,
-          " ",
-          d2.unit
-        ] })
-      ] }),
-      /* @__PURE__ */ u$1("div", { class: "progress" + (d2.exhausted ? " exhausted" : d2.warn ? " warn" : ""), children: /* @__PURE__ */ u$1("span", { style: { width: Math.min(100, d2.pct * 100) + "%" } }) }),
-      /* @__PURE__ */ u$1("div", { class: "caption", children: [
-        pct(d2.pct),
-        d2.exhausted ? " · exhausted" : d2.warn ? " · warning" : ""
+  }, [nodeId]);
+  if (error) return /* @__PURE__ */ u$1("div", { class: "callout danger", children: error });
+  if (!runs) return /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" });
+  if (!runs.length) return /* @__PURE__ */ u$1("p", { class: "muted", children: "no runs yet" });
+  return /* @__PURE__ */ u$1("div", { class: "list", children: [
+    runs.map((r2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", style: { cursor: "default" }, onClick: () => setOpen(open === r2.id ? null : r2.id), children: /* @__PURE__ */ u$1("span", { class: "grow", children: [
+      /* @__PURE__ */ u$1("span", { class: "title", children: r2.type }),
+      /* @__PURE__ */ u$1("span", { class: "caption", style: { display: "block" }, children: [
+        r2.actor.replace(/^runner:/, ""),
+        " · ",
+        r2.ts
       ] })
-    ] })) : /* @__PURE__ */ u$1(Empty, { text: "No agent has a [agents.<name>.budget]." })
+    ] }) })),
+    open !== null ? /* @__PURE__ */ u$1(Logs, { nodeId }) : null
   ] });
+}
+function Discussion({ nodeId, notes }) {
+  const [reply, setReply] = d$2("");
+  async function send() {
+    if (!reply.trim()) return;
+    try {
+      await post(routes.nodeComment(nodeId), { text: reply });
+      setReply("");
+      refresh();
+    } catch (e2) {
+      toastError(e2);
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    notes.filter((n2) => n2.kind === "feedback").map((n2) => /* @__PURE__ */ u$1("div", { class: "callout", children: n2.text })),
+    /* @__PURE__ */ u$1("div", { class: "row", style: { flexWrap: "nowrap" }, children: [
+      /* @__PURE__ */ u$1("input", { placeholder: "reply", value: reply, onInput: (e2) => setReply(e2.target.value) }),
+      /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: send, children: "Send" })
+    ] })
+  ] });
+}
+function classifyDiffLine(line) {
+  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
+  if (line.startsWith("@@")) return "d-hunk";
+  if (line.startsWith("+")) return "d-add";
+  if (line.startsWith("-")) return "d-del";
+  return "";
+}
+const LABEL = { commits: "patches of the linked commits", worktree: "worktree against its branch point", none: "nothing committed yet" };
+function DiffView({ nodeId }) {
+  const [d2, setD] = d$2(null);
+  const [error, setError] = d$2(null);
+  h$2(() => {
+    api(routes.nodeDiff(nodeId)).then(setD, (e2) => setError(e2.message));
+  }, [nodeId]);
+  if (error) return /* @__PURE__ */ u$1("div", { class: "callout danger", children: error });
+  if (!d2) return /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" });
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "caption", children: [
+      LABEL[d2.source] ?? d2.source,
+      d2.truncated ? " (truncated)" : ""
+    ] }),
+    /* @__PURE__ */ u$1("pre", { class: "scroll-x", children: d2.diff ? d2.diff.split("\n").map((line) => /* @__PURE__ */ u$1("span", { class: classifyDiffLine(line), children: line + "\n" })) : "(no diff)" })
+  ] });
+}
+function Details({ nodeId, predictedTouches }) {
+  const [open, setOpen] = d$2(false);
+  return /* @__PURE__ */ u$1("details", { open, onToggle: (e2) => setOpen(e2.target.open), children: [
+    /* @__PURE__ */ u$1("summary", { children: "Details" }),
+    open ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
+      /* @__PURE__ */ u$1("section", { children: [
+        /* @__PURE__ */ u$1("h3", { children: "Predicted touches" }),
+        /* @__PURE__ */ u$1("pre", { children: predictedTouches.join("\n") || "none" })
+      ] }),
+      /* @__PURE__ */ u$1("section", { children: [
+        /* @__PURE__ */ u$1("h3", { children: "Diff" }),
+        /* @__PURE__ */ u$1(DiffView, { nodeId })
+      ] }),
+      /* @__PURE__ */ u$1("section", { children: [
+        /* @__PURE__ */ u$1("h3", { children: "Logs" }),
+        /* @__PURE__ */ u$1(Logs, { nodeId })
+      ] })
+    ] }) : null
+  ] });
+}
+function NodeSheet() {
+  const id = Number(route.value.query.get("node"));
+  const [detail, setDetail] = d$2(null);
+  const [error, setError] = d$2(null);
+  h$2(() => {
+    let alive = true;
+    api(routes.node(id)).then(
+      (d2) => {
+        if (!alive) return;
+        setDetail(d2);
+        setError(null);
+      },
+      (e2) => {
+        if (!alive) return;
+        setError(e2.message);
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, refreshTick.value]);
+  const title = detail ? `#${detail.node.id} ${detail.node.title}` : `#${id}`;
+  return /* @__PURE__ */ u$1(Sheet, { title, onClose: closeNode, children: error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : !detail ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    /* @__PURE__ */ u$1("div", { class: "row", children: [
+      /* @__PURE__ */ u$1(Pill, { status: detail.node.status }),
+      /* @__PURE__ */ u$1(Tier, { tier: detail.node.risk_tier }),
+      /* @__PURE__ */ u$1("span", { class: "caption", children: [
+        detail.node.kind,
+        detail.node.owner ? ` · owner ${detail.node.owner}` : "",
+        detail.node.parent_id ? ` · parent #${detail.node.parent_id}` : ""
+      ] })
+    ] }),
+    detail.node.block_reason ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: [
+      "blocked: ",
+      detail.node.block_reason
+    ] }) : null,
+    /* @__PURE__ */ u$1(Actions, { detail, onDone: closeNode }),
+    detail.node.kind === "spec" ? /* @__PURE__ */ u$1(SpecBody, { nodeId: id, bodyMd: detail.node.body_md, notes: detail.notes }) : /* @__PURE__ */ u$1(Overview, { detail }),
+    /* @__PURE__ */ u$1(Flow, { receivesFrom: [], sendsTo: [] }),
+    /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Runs" }),
+      /* @__PURE__ */ u$1(Runs, { nodeId: id })
+    ] }),
+    /* @__PURE__ */ u$1("section", { children: [
+      /* @__PURE__ */ u$1("h3", { children: "Discussion" }),
+      /* @__PURE__ */ u$1(Discussion, { nodeId: id, notes: detail.notes })
+    ] }),
+    /* @__PURE__ */ u$1(Details, { nodeId: id, predictedTouches: detail.predicted_touches })
+  ] }) });
 }
 function paletteItems(query, nodes, projs, actions) {
   const q2 = query.trim().toLowerCase();
@@ -2293,13 +2684,6 @@ function CommandPalette({ onClose }) {
     ] })
   ] }) });
 }
-const PAGES = {
-  plan: PlanPage,
-  spec: SpecPage,
-  inbox: InboxPage,
-  activity: ActivityPage,
-  spend: SpendPage
-};
 function App() {
   const [palette, setPalette] = d$2(false);
   h$2(() => {
@@ -2312,16 +2696,23 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  const Page = PAGES[route.value.page] ?? PAGES["plan"];
+  h$2(() => {
+    if (isLegacyRoute(route.value) && projectId.value !== null) {
+      if (route.value.page === "spec" && route.value.params[0]) {
+        navigate("#/p/" + projectId.value + "?node=" + route.value.params[0]);
+      } else {
+        navigate("#/p/" + projectId.value);
+      }
+    }
+  }, [route.value.page, projectId.value]);
   const nodeId = route.value.query.get("node");
   return /* @__PURE__ */ u$1("div", { class: "app", children: [
     /* @__PURE__ */ u$1(Sidebar, {}),
     /* @__PURE__ */ u$1("div", { class: "stack", style: { flex: 1, minWidth: 0, gap: 0 }, children: [
       /* @__PURE__ */ u$1(TopBar, { onSearch: () => setPalette(true) }),
       authed.value ? null : /* @__PURE__ */ u$1(TokenBanner, {}),
-      /* @__PURE__ */ u$1("main", { children: /* @__PURE__ */ u$1(Page, {}) })
+      /* @__PURE__ */ u$1("main", { children: /* @__PURE__ */ u$1(ProjectPage, {}) })
     ] }),
-    /* @__PURE__ */ u$1(TabBar, {}),
     nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}, nodeId) : null,
     palette ? /* @__PURE__ */ u$1(CommandPalette, { onClose: () => setPalette(false) }) : null,
     /* @__PURE__ */ u$1(Toasts, {})
@@ -2341,9 +2732,6 @@ async function boot() {
   j(() => {
     void refreshTick.value;
     loadProjects().catch(toastError);
-    api(routes.inbox()).then((d2) => {
-      inboxCount.value = countInbox(d2);
-    }, toastError);
   });
   connectStream();
   R(/* @__PURE__ */ u$1(App, {}), document.getElementById("root"));
@@ -2377,7 +2765,6 @@ boot().catch((e2) => {
   --st-blocked: #C94F4F;
   --st-failed: #9C2F2F;
   --tier-medium: #D9A33B;
-  --tab-h: 56px;
   --sidebar-w: 240px;
 }
 @media (prefers-color-scheme: dark) {
@@ -2482,52 +2869,80 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
   .sheet-handle { display: none; }
   @keyframes sheet-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 }
-.toasts { position: fixed; left: 0; right: 0; bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 30; pointer-events: none; }
+.toasts { position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom) + 12px); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 30; pointer-events: none; }
 .toast { pointer-events: auto; background: var(--text); color: var(--bg); border: 0; border-radius: 999px; padding: 10px 18px; font-size: 13px; box-shadow: var(--shadow); max-width: 90vw; }
 .toast.error { background: var(--danger); color: #fff; }
 @media (min-width: 900px) { .toasts { bottom: 20px; } }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .app { min-height: 100dvh; display: flex; flex-direction: column; }
-main { flex: 1; padding-bottom: calc(var(--tab-h) + env(safe-area-inset-bottom)); }
+main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 16px; padding-top: calc(8px + env(safe-area-inset-top)); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }
 .project-btn { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; background: none; border: 0; padding: 8px; border-radius: var(--radius); cursor: pointer; text-align: left; min-height: 44px; }
 .project-btn:hover { background: var(--surface-2); }
 .project-btn .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .project-goal { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tabbar { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); display: flex; background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-top: 1px solid var(--border); z-index: 10; }
-.tab { flex: 1; border: 0; background: none; color: var(--text-2); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; }
-.tab.on { color: var(--accent); }
-.tab-icon { position: relative; }
-.tab-label { font-size: 11px; }
-.badge { background: var(--danger); color: #fff; border-radius: 999px; font-size: 11px; min-width: 18px; height: 18px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; }
-.tab-icon .badge { position: absolute; top: -6px; right: -12px; }
 .sidebar { display: none; }
 .token-banner { margin: 16px 16px 0; padding: 12px 16px; border-radius: var(--radius-lg); background: var(--surface-2); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .token-banner .row { flex-wrap: nowrap; }
 .token-banner input { flex: 1; }
 @media (min-width: 900px) {
   .app { flex-direction: row; }
-  .topbar, .tabbar { display: none; }
+  .topbar { display: none; }
   main { padding-bottom: 0; }
   .sidebar { display: flex; flex-direction: column; width: var(--sidebar-w); flex: none; border-right: 1px solid var(--border); background: var(--surface); padding: 12px; gap: 8px; position: sticky; top: 0; height: 100dvh; }
   .sidebar nav { display: flex; flex-direction: column; gap: 2px; }
-  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
+  .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }
   .nav-item.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); font-weight: 500; }
   .nav-item .grow { flex: 1; }
   .sidebar-foot { margin-top: auto; padding: 8px 12px; }
   .list-row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
 }
-.dag-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px; -webkit-overflow-scrolling: touch; }
-svg.dag .node rect { fill: var(--surface-2); stroke: var(--border); cursor: pointer; }
-svg.dag .node rect.bar { stroke: none; }
-svg.dag .node:hover rect:first-of-type, svg.dag .node:focus rect:first-of-type { stroke: var(--accent); outline: none; }
-svg.dag .node text { fill: var(--text); font-size: 12px; font-family: var(--font); pointer-events: none; }
-svg.dag .node text.sub { fill: var(--text-2); font-size: 10px; }
-svg.dag path.edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
-svg.dag path.edge.dep { stroke: var(--accent); stroke-dasharray: 5 4; }
-.group-head { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 6px; }
-.spec-preview { max-height: 80px; overflow: hidden; }
+/* dashboard/src/canvas/canvas.css */
+.canvas-wrap { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); min-height: 60dvh; }
+.canvas-viewport { width: 100%; height: 100%; min-height: 60dvh; overflow: hidden; touch-action: none; cursor: grab; }
+.canvas-viewport:active { cursor: grabbing; }
+.canvas-frame { position: relative; transform-origin: 0 0; }
+.canvas-spec-slot { position: absolute; top: 0; left: 0; right: 0; }
+.canvas-arrows { position: absolute; pointer-events: none; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--border); stroke-width: 1.5; }
+.canvas-arrows .arrow-label-bg { fill: var(--surface-2); stroke: var(--border); }
+.canvas-arrows .arrow-label { font-size: 11px; fill: var(--text-2); }
+.canvas-boxes { position: absolute; top: 0; left: 0; }
+.canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
+.spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; cursor: pointer; box-shadow: var(--shadow); }
+.spec-root-card { margin: 0 16px; }
+.task-box { border-left: 4px solid var(--st-pending); }
+.task-box.st-bar-ready { border-left-color: var(--st-ready); }
+.task-box.st-bar-in_progress { border-left-color: var(--st-in_progress); }
+.task-box.st-bar-review { border-left-color: var(--st-review); }
+.task-box.st-bar-done { border-left-color: var(--st-done); }
+.task-box.st-bar-blocked, .task-box.st-bar-failed { border-left-color: var(--st-blocked); }
+.task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.task-box.ghost { opacity: .7; border-style: dashed; cursor: default; }
+.task-box.ghost-error { border-color: var(--danger); opacity: 1; }
+.purpose { margin: 2px 0 6px; }
+.subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
+.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
+.more-row { padding-left: 20px; }
+.needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
+.agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
+/* Own row, deliberately separate from .agent-chip's row so its height is
+   deterministic (two 44px-min-height buttons, not dependent on whether they
+   wrap at the box's 240px width alongside the chip) -- flowLayout.ts's
+   BOX_H_BASE bakes this row's real measured height in. */
+.task-box-actions { margin-top: 4px; flex-wrap: nowrap; }
+@keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+.phone-flow .task-box { width: 100%; }
+.phone-step { border-left: 2px dashed var(--border); padding-left: 10px; }
+.phone-step-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.phone-step-row .task-box { flex: 1 1 260px; }
+.parallel-label { text-transform: uppercase; letter-spacing: .04em; }
+.status-line { padding: 4px 16px; }
+.status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.spend-amber { color: var(--tier-medium); }
+.spend-red { color: var(--danger); }
 .spec-body { padding: 8px 0; }
 .spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
 .spec-line:hover { background: var(--surface-2); }
@@ -2535,7 +2950,15 @@ svg.dag path.edge.dep { stroke: var(--accent); stroke-dasharray: 5 4; }
 .spec-line .tx { white-space: pre-wrap; flex: 1; }
 .spec-comment { margin: 4px 12px 8px 50px; }
 .spec-form { margin: 4px 12px 8px 50px; flex-wrap: nowrap; }
-.spec-form input { flex: 1; }</style>
+.spec-form input { flex: 1; }
+/* dashboard/src/cards/cards.css */
+.card-rail { width: 320px; flex: none; padding: 12px; border-left: 1px solid var(--border); overflow-y: auto; }
+.card-rail-empty { padding: 12px; }
+.card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
+.notif-card { border-left: 3px solid var(--accent); }
+.notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
+.notif-title:disabled { cursor: default; }
+@media (max-width: 899px) { .card-rail { width: 100%; border-left: 0; border-bottom: 1px solid var(--border); } }</style>
 </head>
 <body>
 <div id="root"></div>

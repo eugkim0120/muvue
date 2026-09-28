@@ -6,8 +6,7 @@ export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
   const [pathPart = "", queryPart = ""] = raw.split("?");
   const parts = pathPart.split("/").filter(Boolean);
-  // "#n=<nonce>" is the one-time login link, consumed before the router runs.
-  if (!parts.length || parts[0]!.startsWith("n=")) return { page: "plan", params: [], query: new URLSearchParams(queryPart) };
+  if (!parts.length || parts[0]!.startsWith("n=")) return { page: "", params: [], query: new URLSearchParams(queryPart) };
   return { page: parts[0]!, params: parts.slice(1), query: new URLSearchParams(queryPart) };
 }
 
@@ -19,20 +18,26 @@ if (typeof window !== "undefined") window.addEventListener("hashchange", resetRo
 
 export function navigate(hash: string): void { window.location.hash = hash; }
 
-function currentPath(): string {
-  const r = parseHash(window.location.hash);
-  return "#/" + [r.page, ...r.params].join("/");
-}
+export function openProject(id: number): void { navigate("#/p/" + id); }
 
 export function openNode(id: number): void {
   const r = parseHash(window.location.hash);
-  r.query.set("node", String(id));
-  navigate(currentPath() + "?" + r.query.toString());
+  const q = new URLSearchParams(r.query);
+  q.set("node", String(id));
+  navigate("#/" + [r.page, ...r.params].join("/") + "?" + q.toString());
 }
 
 export function closeNode(): void {
   const r = parseHash(window.location.hash);
-  r.query.delete("node");
-  const q = r.query.toString();
-  navigate(currentPath() + (q ? "?" + q : ""));
+  const q = new URLSearchParams(r.query);
+  q.delete("node");
+  const qs = q.toString();
+  navigate("#/" + [r.page, ...r.params].join("/") + (qs ? "?" + qs : ""));
 }
+
+// The tab pages this replaces all folded into one project canvas; a link
+// to any of them (bookmarked, or from history) lands on that project's
+// canvas instead of a 404. "#/spec/:id" is the one case that names a
+// node rather than a project — the caller resolves its project first.
+const LEGACY_PAGES = new Set(["plan", "inbox", "activity", "spend"]);
+export function isLegacyRoute(r: Route): boolean { return LEGACY_PAGES.has(r.page) || r.page === "spec"; }

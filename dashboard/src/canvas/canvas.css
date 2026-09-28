@@ -1,0 +1,53 @@
+/* dashboard/src/canvas/canvas.css */
+.canvas-wrap { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); min-height: 60dvh; }
+.canvas-viewport { width: 100%; height: 100%; min-height: 60dvh; overflow: hidden; touch-action: none; cursor: grab; }
+.canvas-viewport:active { cursor: grabbing; }
+.canvas-frame { position: relative; transform-origin: 0 0; }
+.canvas-spec-slot { position: absolute; top: 0; left: 0; right: 0; }
+.canvas-arrows { position: absolute; pointer-events: none; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--border); stroke-width: 1.5; }
+.canvas-arrows .arrow-label-bg { fill: var(--surface-2); stroke: var(--border); }
+.canvas-arrows .arrow-label { font-size: 11px; fill: var(--text-2); }
+.canvas-boxes { position: absolute; top: 0; left: 0; }
+.canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
+.spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; cursor: pointer; box-shadow: var(--shadow); }
+.spec-root-card { margin: 0 16px; }
+.task-box { border-left: 4px solid var(--st-pending); }
+.task-box.st-bar-ready { border-left-color: var(--st-ready); }
+.task-box.st-bar-in_progress { border-left-color: var(--st-in_progress); }
+.task-box.st-bar-review { border-left-color: var(--st-review); }
+.task-box.st-bar-done { border-left-color: var(--st-done); }
+.task-box.st-bar-blocked, .task-box.st-bar-failed { border-left-color: var(--st-blocked); }
+.task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.task-box.ghost { opacity: .7; border-style: dashed; cursor: default; }
+.task-box.ghost-error { border-color: var(--danger); opacity: 1; }
+.purpose { margin: 2px 0 6px; }
+.subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
+.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
+.more-row { padding-left: 20px; }
+.needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
+.agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
+/* Own row, deliberately separate from .agent-chip's row so its height is
+   deterministic (two 44px-min-height buttons, not dependent on whether they
+   wrap at the box's 240px width alongside the chip) -- flowLayout.ts's
+   BOX_H_BASE bakes this row's real measured height in. */
+.task-box-actions { margin-top: 4px; flex-wrap: nowrap; }
+@keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+.phone-flow .task-box { width: 100%; }
+.phone-step { border-left: 2px dashed var(--border); padding-left: 10px; }
+.phone-step-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.phone-step-row .task-box { flex: 1 1 260px; }
+.parallel-label { text-transform: uppercase; letter-spacing: .04em; }
+.status-line { padding: 4px 16px; }
+.status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.spend-amber { color: var(--tier-medium); }
+.spend-red { color: var(--danger); }
+.spec-body { padding: 8px 0; }
+.spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
+.spec-line:hover { background: var(--surface-2); }
+.spec-line .ln { color: var(--text-2); min-width: 28px; text-align: right; user-select: none; }
+.spec-line .tx { white-space: pre-wrap; flex: 1; }
+.spec-comment { margin: 4px 12px 8px 50px; }
+.spec-form { margin: 4px 12px 8px 50px; flex-wrap: nowrap; }
+.spec-form input { flex: 1; }

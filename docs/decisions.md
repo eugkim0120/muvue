@@ -2348,3 +2348,25 @@ reading here. Real `decisions` table entries start once dogfooding begins
     takes only `{goal}`, matching `muvue new`; a project's spend is
     still read by summing its nodes' `agent_spend` rows, same as
     everywhere else.
+
+171. **The canvas replaces the dashboard's tabs; two card kinds are
+    synthesized, not inbox-sourced.** The design spec says notification
+    cards "come from the existing `/inbox` data, with no new data
+    source," but `GET /inbox`'s actual response has no "Spec awaiting
+    approval" or "Task list awaiting Gate 2" categories -- it returns
+    only `questions`/`review`/`unverified_external`/`structure_updates`/
+    `blocked`/`awaiting_approval`/`signals`/`audit_items`/
+    `unattributed_commits`. `dashboard/src/cards/cardsFromInbox.ts`
+    synthesizes `spec_review` and `gate2_review` cards client-side from
+    the spec node's own `status` and the project's `phase`, applying the
+    same client-side rule the pre-canvas dashboard's `SpecCard.tsx`
+    already used for its Approve buttons, rather than adding a new
+    backend inbox category for two conditions the frontend can already
+    derive from data it fetches anyway. "Plan revision proposed" cards
+    are synthesized the same way from `GET /projects/{id}/revisions`'
+    unapproved rows. If a future backend change makes spec/gate2/
+    revision state harder to derive from already-fetched data (for
+    example, gate2 eligibility gaining a rule not visible in `phase`/
+    `status`), this synthesis silently drifts from the real rule and the
+    card stops appearing at the right time. Low probability: this
+    mirrors an already-shipped, already-tested client-side rule.

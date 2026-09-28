@@ -2,7 +2,7 @@ import type { ComponentChildren } from "preact";
 
 type Props = {
   variant?: "filled" | "outline" | "danger" | "plain";
-  onClick?: () => void;
+  onClick?: (e: MouseEvent) => void;
   disabled?: boolean;
   type?: "button" | "submit";
   children: ComponentChildren;

@@ -7,10 +7,14 @@ import { Button } from "../ui/Button";
 import { Confirm } from "../ui/Confirm";
 import { Pill } from "../ui/Pill";
 import { CloseSheet } from "../project/CloseSheet";
+import { AgentsSheet } from "../project/AgentsSheet";
+import { HistorySheet } from "../project/HistorySheet";
 
 export function ProjectMenu({ onClose }: { onClose: () => void }) {
   const [confirmPause, setConfirmPause] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [agents, setAgents] = useState(false);
+  const [history, setHistory] = useState(false);
   const p = currentProject.value;
 
   async function pause() {
@@ -28,6 +32,8 @@ export function ProjectMenu({ onClose }: { onClose: () => void }) {
     try { await post(routes.projectResume(p.id)); toast("resumed"); refresh(); onClose(); } catch (e) { toastError(e); }
   }
 
+  if (agents && p) return <AgentsSheet projectId={p.id} onClose={() => { setAgents(false); onClose(); }} />;
+  if (history) return <HistorySheet onClose={() => { setHistory(false); onClose(); }} />;
   if (closing && p) return <CloseSheet projectId={p.id} onClose={() => { setClosing(false); onClose(); }} />;
   if (confirmPause) {
     return <Confirm title="Pause project?" body="Running agents are stopped and their tasks go back to ready." confirmLabel="Pause" danger onConfirm={pause} onCancel={() => setConfirmPause(false)} />;
@@ -48,6 +54,8 @@ export function ProjectMenu({ onClose }: { onClose: () => void }) {
             {p.phase !== "paused" && p.phase !== "closed" ? <Button variant="danger" onClick={() => setConfirmPause(true)}>Pause</Button> : null}
             {p.phase === "paused" ? <Button variant="filled" onClick={resume}>Resume</Button> : null}
             {p.phase !== "closed" ? <Button onClick={() => setClosing(true)}>Close project…</Button> : null}
+            <Button onClick={() => setAgents(true)}>Agents</Button>
+            <Button onClick={() => setHistory(true)}>History</Button>
           </div>
         ) : null}
       </div>

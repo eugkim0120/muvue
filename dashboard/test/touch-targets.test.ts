@@ -18,7 +18,7 @@ test(".chip meets the 44px touch-target minimum", () => {
 });
 
 test(".spec-line meets the 44px touch-target minimum and centers its content", () => {
-  const css = readFileSync(join(__dirname, "..", "src", "spec", "spec.css"), "utf8");
+  const css = readFileSync(join(__dirname, "..", "src", "canvas", "canvas.css"), "utf8");
   expect(minHeightOf(css, ".spec-line")).toBeGreaterThanOrEqual(44);
   const re = /\.spec-line\s*\{([^}]*)\}/;
   const body = re.exec(css)![1]!;

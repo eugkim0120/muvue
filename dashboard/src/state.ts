@@ -15,7 +15,6 @@ export const projects = signal<Project[]>([]);
 export const projectId = signal<number | null>(null);
 export const currentProject = computed(() => projects.value.find((p) => p.id === projectId.value) ?? null);
 export const authed = signal(false);
-export const inboxCount = signal(0);
 export const refreshTick = signal(0);
 export const protocolVersion = signal<number | null>(null);
 
