@@ -1140,8 +1140,11 @@ function Sheet({ title, onClose, children }) {
     /* @__PURE__ */ u$1("div", { class: "sheet-body", children })
   ] }) });
 }
-function Button({ variant = "outline", onClick, disabled, type = "button", children }) {
-  return /* @__PURE__ */ u$1("button", { type, class: "btn btn-" + variant, onClick, disabled, children });
+function Button({ variant = "outline", onClick, disabled, busy, busyLabel, type = "button", children }) {
+  return /* @__PURE__ */ u$1("button", { type, class: "btn btn-" + variant + (busy ? " busy" : ""), onClick, disabled: disabled || busy, "aria-busy": busy ? "true" : void 0, children: [
+    busy ? /* @__PURE__ */ u$1("span", { class: "spinner", "aria-hidden": "true" }) : null,
+    busy ? busyLabel ?? children : children
+  ] });
 }
 function Confirm({ title, body, confirmLabel, danger, onConfirm, onCancel }) {
   return /* @__PURE__ */ u$1(Sheet, { title, onClose: onCancel, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
@@ -1152,23 +1155,47 @@ function Confirm({ title, body, confirmLabel, danger, onConfirm, onCancel }) {
     ] })
   ] }) });
 }
+function useAction() {
+  const [busy, setBusy] = d$2(false);
+  const [error, setError] = d$2(null);
+  const inFlight = A(false);
+  async function run(fn) {
+    if (inFlight.current) return false;
+    inFlight.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await fn();
+      return true;
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : String(e2));
+      toastError(e2);
+      return false;
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+  return { busy, error, run, clearError: () => setError(null) };
+}
 const SECTIONS = [["decisions", "Decisions"], ["promoted_lessons", "Promoted lessons"], ["components", "Components"], ["changed_components", "Changed components"]];
 function CloseSheet({ projectId: projectId2, onClose }) {
   const [preview, setPreview] = d$2(null);
   const [error, setError] = d$2(null);
   const [pr, setPr] = d$2(false);
+  const a2 = useAction();
   h$2(() => {
     api(routes.closePreview(projectId2)).then(setPreview, (e2) => setError(e2.message));
   }, [projectId2]);
   async function close() {
-    try {
+    const ok = await a2.run(async () => {
       const r2 = await post(routes.projectClose(projectId2), { pr });
       const res = r2.result ?? r2;
       toast(res.fast_forwarded ? "closed; main fast-forwarded" : `closed; structure is on ${res.structure_ref}${res.pr_url ? `, PR ${res.pr_url}` : res.pr_error ? ` (PR failed: ${res.pr_error})` : ""}`);
+    });
+    if (ok) {
       refresh();
       onClose();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   return /* @__PURE__ */ u$1(Sheet, { title: `Close project #${projectId2}`, onClose, children: error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : !preview ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : /* @__PURE__ */ u$1("div", { class: "stack", children: [
@@ -1192,8 +1219,9 @@ function CloseSheet({ projectId: projectId2, onClose }) {
       /* @__PURE__ */ u$1("input", { type: "checkbox", style: { width: "auto", minHeight: 0 }, checked: pr, onChange: (e2) => setPr(e2.target.checked) }),
       " open a GitHub PR if main can't be fast-forwarded"
     ] }),
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
     /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !preview.closeable, onClick: close, children: "Close and commit structure" }),
+      /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !preview.closeable, busy: a2.busy, busyLabel: "Closing…", onClick: close, children: "Close and commit structure" }),
       /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" })
     ] })
   ] }) });
@@ -1321,27 +1349,27 @@ function ProjectMenu({ onClose }) {
   const [agents, setAgents] = d$2(false);
   const [history2, setHistory] = d$2(false);
   const p2 = currentProject.value;
+  const pauseA = useAction();
+  const resumeA = useAction();
   async function pause() {
     if (!p2) return;
-    try {
+    const ok = await pauseA.run(async () => {
       const r2 = await post(routes.projectPause(p2.id));
       const stopped = (r2.result ?? r2).stopped_runners ?? [];
       toast(`paused; stopped ${stopped.length} runner process(es)`);
+    });
+    if (ok) {
       refresh();
       onClose();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   async function resume() {
     if (!p2) return;
-    try {
-      await post(routes.projectResume(p2.id));
+    const ok = await resumeA.run(() => post(routes.projectResume(p2.id)));
+    if (ok) {
       toast("resumed");
       refresh();
       onClose();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   if (agents && p2) return /* @__PURE__ */ u$1(AgentsSheet, { projectId: p2.id, onClose: () => {
@@ -1357,7 +1385,20 @@ function ProjectMenu({ onClose }) {
     onClose();
   } });
   if (confirmPause) {
-    return /* @__PURE__ */ u$1(Confirm, { title: "Pause project?", body: "Running agents are stopped and their tasks go back to ready.", confirmLabel: "Pause", danger: true, onConfirm: pause, onCancel: () => setConfirmPause(false) });
+    return /* @__PURE__ */ u$1(
+      Confirm,
+      {
+        title: "Pause project?",
+        body: /* @__PURE__ */ u$1(S$1, { children: [
+          "Running agents are stopped and their tasks go back to ready.",
+          pauseA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: pauseA.error }) : null
+        ] }),
+        confirmLabel: pauseA.busy ? "Pausing…" : "Pause",
+        danger: true,
+        onConfirm: pause,
+        onCancel: () => setConfirmPause(false)
+      }
+    );
   }
   return /* @__PURE__ */ u$1(Sheet, { title: "Project", onClose, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
     /* @__PURE__ */ u$1("div", { class: "list", children: projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
@@ -1373,12 +1414,15 @@ function ProjectMenu({ onClose }) {
       ] }) }),
       /* @__PURE__ */ u$1(Pill, { status: pr.phase })
     ] })) }),
-    authed.value && p2 ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      p2.phase !== "paused" && p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setConfirmPause(true), children: "Pause" }) : null,
-      p2.phase === "paused" ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: resume, children: "Resume" }) : null,
-      p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { onClick: () => setClosing(true), children: "Close project…" }) : null,
-      /* @__PURE__ */ u$1(Button, { onClick: () => setAgents(true), children: "Agents" }),
-      /* @__PURE__ */ u$1(Button, { onClick: () => setHistory(true), children: "History" })
+    authed.value && p2 ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("div", { class: "actions", children: [
+        p2.phase !== "paused" && p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setConfirmPause(true), children: "Pause" }) : null,
+        p2.phase === "paused" ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: resumeA.busy, busyLabel: "Resuming…", onClick: resume, children: "Resume" }) : null,
+        p2.phase !== "closed" ? /* @__PURE__ */ u$1(Button, { onClick: () => setClosing(true), children: "Close project…" }) : null,
+        /* @__PURE__ */ u$1(Button, { onClick: () => setAgents(true), children: "Agents" }),
+        /* @__PURE__ */ u$1(Button, { onClick: () => setHistory(true), children: "History" })
+      ] }),
+      resumeA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: resumeA.error }) : null
     ] }) : null
   ] }) });
 }
@@ -1646,19 +1690,8 @@ function SubtaskRow({ subtask, needsYou }) {
     needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
   ] });
 }
-const pendingCreates = y({});
+y({});
 const pendingBreakdowns = y({});
-function startCreate(key, p2) {
-  pendingCreates.value = { ...pendingCreates.value, [key]: p2 };
-}
-function resolveCreate(key) {
-  const { [key]: _removed, ...rest } = pendingCreates.value;
-  pendingCreates.value = rest;
-}
-function failCreate(key, error) {
-  const existing = pendingCreates.value[key];
-  if (existing) pendingCreates.value = { ...pendingCreates.value, [key]: { ...existing, error } };
-}
 function startBreakdown(nodeId, p2) {
   pendingBreakdowns.value = { ...pendingBreakdowns.value, [nodeId]: p2 };
 }
@@ -1674,6 +1707,7 @@ function AddForm({ parentId, kind, candidates, onClose }) {
   const [purpose, setPurpose] = d$2("");
   const [criteria, setCriteria] = d$2("");
   const [receives, setReceives] = d$2([]);
+  const a2 = useAction();
   function toggle(id) {
     setReceives((r2) => r2.some((x2) => x2.id === id) ? r2.filter((x2) => x2.id !== id) : [...r2, { id, carries: "" }]);
   }
@@ -1682,22 +1716,16 @@ function AddForm({ parentId, kind, candidates, onClose }) {
   }
   async function save() {
     if (!title.trim()) return;
-    const key = `${kind}:${parentId}:new`;
-    startCreate(key, { kind, parentId, title });
-    try {
-      await post(routes.nodeChildren(parentId), {
-        title,
-        body_md: purpose,
-        criteria: criteria.split("\n").map((l2) => l2.trim()).filter(Boolean),
-        depends_on: receives.map((r2) => ({ id: r2.id, carries: r2.carries || null })),
-        predicted_touches: []
-      });
-      resolveCreate(key);
+    const ok = await a2.run(() => post(routes.nodeChildren(parentId), {
+      title,
+      body_md: purpose,
+      criteria: criteria.split("\n").map((l2) => l2.trim()).filter(Boolean),
+      depends_on: receives.map((r2) => ({ id: r2.id, carries: r2.carries || null })),
+      predicted_touches: []
+    }));
+    if (ok) {
       refresh();
       onClose();
-    } catch (e2) {
-      failCreate(key, e2 instanceof Error ? e2.message : String(e2));
-      toastError(e2);
     }
   }
   return /* @__PURE__ */ u$1("form", { class: "card stack tight add-form", onSubmit: (e2) => {
@@ -1720,28 +1748,26 @@ function AddForm({ parentId, kind, candidates, onClose }) {
         ] });
       })
     ] }) : null,
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
     /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Save" }),
+      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Saving…", children: "Save" }),
       /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" })
     ] })
   ] });
 }
 function BreakdownButton({ nodeId, disabled, caption }) {
-  const [error, setError] = d$2(null);
+  const a2 = useAction();
   async function run() {
-    setError(null);
-    try {
+    await a2.run(async () => {
       const r2 = await post(routes.nodeBreakdown(nodeId), {});
       startBreakdownGhosts(nodeId, r2.spawned.agent, r2.spawned.log);
       refresh();
-    } catch (e2) {
-      setError(e2 instanceof Error ? e2.message : String(e2));
-    }
+    });
   }
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, onClick: run, children: "✨ Break down with agent" }),
+    /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: "✨ Break down with agent" }),
     disabled && caption ? /* @__PURE__ */ u$1("div", { class: "caption", children: caption }) : null,
-    error ? /* @__PURE__ */ u$1("div", { class: "caption danger", children: error }) : null
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
 function startBreakdownGhosts(nodeId, agent, log) {
@@ -1784,48 +1810,42 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
 function SubmitSpecForm({ projectId: projectId2 }) {
   const [title, setTitle] = d$2("");
   const [body, setBody] = d$2("");
-  const [busy, setBusy] = d$2(false);
+  const a2 = useAction();
   async function submit(e2) {
     e2.preventDefault();
     if (!title.trim() || !body.trim()) return;
-    setBusy(true);
-    try {
-      await post(routes.projectSpec(projectId2), { title, body_md: body });
+    const ok = await a2.run(() => post(routes.projectSpec(projectId2), { title, body_md: body }));
+    if (ok) {
       toast("spec submitted");
       refresh();
-    } catch (e22) {
-      toastError(e22);
-    } finally {
-      setBusy(false);
     }
   }
   return /* @__PURE__ */ u$1("form", { class: "spec-root-card stack", onSubmit: submit, children: [
     /* @__PURE__ */ u$1("input", { placeholder: "title", value: title, onInput: (e2) => setTitle(e2.target.value) }),
     /* @__PURE__ */ u$1("textarea", { placeholder: "one requirement per line", value: body, onInput: (e2) => setBody(e2.target.value) }),
-    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Submit spec" }) })
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
+    /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Submitting…", children: "Submit spec" }) })
   ] });
 }
 function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
+  const approveSpecA = useAction();
+  const approveTasksA = useAction();
   if (!spec) return authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: projectId2 }) : /* @__PURE__ */ u$1("div", { class: "spec-root-card", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "No spec yet." }) });
   const canApproveSpec = authed.value && spec.status === "pending";
   const canApproveTasks = authed.value && spec.status !== "pending" && taskCount > 0 && projectPhase === "planning";
   const state = agentStateOf({ status: spec.status, agent: spec.agent }, projectPhase, false);
   async function approveSpec() {
-    try {
-      await post(routes.nodeApprove(spec.id), { target: "spec" });
+    const ok = await approveSpecA.run(() => post(routes.nodeApprove(spec.id), { target: "spec" }));
+    if (ok) {
       toast("spec approved");
       refresh();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   async function approveTasks() {
-    try {
-      await post(routes.nodeApprove(projectId2), { target: "gate2" });
+    const ok = await approveTasksA.run(() => post(routes.nodeApprove(projectId2), { target: "gate2" }));
+    if (ok) {
       toast("task list approved; criteria frozen");
       refresh();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   return /* @__PURE__ */ u$1("div", { class: "spec-root-card stack", tabIndex: 0, onClick: () => openNode(spec.id), onKeyDown: (e2) => {
@@ -1839,16 +1859,18 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
       /* @__PURE__ */ u$1(AgentChip, { agent: spec.agent, state }),
       /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: (e2) => {
+        canApproveSpec ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: (e2) => {
           e2.stopPropagation();
           void approveSpec();
         }, children: "Approve spec" }) : null,
-        canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: (e2) => {
+        canApproveTasks ? /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: (e2) => {
           e2.stopPropagation();
           void approveTasks();
         }, children: "Approve task list" }) : null
       ] })
     ] }),
+    approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null,
+    approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null,
     authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id }) }) : null
   ] });
 }
@@ -1891,7 +1913,6 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
-  const pendingCreateGhosts = Object.entries(pendingCreates.value).filter(([, p2]) => p2.kind === "task");
   const breakdownGhosts = Object.entries(pendingBreakdowns.value).filter(([nodeId]) => Number(nodeId) === data.spec?.id);
   const ghostY = (i2) => PAD + lay.height + i2 * (BOX_H_BASE + GAP_Y);
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
@@ -1911,8 +1932,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
       ] })) }),
       /* @__PURE__ */ u$1("div", { class: "canvas-boxes", style: { marginTop: "96px" }, children: [
         data.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, style: { position: "absolute", left: lay.pos[t2.id].x + "px", top: lay.pos[t2.id].y + "px", width: lay.pos[t2.id].w + "px" } })),
-        pendingCreateGhosts.map(([key, p2], i2) => /* @__PURE__ */ u$1(GhostBox, { title: p2.title, caption: "creating…", error: p2.error, style: { position: "absolute", left: PAD + "px", top: ghostY(i2) + "px", width: BOX_W + "px" } }, key)),
-        breakdownGhosts.flatMap(([, p2], gi) => [0, 1, 2].map((i2) => /* @__PURE__ */ u$1(GhostBox, { title: "…", caption: `${p2.agent} is breaking this down…`, logLink: p2.log, style: { position: "absolute", left: PAD + "px", top: ghostY(pendingCreateGhosts.length + gi * 3 + i2) + "px", width: BOX_W + "px" } }, p2.nodeId + ":" + i2)))
+        breakdownGhosts.flatMap(([, p2], gi) => [0, 1, 2].map((i2) => /* @__PURE__ */ u$1(GhostBox, { title: "…", caption: `${p2.agent} is breaking this down…`, logLink: p2.log, style: { position: "absolute", left: PAD + "px", top: ghostY(gi * 3 + i2) + "px", width: BOX_W + "px" } }, p2.nodeId + ":" + i2)))
       ] })
     ] }) })
   ] });
@@ -1930,6 +1950,7 @@ function PhoneFlow({ data, projectId: projectId2, projectPhase, needsYou }) {
 function Discuss({ card, onSent }) {
   const [detail, setDetail] = d$2(null);
   const [reply, setReply] = d$2("");
+  const a2 = useAction();
   h$2(() => {
     let alive = true;
     if (card.nodeId) api(routes.node(card.nodeId)).then(
@@ -1946,56 +1967,56 @@ function Discuss({ card, onSent }) {
   }, [card.nodeId]);
   async function send() {
     if (!reply.trim()) return;
-    try {
+    const ok = await a2.run(async () => {
       if (card.kind === "question") await post(routes.questionAnswer(Number(card.id.split(":")[1])), { text: reply });
       else if (card.nodeId) await post(routes.nodeComment(card.nodeId), { text: reply });
+    });
+    if (ok) {
       setReply("");
       onSent();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   return /* @__PURE__ */ u$1("div", { class: "stack tight discuss", children: [
     detail ? detail.notes.filter((n2) => n2.kind === "feedback").map((n2) => /* @__PURE__ */ u$1("div", { class: "callout", children: n2.text })) : null,
     /* @__PURE__ */ u$1("div", { class: "row", style: { flexWrap: "nowrap" }, children: [
       /* @__PURE__ */ u$1("input", { placeholder: "reply", value: reply, onInput: (e2) => setReply(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: send, children: "Send" })
-    ] })
+      /* @__PURE__ */ u$1(Button, { variant: "filled", busy: a2.busy, busyLabel: "Sending…", onClick: send, children: "Send" })
+    ] }),
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
 const APPROVE_TARGET = { spec_review: "spec", gate2_review: "gate2", task_review: "review", awaiting_approval: "node" };
 const CAPTION = { spec_review: "Spec awaiting approval", gate2_review: "Task list awaiting Gate 2", task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
 function Card({ card, onActed }) {
-  const [busy, setBusy] = d$2(null);
   const [rejecting, setRejecting] = d$2(false);
   const [reason, setReason] = d$2("");
   const [discussing, setDiscussing] = d$2(false);
-  const [error, setError] = d$2(null);
-  async function run(label, fn) {
-    setBusy(label);
-    setError(null);
-    try {
-      await fn();
-      toast(label.toLowerCase());
-      onActed();
-    } catch (e2) {
-      setError(e2 instanceof Error ? e2.message : String(e2));
-    } finally {
-      setBusy(null);
-    }
-  }
+  const approveA = useAction();
+  const rejectA = useAction();
+  const approveLabel = card.kind === "ack" ? "Acknowledge" : "Approve";
   async function approve() {
-    if (card.kind === "revision") return run("Approve", () => post(routes.approveRevision(card.projectId), { target: "revision", n: Number(card.id.split(":")[1]) }));
-    if (card.kind === "ack") return run("Acknowledge", () => post(routes.eventAck(Number(card.id.split(":").pop()))));
-    const target = APPROVE_TARGET[card.kind];
-    if (!target) return;
-    const id = card.kind === "gate2_review" ? card.projectId : card.nodeId;
-    if (!id) return;
-    return run("Approve", () => post(routes.nodeApprove(id), { target }));
+    let fn = null;
+    if (card.kind === "revision") fn = () => post(routes.approveRevision(card.projectId), { target: "revision", n: Number(card.id.split(":")[1]) });
+    else if (card.kind === "ack") fn = () => post(routes.eventAck(Number(card.id.split(":").pop())));
+    else {
+      const target = APPROVE_TARGET[card.kind];
+      const id = card.kind === "gate2_review" ? card.projectId : card.nodeId;
+      if (target && id) fn = () => post(routes.nodeApprove(id), { target });
+    }
+    if (!fn) return;
+    const ok = await approveA.run(fn);
+    if (ok) {
+      toast(approveLabel.toLowerCase());
+      onActed();
+    }
   }
   async function reject() {
     if (!reason.trim() || !card.nodeId) return;
-    return run("Send back", () => post(routes.nodeReject(card.nodeId), { feedback: reason }));
+    const ok = await rejectA.run(() => post(routes.nodeReject(card.nodeId), { feedback: reason }));
+    if (ok) {
+      toast("send back");
+      onActed();
+    }
   }
   return /* @__PURE__ */ u$1("div", { class: "card stack tight notif-card", children: [
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
@@ -2005,15 +2026,16 @@ function Card({ card, onActed }) {
     /* @__PURE__ */ u$1("button", { type: "button", class: "notif-title", disabled: !card.nodeId, onClick: () => card.nodeId && openNode(card.nodeId), children: card.title }),
     /* @__PURE__ */ u$1("div", { children: card.context }),
     card.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: card.agent }) : null,
-    error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) : null,
-    card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", disabled: !!busy, onClick: approve, children: busy ? "…" : "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
-      /* @__PURE__ */ u$1(Button, { variant: "filled", disabled: !!busy, onClick: approve, children: busy === "Approve" ? "…" : "Approve" }),
-      card.kind === "task_review" ? /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !!busy, onClick: () => setRejecting((r2) => !r2), children: "Reject" }) : null,
+    approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
+    card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
+      /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: approve, children: "Approve" }),
+      card.kind === "task_review" ? /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: approveA.busy, onClick: () => setRejecting((r2) => !r2), children: "Reject" }) : null,
       card.kind !== "revision" ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: "Discuss" }) : null
     ] }),
     rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("input", { placeholder: "why?", value: reason, onInput: (e2) => setReason(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !reason.trim(), onClick: reject, children: "Send" })
+      rejectA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: rejectA.error }) : null,
+      /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !reason.trim(), busy: rejectA.busy, busyLabel: "Sending…", onClick: reject, children: "Send" })
     ] }) : null,
     discussing ? /* @__PURE__ */ u$1(Discuss, { card, onSent: onActed }) : null
   ] });
@@ -2119,6 +2141,7 @@ function ProjectPage() {
   const [addingTask, setAddingTask] = d$2(false);
   const p2 = currentProject.value;
   const pid = projectId.value;
+  const runA = useAction();
   const graphQ = useApi(() => api(routes.graph(pid)), [pid, refreshTick.value]);
   const nodesQ = useApi(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi(() => api(routes.inbox()), [refreshTick.value]);
@@ -2145,21 +2168,18 @@ function ProjectPage() {
   const busyAgents = new Set((nodesQ.data ?? []).filter((n2) => n2.status === "in_progress").map((n2) => n2.owner)).size;
   async function run() {
     if (!pid) return;
-    try {
-      await post(routes.projectRun(pid), {});
-      toast("run started");
-    } catch (e2) {
-      toastError(e2);
-    }
+    const ok = await runA.run(() => post(routes.projectRun(pid), {}));
+    if (ok) toast("run started");
   }
   return /* @__PURE__ */ u$1("div", { class: "page-canvas", children: [
     /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
       /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
       /* @__PURE__ */ u$1("div", { class: "row", children: [
         authed.value && data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-        /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: run, children: "▶ Run" })
+        /* @__PURE__ */ u$1(Button, { variant: "filled", busy: runA.busy, busyLabel: "Starting…", onClick: run, children: "▶ Run" })
       ] })
     ] }),
+    runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", style: { margin: "0 16px" }, children: runA.error }) : null,
     /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, busyAgents, spend: 0, budget: 1 }) }),
     authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
     graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
@@ -2172,24 +2192,31 @@ function ProjectPage() {
     agentsSheet ? /* @__PURE__ */ u$1(AgentsSheet, { projectId: pid, onClose: () => setAgentsSheet(false) }) : null
   ] });
 }
+function AgentRow({ nodeId, agent, onStarted }) {
+  const a2 = useAction();
+  async function start() {
+    const ok = await a2.run(async () => {
+      const r2 = await post(routes.nodeStart(nodeId, agent));
+      toast(`started runner pid ${r2.spawned.pid}`);
+    });
+    if (ok) {
+      refresh();
+      onStarted();
+    }
+  }
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1(Button, { variant: "outline", busy: a2.busy, busyLabel: "Starting…", onClick: start, children: agent }),
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
+  ] });
+}
 function StartPicker({ nodeId, onClose, onStarted }) {
   const [agents, setAgents] = d$2(null);
   h$2(() => {
     api(routes.agents()).then((r2) => setAgents(r2.agents), toastError);
   }, []);
-  async function start(agent) {
-    try {
-      const r2 = await post(routes.nodeStart(nodeId, agent));
-      toast(`started runner pid ${r2.spawned.pid}`);
-      refresh();
-      onStarted();
-    } catch (e2) {
-      toastError(e2);
-    }
-  }
   return /* @__PURE__ */ u$1("div", { class: "card stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "caption", children: "Agent from config.toml [agents.*]" }),
-    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list", children: agents.map((a2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row", onClick: () => start(a2), children: /* @__PURE__ */ u$1("span", { class: "grow title", children: a2 }) })) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
+    agents === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "loading…" }) : agents.length ? /* @__PURE__ */ u$1("div", { class: "list stack tight", children: agents.map((a2) => /* @__PURE__ */ u$1(AgentRow, { nodeId, agent: a2, onStarted }, a2)) }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "no agents configured" }),
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" }) })
   ] });
 }
@@ -2199,69 +2226,67 @@ function Actions({ detail, onDone }) {
   const [feedback, setFeedback] = d$2("");
   const [starting, setStarting] = d$2(false);
   const [removing, setRemoving] = d$2(false);
-  const [breakingDown, setBreakingDown] = d$2(false);
+  const approveA = useAction();
+  const rejectA = useAction();
+  const removeA = useAction();
+  const breakdownA = useAction();
   if (!authed.value) return null;
   async function approve(target, label) {
-    try {
-      await post(routes.nodeApprove(n2.id), { target });
+    const ok = await approveA.run(() => post(routes.nodeApprove(n2.id), { target }));
+    if (ok) {
       toast(label);
       refresh();
       onDone();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   async function reject() {
     if (!feedback.trim()) return;
-    try {
-      await post(routes.nodeReject(n2.id), { feedback });
+    const ok = await rejectA.run(() => post(routes.nodeReject(n2.id), { feedback }));
+    if (ok) {
       toast("sent back with feedback");
       refresh();
       onDone();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   async function remove() {
-    try {
-      await post(routes.nodeRemove(n2.id));
+    const ok = await removeA.run(() => post(routes.nodeRemove(n2.id)));
+    if (ok) {
       toast("removed");
       refresh();
       onDone();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   async function breakDown() {
-    setBreakingDown(true);
-    try {
+    const ok = await breakdownA.run(async () => {
       const r2 = await post(routes.nodeBreakdown(n2.id), {});
       startBreakdown(n2.id, { nodeId: n2.id, agent: r2.spawned.agent, log: r2.spawned.log, startChildIds: /* @__PURE__ */ new Set() });
+    });
+    if (ok) {
       toast("breakdown started");
       refresh();
-    } catch (e2) {
-      toastError(e2);
-    } finally {
-      setBreakingDown(false);
     }
   }
   const buttons = [];
   if (n2.status === "review") {
-    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("review", "approved"), children: "Approve" }));
+    buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("review", "approved"), children: "Approve" }));
     buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRejecting(true), children: "Reject" }));
   }
-  if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
-  if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
+  if (n2.status === "awaiting_approval") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("node", "criteria approved"), children: "Approve changed criteria" }));
+  if (n2.kind === "spec" && n2.status === "pending") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: () => approve("spec", "spec approved"), children: "Approve spec" }));
   if (n2.status === "ready") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "filled", onClick: () => setStarting(true), children: "Start with agent" }));
-  if ((n2.kind === "spec" || n2.kind === "task") && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", disabled: breakingDown, onClick: breakDown, children: "✨ Break down with agent" }));
+  if ((n2.kind === "spec" || n2.kind === "task") && n2.deleted_at === null) buttons.push(/* @__PURE__ */ u$1(Button, { variant: "outline", busy: breakdownA.busy, busyLabel: "Starting…", onClick: breakDown, children: "✨ Break down with agent" }));
   if (n2.criteria_hash === null && n2.deleted_at === null && n2.kind !== "spec") buttons.push(/* @__PURE__ */ u$1(Button, { variant: "danger", onClick: () => setRemoving(true), children: "Remove" }));
   if (!buttons.length) return null;
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "actions", children: buttons }),
+    approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
+    removeA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: removeA.error }) : null,
+    breakdownA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: breakdownA.error }) : null,
     rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("textarea", { placeholder: "what should change?", value: feedback, onInput: (e2) => setFeedback(e2.target.value) }),
+      rejectA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: rejectA.error }) : null,
       /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        /* @__PURE__ */ u$1(Button, { variant: "danger", onClick: reject, children: "Send" }),
+        /* @__PURE__ */ u$1(Button, { variant: "danger", busy: rejectA.busy, busyLabel: "Sending…", onClick: reject, children: "Send" }),
         /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setRejecting(false), children: "Cancel" })
       ] })
     ] }) : null,
@@ -2330,17 +2355,16 @@ function SpecBody({ nodeId, bodyMd, notes }) {
   const [openLine, setOpenLine] = d$2(null);
   const [draft, setDraft] = d$2("");
   const [general, setGeneral] = d$2("");
+  const a2 = useAction();
   async function send(text, line) {
     if (!text.trim()) return;
-    try {
-      await post(routes.nodeComment(nodeId), line === void 0 ? { text } : { text, line });
+    const ok = await a2.run(() => post(routes.nodeComment(nodeId), line === void 0 ? { text } : { text, line }));
+    if (ok) {
       toast("comment saved");
       setDraft("");
       setGeneral("");
       setOpenLine(null);
       refresh();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   const byLine = {};
@@ -2366,7 +2390,7 @@ function SpecBody({ nodeId, bodyMd, notes }) {
           void send(draft, n2);
         }, children: [
           /* @__PURE__ */ u$1("input", { placeholder: `comment on line ${n2}`, value: draft, onInput: (e2) => setDraft(e2.target.value) }),
-          /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Comment" })
+          /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Sending…", children: "Comment" })
         ] }) : null
       ] });
     }) }),
@@ -2379,7 +2403,8 @@ function SpecBody({ nodeId, bodyMd, notes }) {
       void send(general);
     }, children: [
       /* @__PURE__ */ u$1("textarea", { placeholder: "general comment on this spec", value: general, onInput: (e2) => setGeneral(e2.target.value) }),
-      /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", children: "Comment" }) })
+      a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null,
+      /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", busy: a2.busy, busyLabel: "Sending…", children: "Comment" }) })
     ] }) : null
   ] });
 }
@@ -2462,22 +2487,22 @@ function Runs({ nodeId }) {
 }
 function Discussion({ nodeId, notes }) {
   const [reply, setReply] = d$2("");
+  const a2 = useAction();
   async function send() {
     if (!reply.trim()) return;
-    try {
-      await post(routes.nodeComment(nodeId), { text: reply });
+    const ok = await a2.run(() => post(routes.nodeComment(nodeId), { text: reply }));
+    if (ok) {
       setReply("");
       refresh();
-    } catch (e2) {
-      toastError(e2);
     }
   }
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
     notes.filter((n2) => n2.kind === "feedback").map((n2) => /* @__PURE__ */ u$1("div", { class: "callout", children: n2.text })),
     /* @__PURE__ */ u$1("div", { class: "row", style: { flexWrap: "nowrap" }, children: [
       /* @__PURE__ */ u$1("input", { placeholder: "reply", value: reply, onInput: (e2) => setReply(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: send, children: "Send" })
-    ] })
+      /* @__PURE__ */ u$1(Button, { variant: "filled", busy: a2.busy, busyLabel: "Sending…", onClick: send, children: "Send" })
+    ] }),
+    a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
 function classifyDiffLine(line) {
@@ -2874,6 +2899,10 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
 .toast.error { background: var(--danger); color: #fff; }
 @media (min-width: 900px) { .toasts { bottom: 20px; } }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.btn.busy:disabled { opacity: 1; cursor: progress; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .app { min-height: 100dvh; display: flex; flex-direction: column; }
 main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 16px; padding-top: calc(8px + env(safe-area-inset-top)); background: color-mix(in srgb, var(--bg) 85%, transparent); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); }

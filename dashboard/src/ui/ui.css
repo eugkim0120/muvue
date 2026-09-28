@@ -39,3 +39,7 @@
 .toast.error { background: var(--danger); color: #fff; }
 @media (min-width: 900px) { .toasts { bottom: 20px; } }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.btn.busy:disabled { opacity: 1; cursor: progress; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }

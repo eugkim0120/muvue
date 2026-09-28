@@ -1,10 +1,10 @@
 import { useState } from "preact/hooks";
 import { post } from "../api/client";
 import { routes } from "../api/routes";
-import { refresh, toastError } from "../state";
+import { refresh } from "../state";
 import type { CanvasTask } from "./canvasData";
-import { startCreate, resolveCreate, failCreate } from "./pending";
 import { Button } from "../ui/Button";
+import { useAction } from "../ui/useAction";
 
 type Receives = { id: number; carries: string };
 
@@ -13,6 +13,7 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
   const [purpose, setPurpose] = useState("");
   const [criteria, setCriteria] = useState("");
   const [receives, setReceives] = useState<Receives[]>([]);
+  const a = useAction();
 
   function toggle(id: number) {
     setReceives((r) => (r.some((x) => x.id === id) ? r.filter((x) => x.id !== id) : [...r, { id, carries: "" }]));
@@ -23,17 +24,11 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
 
   async function save() {
     if (!title.trim()) return;
-    const key = `${kind}:${parentId}:new`;
-    startCreate(key, { kind, parentId, title });
-    try {
-      await post(routes.nodeChildren(parentId), {
-        title, body_md: purpose, criteria: criteria.split("\n").map((l) => l.trim()).filter(Boolean),
-        depends_on: receives.map((r) => ({ id: r.id, carries: r.carries || null })), predicted_touches: [],
-      });
-      resolveCreate(key);
-      refresh();
-      onClose();
-    } catch (e) { failCreate(key, e instanceof Error ? e.message : String(e)); toastError(e); }
+    const ok = await a.run(() => post(routes.nodeChildren(parentId), {
+      title, body_md: purpose, criteria: criteria.split("\n").map((l) => l.trim()).filter(Boolean),
+      depends_on: receives.map((r) => ({ id: r.id, carries: r.carries || null })), predicted_touches: [],
+    }));
+    if (ok) { refresh(); onClose(); }
   }
 
   return (
@@ -58,26 +53,26 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
           })}
         </div>
       ) : null}
-      <div class="actions"><Button type="submit" variant="filled">Save</Button><Button variant="plain" onClick={onClose}>Cancel</Button></div>
+      {a.error ? <div class="callout danger">{a.error}</div> : null}
+      <div class="actions"><Button type="submit" variant="filled" busy={a.busy} busyLabel="Saving…">Save</Button><Button variant="plain" onClick={onClose}>Cancel</Button></div>
     </form>
   );
 }
 
 export function BreakdownButton({ nodeId, disabled, caption }: { nodeId: number; disabled?: boolean; caption?: string }) {
-  const [error, setError] = useState<string | null>(null);
+  const a = useAction();
   async function run() {
-    setError(null);
-    try {
+    await a.run(async () => {
       const r = await post<{ spawned: { agent: string; log: string } }>(routes.nodeBreakdown(nodeId), {});
       startBreakdownGhosts(nodeId, r.spawned.agent, r.spawned.log);
       refresh();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    });
   }
   return (
     <div class="stack tight">
-      <Button variant="outline" disabled={disabled} onClick={run}>✨ Break down with agent</Button>
+      <Button variant="outline" disabled={disabled} busy={a.busy} busyLabel="Starting…" onClick={run}>✨ Break down with agent</Button>
       {disabled && caption ? <div class="caption">{caption}</div> : null}
-      {error ? <div class="caption danger">{error}</div> : null}
+      {a.error ? <div class="callout danger">{a.error}</div> : null}
     </div>
   );
 }

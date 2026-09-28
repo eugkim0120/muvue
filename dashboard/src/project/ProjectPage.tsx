@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { api, post } from "../api/client";
 import { routes } from "../api/routes";
 import { useApi } from "../hooks";
-import { authed, currentProject, projectId, projects, refreshTick, toast, toastError } from "../state";
+import { authed, currentProject, projectId, projects, refreshTick, toast } from "../state";
 import { buildCanvasData, type Graph, type FullNode } from "../canvas/canvasData";
 import { Canvas } from "../canvas/Canvas";
 import { PhoneFlow } from "../canvas/PhoneFlow";
@@ -15,6 +15,7 @@ import { AgentsSheet } from "./AgentsSheet";
 import { NewProject } from "./NewProject";
 import { Button } from "../ui/Button";
 import { Empty } from "../ui/Empty";
+import { useAction } from "../ui/useAction";
 
 const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 
@@ -23,6 +24,7 @@ export function ProjectPage() {
   const [addingTask, setAddingTask] = useState(false);
   const p = currentProject.value;
   const pid = projectId.value;
+  const runA = useAction();
 
   const graphQ = useApi<Graph>(() => api(routes.graph(pid)), [pid, refreshTick.value]);
   const nodesQ = useApi<FullNode[]>(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
@@ -59,7 +61,8 @@ export function ProjectPage() {
 
   async function run() {
     if (!pid) return;
-    try { await post(routes.projectRun(pid), {}); toast("run started"); } catch (e) { toastError(e); }
+    const ok = await runA.run(() => post(routes.projectRun(pid), {}));
+    if (ok) toast("run started");
   }
 
   return (
@@ -70,9 +73,10 @@ export function ProjectPage() {
           {authed.value && data?.spec && data.spec.status !== "pending" ? (
             <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
           ) : null}
-          <Button variant="filled" onClick={run}>▶ Run</Button>
+          <Button variant="filled" busy={runA.busy} busyLabel="Starting…" onClick={run}>▶ Run</Button>
         </div>
       </div>
+      {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
       <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
         <StatusLine phase={p.phase} done={done} total={total} busyAgents={busyAgents} spend={0} budget={1} />
       </button>

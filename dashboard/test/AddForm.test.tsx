@@ -1,7 +1,6 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/preact";
 import { AddForm } from "../src/canvas/AddForm";
 import * as client from "../src/api/client";
-import { pendingCreates } from "../src/canvas/pending";
 
 const candidates = [{ id: 2, title: "Record voice", status: "ready", risk_tier: "low", owner: null, agent: null, body_md: null, criteria_hash: null, block_reason: null, subtasks: [] }] as const;
 
@@ -22,10 +21,12 @@ test("submitting posts title, body, criteria lines, and depends_on with carries"
   });
 });
 
-test("a pending create shows a ghost keyed to the parent while the request is in flight", () => {
+test("Save shows Saving… while the create request is in flight", async () => {
+  let release!: (v: unknown) => void;
+  vi.spyOn(client, "post").mockImplementation(() => new Promise((r) => { release = r; }));
   render(<AddForm parentId={1} kind="task" candidates={[]} onClose={() => {}} />);
-  fireEvent.input(screen.getByPlaceholderText("title"), { target: { value: "x" } });
-  vi.spyOn(client, "post").mockReturnValue(new Promise(() => {})); // never resolves
+  fireEvent.input(screen.getByPlaceholderText("title"), { target: { value: "Record voice" } });
   fireEvent.click(screen.getByText("Save"));
-  expect(pendingCreates.value["task:1:new"]).toBeDefined();
+  await waitFor(() => screen.getByText("Saving…"));
+  release({ node: { id: 2 } });
 });
