@@ -9,6 +9,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const json = url.startsWith("/graph") ? { nodes: [], edges: [] }
       : url === "/inbox" ? { questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] }
+      : url.startsWith("/projects/1/activity") ? { active: [], breakdowns: [], working: [] }
       : [];
     return { ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: async () => json, text: async () => "" };
   }));

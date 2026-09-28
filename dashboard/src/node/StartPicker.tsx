@@ -4,6 +4,7 @@ import { routes } from "../api/routes";
 import { refresh, toast, toastError } from "../state";
 import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
+import { markLaunched } from "../project/activity";
 
 function AgentRow({ nodeId, agent, onStarted }: { nodeId: number; agent: string; onStarted: () => void }) {
   const a = useAction();
@@ -12,7 +13,7 @@ function AgentRow({ nodeId, agent, onStarted }: { nodeId: number; agent: string;
       const r = await post<{ spawned: { pid: number; log: string } }>(routes.nodeStart(nodeId, agent));
       toast(`started runner pid ${r.spawned.pid}`);
     });
-    if (ok) { refresh(); onStarted(); }
+    if (ok) { markLaunched({ kind: "run", nodeId, label: `#${nodeId}` }, null); refresh(); onStarted(); }
   }
   return (
     <div class="stack tight">

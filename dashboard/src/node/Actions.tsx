@@ -5,11 +5,11 @@ import { authed, refresh, toast } from "../state";
 import { Button } from "../ui/Button";
 import { Confirm } from "../ui/Confirm";
 import { StartPicker } from "./StartPicker";
-import { startBreakdown } from "../canvas/pending";
+import { markLaunched, type Activity } from "../project/activity";
 import type { NodeDetail } from "./NodeSheet";
 import { useAction } from "../ui/useAction";
 
-export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => void }) {
+export function Actions({ detail, onDone, activity }: { detail: NodeDetail; onDone: () => void; activity?: Activity | null }) {
   const n = detail.node;
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -36,10 +36,9 @@ export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => 
   }
   async function breakDown() {
     const ok = await breakdownA.run(async () => {
-      const r = await post<{ spawned: { agent: string; log: string } }>(routes.nodeBreakdown(n.id), {});
-      startBreakdown(n.id, { nodeId: n.id, agent: r.spawned.agent, log: r.spawned.log, startChildIds: new Set() });
+      await post(routes.nodeBreakdown(n.id), {});
     });
-    if (ok) { toast("breakdown started"); refresh(); }
+    if (ok) { markLaunched({ kind: "breakdown", nodeId: n.id, label: "planning" }, activity ?? null); refresh(); }
   }
 
   const buttons = [];

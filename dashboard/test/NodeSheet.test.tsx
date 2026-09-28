@@ -13,7 +13,10 @@ function stubApi(status: string, kind = "task") {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const json = url.startsWith("/nodes/7/diff") ? { source: "none", diff: "", truncated: false }
-      : url === "/agents" ? { agents: ["claude", "fake"] } : url.startsWith("/nodes/7/approve") || url.startsWith("/nodes/7/reject") ? { ok: 1 } : detail(status, kind);
+      : url === "/agents" ? { agents: ["claude", "fake"] }
+      : url.startsWith("/nodes/7/approve") || url.startsWith("/nodes/7/reject") ? { ok: 1 }
+      : url.includes("/activity") ? { active: [], breakdowns: [], working: [] }
+      : detail(status, kind);
     const isText = url.startsWith("/nodes/7/logs");
     return { ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": isText ? "text/plain" : "application/json" }), json: async () => json, text: async () => "log line" };
   }));
@@ -70,6 +73,7 @@ test("switching to a different node id remounts the sheet, so a half-typed rejec
       : url === "/nodes" || url.startsWith("/nodes?") ? []
       : url === "/inbox" ? { questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] }
       : url.includes("/revisions") ? []
+      : url.includes("/activity") ? { active: [], breakdowns: [], working: [] }
       : { node: { id, project_id: 1, parent_id: 1, kind: "task", title: `Task ${id}`, status: "review", risk_tier: "low", owner: null, body_md: "body", criteria_json: "[]", criteria_mode: "auto", summary: null, block_reason: null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
     return { ok: true, status: 200, statusText: "", headers: new Headers({ "content-type": "application/json" }), json: async () => json, text: async () => "" };
   }));

@@ -42,4 +42,6 @@ export const routes = {
   projectRun: (id: number) => `/projects/${id}/run`,
   agentsStatus: (projectId: number) => q("/agents/status", { project_id: projectId }),
   nodeRuns: (id: number) => `/nodes/${id}/runs`,
+  projectActivity: (id: number) => `/projects/${id}/activity`,
+  projectLogs: (id: number, lines = 200) => q(`/projects/${id}/logs`, { lines }),
 };

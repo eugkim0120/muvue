@@ -5,6 +5,7 @@ import { refresh } from "../state";
 import type { CanvasTask } from "./canvasData";
 import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
+import { markLaunched, type Activity } from "../project/activity";
 
 type Receives = { id: number; carries: string };
 
@@ -59,14 +60,13 @@ export function AddForm({ parentId, kind, candidates, onClose }: { parentId: num
   );
 }
 
-export function BreakdownButton({ nodeId, disabled, caption }: { nodeId: number; disabled?: boolean; caption?: string }) {
+export function BreakdownButton({ nodeId, disabled, caption, activity }: { nodeId: number; disabled?: boolean; caption?: string; activity: Activity | null }) {
   const a = useAction();
   async function run() {
-    await a.run(async () => {
-      const r = await post<{ spawned: { agent: string; log: string } }>(routes.nodeBreakdown(nodeId), {});
-      startBreakdownGhosts(nodeId, r.spawned.agent, r.spawned.log);
-      refresh();
+    const ok = await a.run(async () => {
+      await post(routes.nodeBreakdown(nodeId), {});
     });
+    if (ok) { markLaunched({ kind: "breakdown", nodeId, label: "planning" }, activity); refresh(); }
   }
   return (
     <div class="stack tight">
@@ -75,12 +75,4 @@ export function BreakdownButton({ nodeId, disabled, caption }: { nodeId: number;
       {a.error ? <div class="callout danger">{a.error}</div> : null}
     </div>
   );
-}
-
-// ProjectPage supplies the current children of `nodeId` when it calls this,
-// so the ghost-clearing check in pending.ts has a starting point to diff
-// against on the next refresh.
-import { startBreakdown } from "./pending";
-function startBreakdownGhosts(nodeId: number, agent: string, log: string): void {
-  startBreakdown(nodeId, { nodeId, agent, log, startChildIds: new Set() });
 }

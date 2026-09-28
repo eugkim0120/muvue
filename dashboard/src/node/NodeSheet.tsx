@@ -12,6 +12,7 @@ import { Flow } from "./Flow";
 import { Runs } from "./Runs";
 import { Discussion } from "./Discussion";
 import { Details } from "./Details";
+import { useActivity } from "../project/activity";
 
 export type NodeDetail = {
   node: NodeRow & { body_md: string | null; criteria_json: string | null; criteria_mode: string; summary: string | null; block_reason: string | null; criteria_hash: string | null; deleted_at: string | null };
@@ -25,6 +26,7 @@ export function NodeSheet() {
   const id = Number(route.value.query.get("node"));
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const activity = useActivity(detail?.node.project_id ?? null);
   useEffect(() => {
     let alive = true;
     api<NodeDetail>(routes.node(id)).then(
@@ -44,7 +46,7 @@ export function NodeSheet() {
             <span class="caption">{detail.node.kind}{detail.node.owner ? ` · owner ${detail.node.owner}` : ""}{detail.node.parent_id ? ` · parent #${detail.node.parent_id}` : ""}</span>
           </div>
           {detail.node.block_reason ? <div class="callout danger">blocked: {detail.node.block_reason}</div> : null}
-          <Actions detail={detail} onDone={closeNode} />
+          <Actions detail={detail} onDone={closeNode} activity={activity} />
           {detail.node.kind === "spec" ? <SpecBody nodeId={id} bodyMd={detail.node.body_md} notes={detail.notes} /> : <Overview detail={detail} />}
           <Flow receivesFrom={[]} sendsTo={[]} />
           <section><h3>Runs</h3><Runs nodeId={id} /></section>

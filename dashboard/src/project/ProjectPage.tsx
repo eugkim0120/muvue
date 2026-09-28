@@ -8,7 +8,6 @@ import { Canvas } from "../canvas/Canvas";
 import { PhoneFlow } from "../canvas/PhoneFlow";
 import { CardRail } from "../cards/CardRail";
 import { cardsFromInbox, type Inbox, type Revision, type NodesById } from "../cards/cardsFromInbox";
-import { pendingBreakdowns, clearBreakdown, shouldClearBreakdown } from "../canvas/pending";
 import { AddForm } from "../canvas/AddForm";
 import { StatusLine } from "./StatusLine";
 import { AgentsSheet } from "./AgentsSheet";
@@ -16,15 +15,21 @@ import { NewProject } from "./NewProject";
 import { Button } from "../ui/Button";
 import { Empty } from "../ui/Empty";
 import { useAction } from "../ui/useAction";
+import { useActivity, activityItems, markLaunched, dismiss, dismissedKeys, launches, type LogRef } from "./activity";
+import { ActivityBar } from "./ActivityBar";
+import { LogSheet } from "./LogSheet";
 
 const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 
 export function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
+  const [openLog, setOpenLog] = useState<LogRef | null>(null);
+  const [now, setNow] = useState(Date.now());
   const p = currentProject.value;
   const pid = projectId.value;
   const runA = useAction();
+  const activity = useActivity(pid);
 
   const graphQ = useApi<Graph>(() => api(routes.graph(pid)), [pid, refreshTick.value]);
   const nodesQ = useApi<FullNode[]>(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
@@ -34,15 +39,17 @@ export function ProjectPage() {
 
   const data = useMemo(() => (graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null), [graphQ.data, nodesQ.data]);
 
-  // Clear breakdown ghosts once real children outnumber the set present
-  // when the breakdown was launched (pending.ts's `shouldClearBreakdown`).
+  const titles: Record<number, string> = useMemo(() => Object.fromEntries((nodesQ.data ?? []).map((n) => [n.id, n.title])), [nodesQ.data]);
+  const items = useMemo(
+    () => activityItems(activity, launches.value, now, titles, dismissedKeys.value, pid ?? 0),
+    [activity, launches.value, now, titles, dismissedKeys.value, pid],
+  );
+  const hasBusy = items.some((i) => i.tone === "busy");
   useEffect(() => {
-    if (!data) return;
-    for (const [nodeId, pending] of Object.entries(pendingBreakdowns.value)) {
-      const currentChildIds = new Set(data.tasks.filter((t) => String(t.id) !== nodeId).map((t) => t.id));
-      if (shouldClearBreakdown(pending, currentChildIds)) clearBreakdown(Number(nodeId));
-    }
-  }, [data]);
+    if (!hasBusy) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [hasBusy]);
 
   const nodesById: NodesById = useMemo(() => Object.fromEntries((allNodesQ.data ?? []).map((n) => [n.id, { title: n.title, project_id: n.project_id }])), [allNodesQ.data]);
   const cards = useMemo(() => {
@@ -62,7 +69,7 @@ export function ProjectPage() {
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
-    if (ok) toast("run started");
+    if (ok) { toast("run started"); markLaunched({ kind: "run", nodeId: null, label: "the run" }, activity); }
   }
 
   return (
@@ -77,6 +84,7 @@ export function ProjectPage() {
         </div>
       </div>
       {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
+      <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
       <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
         <StatusLine phase={p.phase} done={done} total={total} busyAgents={busyAgents} spend={0} budget={1} />
       </button>
@@ -89,18 +97,19 @@ export function ProjectPage() {
         <div class="stack">
           <CardRail cards={cards} />
           <div style={{ padding: "0 16px 16px" }}>
-            <PhoneFlow data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} />
+            <PhoneFlow data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
           </div>
         </div>
       ) : (
         <div class="row" style={{ alignItems: "flex-start", flexWrap: "nowrap" }}>
           <div style={{ flex: 1, minWidth: 0, padding: "0 16px 16px" }}>
-            <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} />
+            <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
           </div>
           <CardRail cards={cards} />
         </div>
       )}
       {agentsSheet ? <AgentsSheet projectId={pid!} onClose={() => setAgentsSheet(false)} /> : null}
+      {openLog ? <LogSheet log={openLog} onClose={() => setOpenLog(null)} /> : null}
     </div>
   );
 }

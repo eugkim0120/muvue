@@ -11,6 +11,7 @@ test("renders Canvas on desktop width using merged /graph and /nodes data", asyn
     if (path.startsWith("/nodes")) return Promise.resolve([{ id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "pending", risk_tier: "low", owner: null, body_md: "x", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null }]);
     if (path === "/inbox") return Promise.resolve({ questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] });
     if (path.startsWith("/projects/1/revisions")) return Promise.resolve([]);
+    if (path.startsWith("/projects/1/activity")) return Promise.resolve({ active: [], breakdowns: [], working: [] });
     return Promise.resolve({});
   });
   render(<ProjectPage />);

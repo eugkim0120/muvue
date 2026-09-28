@@ -1060,7 +1060,9 @@ const routes = {
   nodeBreakdown: (id) => `/nodes/${id}/breakdown`,
   projectRun: (id) => `/projects/${id}/run`,
   agentsStatus: (projectId2) => q("/agents/status", { project_id: projectId2 }),
-  nodeRuns: (id) => `/nodes/${id}/runs`
+  nodeRuns: (id) => `/nodes/${id}/runs`,
+  projectActivity: (id) => `/projects/${id}/activity`,
+  projectLogs: (id, lines = 200) => q(`/projects/${id}/logs`, { lines })
 };
 const projects = y([]);
 const projectId = y(null);
@@ -1690,17 +1692,117 @@ function SubtaskRow({ subtask, needsYou }) {
     needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
   ] });
 }
-y({});
-const pendingBreakdowns = y({});
-function startBreakdown(nodeId, p2) {
-  pendingBreakdowns.value = { ...pendingBreakdowns.value, [nodeId]: p2 };
+const LAUNCH_TIMEOUT_MS = 15e3;
+const STORAGE_KEY = "muvue.dismissedActivity";
+function loadDismissed() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]"));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
 }
-function clearBreakdown(nodeId) {
-  const { [nodeId]: _removed, ...rest } = pendingBreakdowns.value;
-  pendingBreakdowns.value = rest;
+const dismissedKeys = y(loadDismissed());
+function dismiss(key) {
+  const next = new Set(dismissedKeys.value);
+  next.add(key);
+  dismissedKeys.value = next;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...next]));
+  } catch {
+  }
 }
-function shouldClearBreakdown(p2, currentChildIds) {
-  return currentChildIds.size > p2.startChildIds.size;
+const launches = y([]);
+function latestEventId(a2, nodeId) {
+  return a2?.breakdowns.find((b2) => b2.node_id === nodeId)?.event_id ?? 0;
+}
+function markLaunched(l2, a2) {
+  const launch = { ...l2, at: Date.now(), afterEventId: latestEventId(a2, l2.nodeId) };
+  launches.value = [...launches.value.filter((x2) => !(x2.kind === l2.kind && x2.nodeId === l2.nodeId)), launch];
+}
+function confirmed(l2, a2) {
+  if (!a2) return false;
+  if (l2.kind === "run") return a2.active.some((p2) => p2.kind === "run");
+  return a2.active.some((p2) => p2.kind === "breakdown" && p2.node_id === l2.nodeId) || latestEventId(a2, l2.nodeId) > l2.afterEventId;
+}
+const firstSeen = /* @__PURE__ */ new Map();
+function seenAt(key, now) {
+  if (!firstSeen.has(key)) firstSeen.set(key, now);
+  return firstSeen.get(key);
+}
+function activityItems(a2, launched, now, titles, dismissed, projectId2) {
+  const items = [];
+  const activity = a2 ?? { active: [], breakdowns: [], working: [] };
+  for (const p2 of activity.active) {
+    if (p2.kind !== "breakdown" || p2.node_id === null) continue;
+    const nodeId = p2.node_id;
+    const key = `bd-run:${nodeId}`;
+    const agent = activity.breakdowns.find((b2) => b2.node_id === nodeId)?.agent ?? "agent";
+    const title = titles[nodeId] ?? "#" + nodeId;
+    items.push({ tone: "busy", key, text: `✨ ${agent} is planning tasks for “${title}”`, startedAt: seenAt(key, now), log: { kind: "node", nodeId } });
+  }
+  if (activity.active.some((p2) => p2.kind === "run")) {
+    const key = "run";
+    const n2 = activity.working.length;
+    let text = `▶ Running tasks · ${n2} agent${n2 === 1 ? "" : "s"} working`;
+    if (activity.working.length) text += ` — ${activity.working.map((w2) => w2.title).join(", ")}`;
+    items.push({ tone: "busy", key, text, startedAt: seenAt(key, now), log: { kind: "project", projectId: projectId2 } });
+  }
+  for (const l2 of launched) {
+    if (confirmed(l2, a2)) continue;
+    if (now - l2.at < LAUNCH_TIMEOUT_MS) {
+      items.push({ tone: "busy", key: `launch:${l2.kind}:${l2.nodeId}`, text: `Starting ${l2.label}…`, startedAt: l2.at, log: null });
+    } else {
+      items.push({
+        tone: "error",
+        key: `launch-timeout:${l2.kind}:${l2.nodeId}:${l2.at}`,
+        text: `${l2.label} did not start: nothing was reported within 15 seconds. Check the log.`,
+        log: null
+      });
+    }
+  }
+  for (const b2 of activity.breakdowns) {
+    if (b2.type !== "breakdown.failed") continue;
+    const key = `bd-fail:${b2.event_id}`;
+    if (dismissed.has(key)) continue;
+    const title = titles[b2.node_id] ?? "#" + b2.node_id;
+    items.push({ tone: "error", key, text: `Planning “${title}” failed: ${b2.reason ?? "no reason recorded"}`, log: { kind: "node", nodeId: b2.node_id } });
+  }
+  return items;
+}
+function useActivity(projectId2) {
+  const [activity, setActivity] = d$2(null);
+  const [tick, setTick] = d$2(0);
+  const prev = A(null);
+  h$2(() => {
+    if (projectId2 === null) return;
+    let alive = true;
+    api(routes.projectActivity(projectId2)).then((a2) => {
+      if (!alive) return;
+      for (const l2 of launches.value) {
+        if (l2.kind !== "breakdown" || !confirmed(l2, a2)) continue;
+        const outcome = a2.breakdowns.find((b2) => b2.node_id === l2.nodeId);
+        if (outcome?.type === "breakdown.finished" && outcome.event_id > l2.afterEventId) {
+          toast(`Added ${outcome.created?.length ?? 0} tasks`);
+          refresh();
+        }
+      }
+      launches.value = launches.value.filter((l2) => !confirmed(l2, a2) || l2.kind === "breakdown" && a2.active.some((p2) => p2.node_id === l2.nodeId));
+      prev.current = a2;
+      setActivity(a2);
+    }, (e2) => {
+      if (alive) toast(e2 instanceof Error ? e2.message : String(e2), "error");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [projectId2, refreshTick.value, tick]);
+  const polling = !!activity && (activity.active.length > 0 || launches.value.length > 0);
+  h$2(() => {
+    if (!polling) return;
+    const t2 = setInterval(() => setTick((n2) => n2 + 1), 1500);
+    return () => clearInterval(t2);
+  }, [polling]);
+  return activity;
 }
 function AddForm({ parentId, kind, candidates, onClose }) {
   const [title, setTitle] = d$2("");
@@ -1755,14 +1857,16 @@ function AddForm({ parentId, kind, candidates, onClose }) {
     ] })
   ] });
 }
-function BreakdownButton({ nodeId, disabled, caption }) {
+function BreakdownButton({ nodeId, disabled, caption, activity }) {
   const a2 = useAction();
   async function run() {
-    await a2.run(async () => {
-      const r2 = await post(routes.nodeBreakdown(nodeId), {});
-      startBreakdownGhosts(nodeId, r2.spawned.agent, r2.spawned.log);
-      refresh();
+    const ok = await a2.run(async () => {
+      await post(routes.nodeBreakdown(nodeId), {});
     });
+    if (ok) {
+      markLaunched({ kind: "breakdown", nodeId, label: "planning" }, activity);
+      refresh();
+    }
   }
   return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
     /* @__PURE__ */ u$1(Button, { variant: "outline", disabled, busy: a2.busy, busyLabel: "Starting…", onClick: run, children: "✨ Break down with agent" }),
@@ -1770,13 +1874,10 @@ function BreakdownButton({ nodeId, disabled, caption }) {
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
-function startBreakdownGhosts(nodeId, agent, log) {
-  startBreakdown(nodeId, { nodeId, agent, log, startChildIds: /* @__PURE__ */ new Set() });
-}
 function stopBubble(e2) {
   e2.stopPropagation();
 }
-function TaskBox({ task, needsYou, projectPhase, style }) {
+function TaskBox({ task, needsYou, projectPhase, style, activity }) {
   const [addingSubtask, setAddingSubtask] = d$2(false);
   const [breakingDown, setBreakingDown] = d$2(false);
   const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
@@ -1804,7 +1905,7 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
       /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setBreakingDown((b2) => !b2), children: "✨" })
     ] }) : null,
     authed.value && addingSubtask ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(AddForm, { parentId: task.id, kind: "subtask", candidates: [], onClose: () => setAddingSubtask(false) }) }) : null,
-    authed.value && breakingDown ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: task.id }) }) : null
+    authed.value && breakingDown ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: task.id, activity: activity ?? null }) }) : null
   ] });
 }
 function SubmitSpecForm({ projectId: projectId2 }) {
@@ -1827,7 +1928,7 @@ function SubmitSpecForm({ projectId: projectId2 }) {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Submitting…", children: "Submit spec" }) })
   ] });
 }
-function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
+function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase, activity }) {
   const approveSpecA = useAction();
   const approveTasksA = useAction();
   if (!spec) return authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: projectId2 }) : /* @__PURE__ */ u$1("div", { class: "spec-root-card", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "No spec yet." }) });
@@ -1871,23 +1972,10 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
     ] }),
     approveSpecA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveSpecA.error }) : null,
     approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null,
-    authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id }) }) : null
+    authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id, activity: activity ?? null }) }) : null
   ] });
 }
-function GhostBox({ title, caption, error, onRetry, logLink, style }) {
-  return /* @__PURE__ */ u$1("div", { class: "task-box ghost" + (error ? " ghost-error" : ""), style, children: [
-    /* @__PURE__ */ u$1("div", { class: "title", children: title }),
-    error ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-      /* @__PURE__ */ u$1("div", { class: "caption danger", children: error }),
-      onRetry ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onRetry, children: "Retry" }) : null
-    ] }) : /* @__PURE__ */ u$1("div", { class: "row", children: [
-      /* @__PURE__ */ u$1("span", { class: "pulse", "aria-hidden": "true" }),
-      /* @__PURE__ */ u$1("span", { class: "caption", children: caption }),
-      logLink ? /* @__PURE__ */ u$1("a", { href: logLink, class: "caption", children: "view log" }) : null
-    ] })
-  ] });
-}
-function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
+function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
   const lay = computeLayout(data.tasks, data.edges);
   const [zoom, setZoom] = d$2(1);
   const [pan, setPan] = d$2({ x: 0, y: 0 });
@@ -1913,8 +2001,6 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
-  const breakdownGhosts = Object.entries(pendingBreakdowns.value).filter(([nodeId]) => Number(nodeId) === data.spec?.id);
-  const ghostY = (i2) => PAD + lay.height + i2 * (BOX_H_BASE + GAP_Y);
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
     /* @__PURE__ */ u$1("div", { class: "canvas-zoom-controls", children: [
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom out", onClick: () => setZoom((z2) => Math.max(0.4, z2 - 0.1)), children: "−" }),
@@ -1922,7 +2008,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom in", onClick: () => setZoom((z2) => Math.min(2, z2 + 0.1)), children: "+" })
     ] }),
     /* @__PURE__ */ u$1("div", { class: "canvas-viewport", onPointerDown, onPointerMove, onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: lay.width + "px", height: lay.height + 96 + "px" }, children: [
-      /* @__PURE__ */ u$1("div", { class: "canvas-spec-slot", children: /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }) }),
+      /* @__PURE__ */ u$1("div", { class: "canvas-spec-slot", children: /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase, activity }) }),
       /* @__PURE__ */ u$1("svg", { class: "canvas-arrows", width: lay.width, height: lay.height, style: { marginTop: "96px" }, children: lay.arrows.map((a2) => /* @__PURE__ */ u$1(S$1, { children: [
         /* @__PURE__ */ u$1("path", { class: "flow-arrow", d: a2.path }),
         a2.label ? /* @__PURE__ */ u$1("g", { transform: `translate(${a2.label.x},${a2.label.y})`, children: [
@@ -1930,20 +2016,17 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou }) {
           /* @__PURE__ */ u$1("text", { class: "arrow-label", textAnchor: "middle", dy: "4", children: a2.label.text })
         ] }) : null
       ] })) }),
-      /* @__PURE__ */ u$1("div", { class: "canvas-boxes", style: { marginTop: "96px" }, children: [
-        data.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, style: { position: "absolute", left: lay.pos[t2.id].x + "px", top: lay.pos[t2.id].y + "px", width: lay.pos[t2.id].w + "px" } })),
-        breakdownGhosts.flatMap(([, p2], gi) => [0, 1, 2].map((i2) => /* @__PURE__ */ u$1(GhostBox, { title: "…", caption: `${p2.agent} is breaking this down…`, logLink: p2.log, style: { position: "absolute", left: PAD + "px", top: ghostY(gi * 3 + i2) + "px", width: BOX_W + "px" } }, p2.nodeId + ":" + i2)))
-      ] })
+      /* @__PURE__ */ u$1("div", { class: "canvas-boxes", style: { marginTop: "96px" }, children: data.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, activity, style: { position: "absolute", left: lay.pos[t2.id].x + "px", top: lay.pos[t2.id].y + "px", width: lay.pos[t2.id].w + "px" } })) })
     ] }) })
   ] });
 }
-function PhoneFlow({ data, projectId: projectId2, projectPhase, needsYou }) {
+function PhoneFlow({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
   const steps = stepsFromColumns(data.tasks, data.edges);
   return /* @__PURE__ */ u$1("div", { class: "stack phone-flow", children: [
-    /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase }),
+    /* @__PURE__ */ u$1(SpecRoot, { spec: data.spec, projectId: projectId2, taskCount: data.tasks.length, projectPhase, activity }),
     steps.map((step) => /* @__PURE__ */ u$1("div", { class: "phone-step stack tight", children: [
       step.parallel ? /* @__PURE__ */ u$1("div", { class: "caption parallel-label", children: "parallel" }) : null,
-      /* @__PURE__ */ u$1("div", { class: step.parallel ? "phone-step-row" : "stack tight", children: step.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase })) })
+      /* @__PURE__ */ u$1("div", { class: step.parallel ? "phone-step-row" : "stack tight", children: step.tasks.map((t2) => /* @__PURE__ */ u$1(TaskBox, { task: t2, needsYou, projectPhase, activity })) })
     ] }))
   ] });
 }
@@ -2135,26 +2218,69 @@ function NewProject() {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Create" }) })
   ] }) });
 }
+function ActivityBar({ items, now, onDismiss, onOpenLog }) {
+  if (!items.length) return null;
+  return /* @__PURE__ */ u$1("div", { class: "activity-bar stack tight", "data-activity": true, role: "status", "aria-live": "polite", children: items.map((i2) => /* @__PURE__ */ u$1("div", { class: "activity-item " + i2.tone, children: [
+    i2.tone === "busy" ? /* @__PURE__ */ u$1("span", { class: "spinner", "aria-hidden": "true" }) : /* @__PURE__ */ u$1("span", { class: "activity-icon", "aria-hidden": "true", children: "!" }),
+    /* @__PURE__ */ u$1("span", { class: "grow", children: i2.text }),
+    i2.tone === "busy" ? /* @__PURE__ */ u$1("span", { class: "caption", children: [
+      Math.max(0, Math.round((now - i2.startedAt) / 1e3)),
+      "s"
+    ] }) : null,
+    i2.log ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => onOpenLog(i2.log), children: "View log" }) : null,
+    i2.tone === "error" ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => onDismiss(i2.key), children: "Dismiss" }) : null
+  ] }, i2.key)) });
+}
+function Logs({ nodeId, path }) {
+  const [text, setText] = d$2("loading…");
+  const pre = A(null);
+  function load() {
+    api(path ?? routes.nodeLogs(nodeId)).then((t2) => {
+      setText(t2 || "(no driver output yet)");
+      requestAnimationFrame(() => {
+        if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
+      });
+    }, (e2) => setText(e2.message));
+  }
+  h$2(load, [nodeId, path, refreshTick.value]);
+  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    /* @__PURE__ */ u$1("div", { class: "row between", children: [
+      /* @__PURE__ */ u$1("span", { class: "caption", children: "last 200 lines" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: load, children: "Refresh" })
+    ] }),
+    /* @__PURE__ */ u$1("pre", { ref: pre, class: "scroll-x logs", children: text })
+  ] });
+}
+function LogSheet({ log, onClose }) {
+  return /* @__PURE__ */ u$1(Sheet, { title: log.kind === "node" ? `Log · #${log.nodeId}` : "Run log", onClose, children: /* @__PURE__ */ u$1(Logs, { path: log.kind === "node" ? routes.nodeLogs(log.nodeId) : routes.projectLogs(log.projectId) }) });
+}
 const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = d$2(false);
   const [addingTask, setAddingTask] = d$2(false);
+  const [openLog, setOpenLog] = d$2(null);
+  const [now, setNow] = d$2(Date.now());
   const p2 = currentProject.value;
   const pid = projectId.value;
   const runA = useAction();
+  const activity = useActivity(pid);
   const graphQ = useApi(() => api(routes.graph(pid)), [pid, refreshTick.value]);
   const nodesQ = useApi(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi(() => api(routes.inbox()), [refreshTick.value]);
   const revisionsQ = useApi(() => pid ? api(routes.revisions(pid)) : Promise.resolve([]), [pid, refreshTick.value]);
   const allNodesQ = useApi(() => api(routes.nodes(null)), [refreshTick.value]);
   const data = T(() => graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null, [graphQ.data, nodesQ.data]);
+  const titles = T(() => Object.fromEntries((nodesQ.data ?? []).map((n2) => [n2.id, n2.title])), [nodesQ.data]);
+  const items = T(
+    () => activityItems(activity, launches.value, now, titles, dismissedKeys.value, pid ?? 0),
+    [activity, launches.value, now, titles, dismissedKeys.value, pid]
+  );
+  const hasBusy = items.some((i2) => i2.tone === "busy");
   h$2(() => {
-    if (!data) return;
-    for (const [nodeId, pending] of Object.entries(pendingBreakdowns.value)) {
-      const currentChildIds = new Set(data.tasks.filter((t2) => String(t2.id) !== nodeId).map((t2) => t2.id));
-      if (shouldClearBreakdown(pending, currentChildIds)) clearBreakdown(Number(nodeId));
-    }
-  }, [data]);
+    if (!hasBusy) return;
+    const t2 = setInterval(() => setNow(Date.now()), 1e3);
+    return () => clearInterval(t2);
+  }, [hasBusy]);
   const nodesById = T(() => Object.fromEntries((allNodesQ.data ?? []).map((n2) => [n2.id, { title: n2.title, project_id: n2.project_id }])), [allNodesQ.data]);
   const cards = T(() => {
     if (!inboxQ.data || !pid) return [];
@@ -2169,7 +2295,10 @@ function ProjectPage() {
   async function run() {
     if (!pid) return;
     const ok = await runA.run(() => post(routes.projectRun(pid), {}));
-    if (ok) toast("run started");
+    if (ok) {
+      toast("run started");
+      markLaunched({ kind: "run", nodeId: null, label: "the run" }, activity);
+    }
   }
   return /* @__PURE__ */ u$1("div", { class: "page-canvas", children: [
     /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
@@ -2180,16 +2309,18 @@ function ProjectPage() {
       ] })
     ] }),
     runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", style: { margin: "0 16px" }, children: runA.error }) : null,
+    /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, busyAgents, spend: 0, budget: 1 }) }),
     authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
     graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
       /* @__PURE__ */ u$1(CardRail, { cards }),
-      /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(PhoneFlow, { data, projectId: pid, projectPhase: p2.phase, needsYou }) })
+      /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(PhoneFlow, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity }) })
     ] }) : /* @__PURE__ */ u$1("div", { class: "row", style: { alignItems: "flex-start", flexWrap: "nowrap" }, children: [
-      /* @__PURE__ */ u$1("div", { style: { flex: 1, minWidth: 0, padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou }) }),
+      /* @__PURE__ */ u$1("div", { style: { flex: 1, minWidth: 0, padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity }) }),
       /* @__PURE__ */ u$1(CardRail, { cards })
     ] }),
-    agentsSheet ? /* @__PURE__ */ u$1(AgentsSheet, { projectId: pid, onClose: () => setAgentsSheet(false) }) : null
+    agentsSheet ? /* @__PURE__ */ u$1(AgentsSheet, { projectId: pid, onClose: () => setAgentsSheet(false) }) : null,
+    openLog ? /* @__PURE__ */ u$1(LogSheet, { log: openLog, onClose: () => setOpenLog(null) }) : null
   ] });
 }
 function AgentRow({ nodeId, agent, onStarted }) {
@@ -2200,6 +2331,7 @@ function AgentRow({ nodeId, agent, onStarted }) {
       toast(`started runner pid ${r2.spawned.pid}`);
     });
     if (ok) {
+      markLaunched({ kind: "run", nodeId, label: `#${nodeId}` }, null);
       refresh();
       onStarted();
     }
@@ -2220,7 +2352,7 @@ function StartPicker({ nodeId, onClose, onStarted }) {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: onClose, children: "Cancel" }) })
   ] });
 }
-function Actions({ detail, onDone }) {
+function Actions({ detail, onDone, activity }) {
   const n2 = detail.node;
   const [rejecting, setRejecting] = d$2(false);
   const [feedback, setFeedback] = d$2("");
@@ -2259,11 +2391,10 @@ function Actions({ detail, onDone }) {
   }
   async function breakDown() {
     const ok = await breakdownA.run(async () => {
-      const r2 = await post(routes.nodeBreakdown(n2.id), {});
-      startBreakdown(n2.id, { nodeId: n2.id, agent: r2.spawned.agent, log: r2.spawned.log, startChildIds: /* @__PURE__ */ new Set() });
+      await post(routes.nodeBreakdown(n2.id), {});
     });
     if (ok) {
-      toast("breakdown started");
+      markLaunched({ kind: "breakdown", nodeId: n2.id, label: "planning" }, activity ?? null);
       refresh();
     }
   }
@@ -2439,26 +2570,6 @@ function Flow({ receivesFrom, sendsTo }) {
     ] }))
   ] });
 }
-function Logs({ nodeId }) {
-  const [text, setText] = d$2("loading…");
-  const pre = A(null);
-  function load() {
-    api(routes.nodeLogs(nodeId)).then((t2) => {
-      setText(t2 || "(no driver output yet)");
-      requestAnimationFrame(() => {
-        if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
-      });
-    }, (e2) => setText(e2.message));
-  }
-  h$2(load, [nodeId, refreshTick.value]);
-  return /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("span", { class: "caption", children: "last 200 lines" }),
-      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: load, children: "Refresh" })
-    ] }),
-    /* @__PURE__ */ u$1("pre", { ref: pre, class: "scroll-x logs", children: text })
-  ] });
-}
 function Runs({ nodeId }) {
   const [runs, setRuns] = d$2(null);
   const [error, setError] = d$2(null);
@@ -2563,6 +2674,7 @@ function NodeSheet() {
   const id = Number(route.value.query.get("node"));
   const [detail, setDetail] = d$2(null);
   const [error, setError] = d$2(null);
+  const activity = useActivity(detail?.node.project_id ?? null);
   h$2(() => {
     let alive = true;
     api(routes.node(id)).then(
@@ -2595,7 +2707,7 @@ function NodeSheet() {
       "blocked: ",
       detail.node.block_reason
     ] }) : null,
-    /* @__PURE__ */ u$1(Actions, { detail, onDone: closeNode }),
+    /* @__PURE__ */ u$1(Actions, { detail, onDone: closeNode, activity }),
     detail.node.kind === "spec" ? /* @__PURE__ */ u$1(SpecBody, { nodeId: id, bodyMd: detail.node.body_md, notes: detail.notes }) : /* @__PURE__ */ u$1(Overview, { detail }),
     /* @__PURE__ */ u$1(Flow, { receivesFrom: [], sendsTo: [] }),
     /* @__PURE__ */ u$1("section", { children: [
@@ -2990,6 +3102,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .spec-comment { margin: 4px 12px 8px 50px; }
 .spec-form { margin: 4px 12px 8px 50px; flex-wrap: nowrap; }
 .spec-form input { flex: 1; }
+.activity-bar { position: sticky; top: 0; z-index: 5; margin: 0 16px 12px; }
+@media (max-width: 899px) { .activity-bar { top: calc(61px + env(safe-area-inset-top)); } }
+.activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius); font-size: 14px; background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid var(--st-in_progress); box-shadow: var(--shadow); }
+.activity-item.error { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: var(--danger); }
+.activity-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--danger); color: #fff; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 /* dashboard/src/cards/cards.css */
 .card-rail { width: 320px; flex: none; padding: 12px; border-left: 1px solid var(--border); overflow-y: auto; }
 .card-rail-empty { padding: 12px; }

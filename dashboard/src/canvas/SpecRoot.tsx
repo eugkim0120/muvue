@@ -11,6 +11,7 @@ import { AgentChip } from "./AgentChip";
 import { agentStateOf } from "./agentState";
 import { BreakdownButton } from "./AddForm";
 import { useAction } from "../ui/useAction";
+import type { Activity } from "../project/activity";
 
 function SubmitSpecForm({ projectId }: { projectId: number }) {
   const [title, setTitle] = useState("");
@@ -32,7 +33,7 @@ function SubmitSpecForm({ projectId }: { projectId: number }) {
   );
 }
 
-export function SpecRoot({ spec, projectId, taskCount, projectPhase }: { spec: CanvasSpec | null; projectId: number; taskCount: number; projectPhase: string }) {
+export function SpecRoot({ spec, projectId, taskCount, projectPhase, activity }: { spec: CanvasSpec | null; projectId: number; taskCount: number; projectPhase: string; activity?: Activity | null }) {
   const approveSpecA = useAction();
   const approveTasksA = useAction();
   if (!spec) return authed.value ? <SubmitSpecForm projectId={projectId} /> : <div class="spec-root-card"><p class="muted">No spec yet.</p></div>;
@@ -66,7 +67,7 @@ export function SpecRoot({ spec, projectId, taskCount, projectPhase }: { spec: C
       {approveSpecA.error ? <div class="callout danger">{approveSpecA.error}</div> : null}
       {approveTasksA.error ? <div class="callout danger">{approveTasksA.error}</div> : null}
       {authed.value && spec.status !== "pending" ? (
-        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}><BreakdownButton nodeId={spec.id} /></div>
+        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}><BreakdownButton nodeId={spec.id} activity={activity ?? null} /></div>
       ) : null}
     </div>
   );

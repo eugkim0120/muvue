@@ -9,6 +9,7 @@ import { SubtaskRow } from "./SubtaskRow";
 import { MAX_SUBTASK_ROWS } from "./flowLayout";
 import { AddForm, BreakdownButton } from "./AddForm";
 import { Button } from "../ui/Button";
+import type { Activity } from "../project/activity";
 
 // Any wrapper around a new entry point (AddForm/BreakdownButton toggles and
 // their forms) must swallow both click AND keydown, or Enter/click still
@@ -17,7 +18,7 @@ function stopBubble(e: { stopPropagation: () => void }): void {
   e.stopPropagation();
 }
 
-export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasTask; needsYou: Set<number>; projectPhase: string; style?: Record<string, string | number> }) {
+export function TaskBox({ task, needsYou, projectPhase, style, activity }: { task: CanvasTask; needsYou: Set<number>; projectPhase: string; style?: Record<string, string | number>; activity?: Activity | null }) {
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [breakingDown, setBreakingDown] = useState(false);
   const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
@@ -50,7 +51,7 @@ export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasT
       ) : null}
       {authed.value && breakingDown ? (
         <div onClick={stopBubble} onKeyDown={stopBubble}>
-          <BreakdownButton nodeId={task.id} />
+          <BreakdownButton nodeId={task.id} activity={activity ?? null} />
         </div>
       ) : null}
     </div>

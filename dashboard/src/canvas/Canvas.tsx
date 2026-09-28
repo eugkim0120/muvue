@@ -1,13 +1,12 @@
 import { useRef, useState } from "preact/hooks";
 import type { CanvasData } from "./canvasData";
-import { computeLayout, PAD, GAP_Y, BOX_W, BOX_H_BASE } from "./flowLayout";
+import { computeLayout } from "./flowLayout";
 import { TaskBox } from "./TaskBox";
 import { SpecRoot } from "./SpecRoot";
-import { GhostBox } from "./GhostBox";
-import { pendingBreakdowns } from "./pending";
 import { Icon } from "../ui/Icon";
+import type { Activity } from "../project/activity";
 
-export function Canvas({ data, projectId, projectPhase, needsYou }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number> }) {
+export function Canvas({ data, projectId, projectPhase, needsYou, activity }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number>; activity?: Activity | null }) {
   const lay = computeLayout(data.tasks, data.edges);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -30,12 +29,6 @@ export function Canvas({ data, projectId, projectPhase, needsYou }: { data: Canv
   }
   const fit = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
 
-  const breakdownGhosts = Object.entries(pendingBreakdowns.value).filter(([nodeId]) => Number(nodeId) === data.spec?.id);
-  // Ghosts render below the real, laid-out boxes — same x/y placement pattern
-  // Canvas.tsx uses for real TaskBoxes (flowLayout's PAD/GAP_Y/BOX_H_BASE),
-  // stacked one per row so they never sit on top of a real box at (0,0).
-  const ghostY = (i: number) => PAD + lay.height + i * (BOX_H_BASE + GAP_Y);
-
   return (
     <div class="canvas-wrap">
       <div class="canvas-zoom-controls">
@@ -45,7 +38,7 @@ export function Canvas({ data, projectId, projectPhase, needsYou }: { data: Canv
       </div>
       <div class="canvas-viewport" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onWheel={onWheel}>
         <div class="canvas-frame" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, width: lay.width + "px", height: lay.height + 96 + "px" }}>
-          <div class="canvas-spec-slot"><SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} /></div>
+          <div class="canvas-spec-slot"><SpecRoot spec={data.spec} projectId={projectId} taskCount={data.tasks.length} projectPhase={projectPhase} activity={activity} /></div>
           <svg class="canvas-arrows" width={lay.width} height={lay.height} style={{ marginTop: "96px" }}>
             {lay.arrows.map((a) => (
               <>
@@ -55,8 +48,7 @@ export function Canvas({ data, projectId, projectPhase, needsYou }: { data: Canv
             ))}
           </svg>
           <div class="canvas-boxes" style={{ marginTop: "96px" }}>
-            {data.tasks.map((t) => <TaskBox task={t} needsYou={needsYou} projectPhase={projectPhase} style={{ position: "absolute", left: lay.pos[t.id]!.x + "px", top: lay.pos[t.id]!.y + "px", width: lay.pos[t.id]!.w + "px" }} />)}
-            {breakdownGhosts.flatMap(([, p], gi) => [0, 1, 2].map((i) => <GhostBox key={p.nodeId + ":" + i} title="…" caption={`${p.agent} is breaking this down…`} logLink={p.log} style={{ position: "absolute", left: PAD + "px", top: ghostY(gi * 3 + i) + "px", width: BOX_W + "px" }} />))}
+            {data.tasks.map((t) => <TaskBox task={t} needsYou={needsYou} projectPhase={projectPhase} activity={activity} style={{ position: "absolute", left: lay.pos[t.id]!.x + "px", top: lay.pos[t.id]!.y + "px", width: lay.pos[t.id]!.w + "px" }} />)}
           </div>
         </div>
       </div>

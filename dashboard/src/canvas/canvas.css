@@ -51,3 +51,8 @@
 .spec-comment { margin: 4px 12px 8px 50px; }
 .spec-form { margin: 4px 12px 8px 50px; flex-wrap: nowrap; }
 .spec-form input { flex: 1; }
+.activity-bar { position: sticky; top: 0; z-index: 5; margin: 0 16px 12px; }
+@media (max-width: 899px) { .activity-bar { top: calc(61px + env(safe-area-inset-top)); } }
+.activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius); font-size: 14px; background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid var(--st-in_progress); box-shadow: var(--shadow); }
+.activity-item.error { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: var(--danger); }
+.activity-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--danger); color: #fff; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
