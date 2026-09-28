@@ -4,8 +4,8 @@ import { App } from "../src/app";
 import { authed } from "../src/state";
 import { resetRouteFromLocation } from "../src/router";
 
-function detail(status: string, kind = "task") {
-  return { node: { id: 7, project_id: 1, parent_id: 1, kind, title: "Do it", status, risk_tier: "low", owner: null, body_md: "body", criteria_json: '["a","b"]', criteria_mode: "auto", summary: null, block_reason: null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
+function detail(status: string, kind = "task", extra: { criteria_hash?: string | null; deleted_at?: string | null } = {}) {
+  return { node: { id: 7, project_id: 1, parent_id: 1, kind, title: "Do it", status, risk_tier: "low", owner: null, body_md: "body", criteria_json: '["a","b"]', criteria_mode: "auto", summary: null, block_reason: null, criteria_hash: extra.criteria_hash ?? null, deleted_at: extra.deleted_at ?? null }, notes: [], commits: [], predicted_touches: [], verification: "checked_by_muvue" };
 }
 
 function stubApi(status: string, kind = "task") {
@@ -23,12 +23,12 @@ function stubApi(status: string, kind = "task") {
 beforeEach(() => { authed.value = true; window.location.hash = "#/plan?node=7"; resetRouteFromLocation(); });
 afterEach(() => vi.unstubAllGlobals());
 
-test("a pending spec shows Approve spec above the segments", async () => {
+test("a pending spec shows Approve spec above the spec body", async () => {
   stubApi("pending", "spec");
   render(<NodeSheet />);
   const btn = await screen.findByText("Approve spec");
-  const overview = screen.getByText("Overview");
-  expect(btn.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const specBody = screen.getByText("Tap a line to comment on it. The agent sees comments in its brief.");
+  expect(btn.compareDocumentPosition(specBody) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("review shows Approve and Reject; Reject posts the feedback", async () => {
@@ -38,7 +38,8 @@ test("review shows Approve and Reject; Reject posts the feedback", async () => {
   fireEvent.click(screen.getByText("Reject"));
   const ta = screen.getByPlaceholderText("what should change?");
   fireEvent.input(ta, { target: { value: "more tests" } });
-  fireEvent.click(screen.getByText("Send"));
+  // Discussion's own reply box also has a "Send" button; the reject flow's is the first in DOM order.
+  fireEvent.click(screen.getAllByText("Send")[0]!);
   await waitFor(() => expect(calls.some((c) => c.url === "/nodes/7/reject" && c.init?.body === '{"feedback":"more tests"}')).toBe(true));
 });
 
@@ -53,7 +54,7 @@ test("read-only shows no actions", async () => {
   authed.value = false;
   stubApi("review");
   render(<NodeSheet />);
-  await screen.findByText("Overview");
+  await screen.findByText("Runs");
   expect(screen.queryByText("Approve")).toBeNull();
 });
 
@@ -79,4 +80,19 @@ test("switching to a different node id remounts the sheet, so a half-typed rejec
   expect(screen.queryByPlaceholderText("what should change?")).toBeNull();
   fireEvent.click(await screen.findByText("Reject"));
   expect(screen.getByPlaceholderText("what should change?")).toHaveValue("");
+});
+
+test("a task before Gate 2 shows a Remove action", async () => {
+  stubApi("ready");
+  render(<NodeSheet />);
+  await screen.findByText("Start with agent");
+  expect(screen.getByText("Remove")).toBeTruthy();
+});
+
+test("a spec node's sheet shows SpecBody instead of the purpose/criteria section", async () => {
+  stubApi("pending", "spec");
+  const { container } = render(<NodeSheet />);
+  await screen.findByText("Approve spec");
+  expect(screen.queryByText("Overview")).toBeNull();
+  expect(container.querySelectorAll(".spec-line").length).toBeGreaterThan(0);
 });

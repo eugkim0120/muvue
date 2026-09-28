@@ -5,14 +5,16 @@ import { refreshTick, type NodeRow } from "../state";
 import { route, closeNode } from "../router";
 import { Sheet } from "../ui/Sheet";
 import { Pill, Tier } from "../ui/Pill";
-import { Segmented } from "../ui/Segmented";
 import { Actions } from "./Actions";
 import { Overview } from "./Overview";
-import { DiffView } from "./DiffView";
-import { Logs } from "./Logs";
+import { SpecBody } from "./SpecBody";
+import { Flow } from "./Flow";
+import { Runs } from "./Runs";
+import { Discussion } from "./Discussion";
+import { Details } from "./Details";
 
 export type NodeDetail = {
-  node: NodeRow & { body_md: string | null; criteria_json: string | null; criteria_mode: string; summary: string | null; block_reason: string | null };
+  node: NodeRow & { body_md: string | null; criteria_json: string | null; criteria_mode: string; summary: string | null; block_reason: string | null; criteria_hash: string | null; deleted_at: string | null };
   notes: { kind: string; pinned: number | boolean; created_at: string; text: string }[];
   commits: { sha: string }[];
   predicted_touches: string[];
@@ -23,8 +25,6 @@ export function NodeSheet() {
   const id = Number(route.value.query.get("node"));
   const [detail, setDetail] = useState<NodeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [seg, setSeg] = useState("overview");
-  // The sheet re-fetches on every SSE tick instead of closing under the reader.
   useEffect(() => {
     let alive = true;
     api<NodeDetail>(routes.node(id)).then(
@@ -45,8 +45,11 @@ export function NodeSheet() {
           </div>
           {detail.node.block_reason ? <div class="callout danger">blocked: {detail.node.block_reason}</div> : null}
           <Actions detail={detail} onDone={closeNode} />
-          <Segmented options={[{ value: "overview", label: "Overview" }, { value: "diff", label: "Diff" }, { value: "logs", label: "Logs" }]} value={seg} onChange={setSeg} />
-          {seg === "overview" ? <Overview detail={detail} /> : seg === "diff" ? <DiffView nodeId={id} /> : <Logs nodeId={id} />}
+          {detail.node.kind === "spec" ? <SpecBody nodeId={id} bodyMd={detail.node.body_md} notes={detail.notes} /> : <Overview detail={detail} />}
+          <Flow receivesFrom={[]} sendsTo={[]} />
+          <section><h3>Runs</h3><Runs nodeId={id} /></section>
+          <section><h3>Discussion</h3><Discussion nodeId={id} notes={detail.notes} /></section>
+          <Details nodeId={id} predictedTouches={detail.predicted_touches} />
         </div>
       )}
     </Sheet>
