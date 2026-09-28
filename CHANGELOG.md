@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.5] - 2026-09-28
 
 ### Changed
 - The dashboard is rebuilt around a single per-project canvas: a flow
