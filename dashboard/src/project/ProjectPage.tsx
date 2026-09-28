@@ -1,4 +1,4 @@
-import { useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { api, post } from "../api/client";
 import { routes } from "../api/routes";
 import { useApi } from "../hooks";
@@ -32,7 +32,7 @@ export function ProjectPage() {
 
   // Clear breakdown ghosts once real children outnumber the set present
   // when the breakdown was launched (pending.ts's `shouldClearBreakdown`).
-  useMemo(() => {
+  useEffect(() => {
     if (!data) return;
     for (const [nodeId, pending] of Object.entries(pendingBreakdowns.value)) {
       const currentChildIds = new Set(data.tasks.filter((t) => String(t.id) !== nodeId).map((t) => t.id));
