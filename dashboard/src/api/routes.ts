@@ -33,4 +33,11 @@ export const routes = {
   projectResume: (projectId: number) => `/projects/${projectId}/resume`,
   closePreview: (projectId: number) => `/projects/${projectId}/close-preview`,
   projectClose: (projectId: number) => `/projects/${projectId}/close`,
+  nodeChildren: (id: number) => `/nodes/${id}/children`,
+  nodeRemove: (id: number) => `/nodes/${id}/remove`,
+  nodeEdit: (id: number) => `/nodes/${id}/edit`,
+  nodeBreakdown: (id: number) => `/nodes/${id}/breakdown`,
+  projectRun: (id: number) => `/projects/${id}/run`,
+  agentsStatus: (projectId: number) => q("/agents/status", { project_id: projectId }),
+  nodeRuns: (id: number) => `/nodes/${id}/runs`,
 };

@@ -31,3 +31,14 @@ test("navigate updates the route signal", async () => {
   resetRouteFromLocation();
   expect(route.value.page).toBe("spend");
 });
+
+test("#/p/:id parses to page 'p' with the project id as the first param", () => {
+  const r = parseHash("#/p/3");
+  expect(r.page).toBe("p");
+  expect(r.params).toEqual(["3"]);
+});
+
+test("#/p/3?node=9 carries the node query param", () => {
+  const r = parseHash("#/p/3?node=9");
+  expect(r.query.get("node")).toBe("9");
+});
