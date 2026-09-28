@@ -28,6 +28,11 @@
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
 .agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
+/* Own row, deliberately separate from .agent-chip's row so its height is
+   deterministic (two 44px-min-height buttons, not dependent on whether they
+   wrap at the box's 240px width alongside the chip) -- flowLayout.ts's
+   BOX_H_BASE bakes this row's real measured height in. */
+.task-box-actions { margin-top: 4px; flex-wrap: nowrap; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 .phone-flow .task-box { width: 100%; }
 .phone-step { border-left: 2px dashed var(--border); padding-left: 10px; }

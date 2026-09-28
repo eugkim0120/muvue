@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { api, post } from "../api/client";
 import { routes } from "../api/routes";
 import { useApi } from "../hooks";
-import { currentProject, projectId, projects, refreshTick, toast, toastError } from "../state";
+import { authed, currentProject, projectId, projects, refreshTick, toast, toastError } from "../state";
 import { buildCanvasData, type Graph, type FullNode } from "../canvas/canvasData";
 import { Canvas } from "../canvas/Canvas";
 import { PhoneFlow } from "../canvas/PhoneFlow";
@@ -67,7 +67,7 @@ export function ProjectPage() {
       <div class="row between" style={{ padding: "16px 16px 0" }}>
         <h1 class="page-title">{p.goal}</h1>
         <div class="row">
-          {data?.spec && data.spec.status !== "pending" ? (
+          {authed.value && data?.spec && data.spec.status !== "pending" ? (
             <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
           ) : null}
           <Button variant="filled" onClick={run}>▶ Run</Button>
@@ -76,7 +76,7 @@ export function ProjectPage() {
       <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
         <StatusLine phase={p.phase} done={done} total={total} busyAgents={busyAgents} spend={0} budget={1} />
       </button>
-      {addingTask && data?.spec ? (
+      {authed.value && addingTask && data?.spec ? (
         <div style={{ padding: "0 16px 16px" }}>
           <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
         </div>

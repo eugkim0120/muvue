@@ -1,11 +1,23 @@
 import type { CanvasTask, CanvasEdge } from "./canvasData";
 
-// BOX_H_BASE is the rendered height (in px) of a .task-box with zero subtasks:
-// title row + purpose caption + the agent-chip row (.chip's min-height: 44px
-// plus its 8px margin-top is most of it) + the box's own 12px/14px padding
-// and 1px top/bottom border. Measured against the real DOM, not guessed --
-// the old value of 64 undercounted this by ~60px, causing canvas overlaps.
-export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 124, MAX_SUBTASK_ROWS = 4;
+// BOX_H_BASE is the rendered height (in px) of a .task-box with zero
+// subtasks, INCLUDING the authed-only "+ Subtask"/breakdown actions row
+// (its own row, not sharing a line with .agent-chip -- see TaskBox.tsx and
+// .task-box-actions in canvas.css, so its ~48px is a fixed addition, not
+// dependent on flex-wrap at 240px width). A signed-out viewer's box is
+// shorter than this (no actions row), which only leaves harmless slack --
+// never an overlap -- so sizing to the authed case is the safe choice.
+//
+// Verified by actually rendering the compiled TaskBox markup + the real
+// built CSS (dashboard's `vite build` output) in a headless Chromium
+// (chrome-headless-shell via playwright-core) and reading
+// getBoundingClientRect().height, not estimated from the CSS by hand: 0/2/4
+// subtasks measured 192.8/284.8/372.8px with the actions row present, which
+// solves to BOX_H_BASE=196.8 + SUBTASK_ROW_H(44)*rows exactly (the 0-subtask
+// figure alone reads ~4px lower because the .subtask-list wrapper's own
+// margin isn't present at 0 subtasks -- the 2/4 anchor points are used
+// since they agree with each other and with the existing SUBTASK_ROW_H).
+export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 197, MAX_SUBTASK_ROWS = 4;
 
 export function boxHeight(subtaskCount: number): number {
   const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);

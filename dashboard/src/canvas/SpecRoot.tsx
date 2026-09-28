@@ -53,7 +53,9 @@ export function SpecRoot({ spec, projectId, taskCount, projectPhase }: { spec: C
           {canApproveTasks ? <Button variant="filled" onClick={(e: Event) => { e.stopPropagation(); void approveTasks(); }}>Approve task list</Button> : null}
         </div>
       </div>
-      {spec.status !== "pending" ? <div onClick={(e) => e.stopPropagation()}><BreakdownButton nodeId={spec.id} /></div> : null}
+      {authed.value && spec.status !== "pending" ? (
+        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}><BreakdownButton nodeId={spec.id} /></div>
+      ) : null}
     </div>
   );
 }

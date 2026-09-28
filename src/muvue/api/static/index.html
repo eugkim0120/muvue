@@ -1538,7 +1538,7 @@ function buildCanvasData(graph, fullNodes) {
   const edges = graph.edges.filter((e2) => e2.kind === "dep" && taskIds.has(e2.from) && taskIds.has(e2.to) && byId.has(e2.from) && byId.has(e2.to)).map((e2) => ({ from: e2.from, to: e2.to, carries: e2.carries ?? null }));
   return { spec, tasks, edges };
 }
-const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 124, MAX_SUBTASK_ROWS = 4;
+const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 197, MAX_SUBTASK_ROWS = 4;
 function boxHeight(subtaskCount) {
   const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
   return BOX_H_BASE + rows * SUBTASK_ROW_H;
@@ -1747,6 +1747,9 @@ function BreakdownButton({ nodeId, disabled, caption }) {
 function startBreakdownGhosts(nodeId, agent, log) {
   startBreakdown(nodeId, { nodeId, agent, log, startChildIds: /* @__PURE__ */ new Set() });
 }
+function stopBubble(e2) {
+  e2.stopPropagation();
+}
 function TaskBox({ task, needsYou, projectPhase, style }) {
   const [addingSubtask, setAddingSubtask] = d$2(false);
   const [breakingDown, setBreakingDown] = d$2(false);
@@ -1769,21 +1772,13 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
         " more"
       ] }) : null
     ] }) : null,
-    /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1(AgentChip, { agent: task.agent, state }),
-      /* @__PURE__ */ u$1("div", { class: "actions", children: [
-        /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: (e2) => {
-          e2.stopPropagation();
-          setAddingSubtask((a2) => !a2);
-        }, children: "+ Subtask" }),
-        /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: (e2) => {
-          e2.stopPropagation();
-          setBreakingDown((b2) => !b2);
-        }, children: "✨" })
-      ] })
-    ] }),
-    addingSubtask ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(AddForm, { parentId: task.id, kind: "subtask", candidates: [], onClose: () => setAddingSubtask(false) }) }) : null,
-    breakingDown ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: task.id }) }) : null
+    /* @__PURE__ */ u$1(AgentChip, { agent: task.agent, state }),
+    authed.value ? /* @__PURE__ */ u$1("div", { class: "row task-box-actions", onClick: stopBubble, onKeyDown: stopBubble, children: [
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setAddingSubtask((a2) => !a2), children: "+ Subtask" }),
+      /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setBreakingDown((b2) => !b2), children: "✨" })
+    ] }) : null,
+    authed.value && addingSubtask ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(AddForm, { parentId: task.id, kind: "subtask", candidates: [], onClose: () => setAddingSubtask(false) }) }) : null,
+    authed.value && breakingDown ? /* @__PURE__ */ u$1("div", { onClick: stopBubble, onKeyDown: stopBubble, children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: task.id }) }) : null
   ] });
 }
 function SubmitSpecForm({ projectId: projectId2 }) {
@@ -1854,7 +1849,7 @@ function SpecRoot({ spec, projectId: projectId2, taskCount, projectPhase }) {
         }, children: "Approve task list" }) : null
       ] })
     ] }),
-    spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id }) }) : null
+    authed.value && spec.status !== "pending" ? /* @__PURE__ */ u$1("div", { onClick: (e2) => e2.stopPropagation(), onKeyDown: (e2) => e2.stopPropagation(), children: /* @__PURE__ */ u$1(BreakdownButton, { nodeId: spec.id }) }) : null
   ] });
 }
 function GhostBox({ title, caption, error, onRetry, logLink, style }) {
@@ -2161,12 +2156,12 @@ function ProjectPage() {
     /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
       /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
       /* @__PURE__ */ u$1("div", { class: "row", children: [
-        data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
+        authed.value && data?.spec && data.spec.status !== "pending" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
         /* @__PURE__ */ u$1(Button, { variant: "filled", onClick: run, children: "▶ Run" })
       ] })
     ] }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, busyAgents, spend: 0, budget: 1 }) }),
-    addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
+    authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
     graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : isPhone() ? /* @__PURE__ */ u$1("div", { class: "stack", children: [
       /* @__PURE__ */ u$1(CardRail, { cards }),
       /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(PhoneFlow, { data, projectId: pid, projectPhase: p2.phase, needsYou }) })
@@ -2933,6 +2928,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
 .agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
+/* Own row, deliberately separate from .agent-chip's row so its height is
+   deterministic (two 44px-min-height buttons, not dependent on whether they
+   wrap at the box's 240px width alongside the chip) -- flowLayout.ts's
+   BOX_H_BASE bakes this row's real measured height in. */
+.task-box-actions { margin-top: 4px; flex-wrap: nowrap; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 .phone-flow .task-box { width: 100%; }
 .phone-step { border-left: 2px dashed var(--border); padding-left: 10px; }
