@@ -24,7 +24,6 @@
   --st-blocked: #C94F4F;
   --st-failed: #9C2F2F;
   --tier-medium: #D9A33B;
-  --tab-h: 56px;
   --sidebar-w: 240px;
 }
 @media (prefers-color-scheme: dark) {

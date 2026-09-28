@@ -13,6 +13,7 @@ export const routes = {
   authExchange: () => "/auth/exchange",
   eventsStream: () => "/events/stream",
   projects: () => "/projects",
+  projectSpec: (id: number) => `/projects/${id}/spec`,
   agents: () => "/agents",
   inbox: () => "/inbox",
   kpis: () => "/kpis",

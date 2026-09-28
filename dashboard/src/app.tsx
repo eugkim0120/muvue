@@ -17,7 +17,13 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   useEffect(() => {
-    if (isLegacyRoute(route.value) && projectId.value !== null) navigate("#/p/" + projectId.value);
+    if (isLegacyRoute(route.value) && projectId.value !== null) {
+      if (route.value.page === "spec" && route.value.params[0]) {
+        navigate("#/p/" + projectId.value + "?node=" + route.value.params[0]);
+      } else {
+        navigate("#/p/" + projectId.value);
+      }
+    }
   }, [route.value.page, projectId.value]);
   const nodeId = route.value.query.get("node");
   return (

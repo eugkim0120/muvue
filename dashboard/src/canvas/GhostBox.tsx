@@ -1,8 +1,8 @@
 import { Button } from "../ui/Button";
 
-export function GhostBox({ title, caption, error, onRetry, logLink }: { title: string; caption: string; error?: string; onRetry?: () => void; logLink?: string }) {
+export function GhostBox({ title, caption, error, onRetry, logLink, style }: { title: string; caption: string; error?: string; onRetry?: () => void; logLink?: string; style?: Record<string, string | number> }) {
   return (
-    <div class={"task-box ghost" + (error ? " ghost-error" : "")}>
+    <div class={"task-box ghost" + (error ? " ghost-error" : "")} style={style}>
       <div class="title">{title}</div>
       {error ? (
         <div class="stack tight">

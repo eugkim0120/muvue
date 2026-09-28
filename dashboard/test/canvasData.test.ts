@@ -2,10 +2,10 @@
 import { buildCanvasData } from "../src/canvas/canvasData";
 
 const gnode = (id: number, kind: string, parent_id: number | null, extra: Partial<any> = {}) => ({
-  id, project_id: 1, parent_id, kind, title: "g" + id, status: "ready", risk_tier: "low", owner: null, agent: "claude", ...extra,
+  id, project_id: 1, parent_id, kind, title: "g" + id, status: "ready" as const, risk_tier: "low" as const, owner: null, agent: "claude", ...extra,
 });
 const fnode = (id: number, kind: string, parent_id: number | null, extra: Partial<any> = {}) => ({
-  id, project_id: 1, parent_id, kind, title: "n" + id, status: "ready", risk_tier: "low", owner: null,
+  id, project_id: 1, parent_id, kind, title: "n" + id, status: "ready" as const, risk_tier: "low" as const, owner: null,
   body_md: "purpose " + id, criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null, ...extra,
 });
 

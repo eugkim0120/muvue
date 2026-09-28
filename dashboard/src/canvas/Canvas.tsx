@@ -1,6 +1,6 @@
 import { useRef, useState } from "preact/hooks";
 import type { CanvasData } from "./canvasData";
-import { computeLayout } from "./flowLayout";
+import { computeLayout, PAD, GAP_Y, BOX_W, BOX_H_BASE } from "./flowLayout";
 import { TaskBox } from "./TaskBox";
 import { SpecRoot } from "./SpecRoot";
 import { GhostBox } from "./GhostBox";
@@ -32,6 +32,10 @@ export function Canvas({ data, projectId, projectPhase, needsYou }: { data: Canv
 
   const pendingCreateGhosts = Object.entries(pendingCreates.value).filter(([, p]) => p.kind === "task");
   const breakdownGhosts = Object.entries(pendingBreakdowns.value).filter(([nodeId]) => Number(nodeId) === data.spec?.id);
+  // Ghosts render below the real, laid-out boxes — same x/y placement pattern
+  // Canvas.tsx uses for real TaskBoxes (flowLayout's PAD/GAP_Y/BOX_H_BASE),
+  // stacked one per row so they never sit on top of a real box at (0,0).
+  const ghostY = (i: number) => PAD + lay.height + i * (BOX_H_BASE + GAP_Y);
 
   return (
     <div class="canvas-wrap">
@@ -53,8 +57,8 @@ export function Canvas({ data, projectId, projectPhase, needsYou }: { data: Canv
           </svg>
           <div class="canvas-boxes" style={{ marginTop: "96px" }}>
             {data.tasks.map((t) => <TaskBox task={t} needsYou={needsYou} projectPhase={projectPhase} style={{ position: "absolute", left: lay.pos[t.id]!.x + "px", top: lay.pos[t.id]!.y + "px", width: lay.pos[t.id]!.w + "px" }} />)}
-            {pendingCreateGhosts.map(([key, p]) => <GhostBox key={key} title={p.title} caption="creating…" error={p.error} />)}
-            {breakdownGhosts.flatMap(([, p]) => [0, 1, 2].map((i) => <GhostBox key={p.nodeId + ":" + i} title="…" caption={`${p.agent} is breaking this down…`} logLink={p.log} />))}
+            {pendingCreateGhosts.map(([key, p], i) => <GhostBox key={key} title={p.title} caption="creating…" error={p.error} style={{ position: "absolute", left: PAD + "px", top: ghostY(i) + "px", width: BOX_W + "px" }} />)}
+            {breakdownGhosts.flatMap(([, p], gi) => [0, 1, 2].map((i) => <GhostBox key={p.nodeId + ":" + i} title="…" caption={`${p.agent} is breaking this down…`} logLink={p.log} style={{ position: "absolute", left: PAD + "px", top: ghostY(pendingCreateGhosts.length + gi * 3 + i) + "px", width: BOX_W + "px" }} />))}
           </div>
         </div>
       </div>

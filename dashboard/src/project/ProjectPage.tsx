@@ -9,6 +9,7 @@ import { PhoneFlow } from "../canvas/PhoneFlow";
 import { CardRail } from "../cards/CardRail";
 import { cardsFromInbox, type Inbox, type Revision, type NodesById } from "../cards/cardsFromInbox";
 import { pendingBreakdowns, clearBreakdown, shouldClearBreakdown } from "../canvas/pending";
+import { AddForm } from "../canvas/AddForm";
 import { StatusLine } from "./StatusLine";
 import { AgentsSheet } from "./AgentsSheet";
 import { NewProject } from "./NewProject";
@@ -19,6 +20,7 @@ const isPhone = () => typeof window !== "undefined" && window.innerWidth < 900;
 
 export function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = useState(false);
+  const [addingTask, setAddingTask] = useState(false);
   const p = currentProject.value;
   const pid = projectId.value;
 
@@ -51,7 +53,7 @@ export function ProjectPage() {
   if (!projects.value.length) return <NewProject />;
   if (!p) return <NewProject />;
 
-  const done = (nodesQ.data ?? []).filter((n) => n.status === "done").length;
+  const done = (nodesQ.data ?? []).filter((n) => n.status === "done" && n.kind === "task").length;
   const total = (nodesQ.data ?? []).filter((n) => n.kind === "task").length;
   const busyAgents = new Set((nodesQ.data ?? []).filter((n) => n.status === "in_progress").map((n) => n.owner)).size;
 
@@ -65,16 +67,31 @@ export function ProjectPage() {
       <div class="row between" style={{ padding: "16px 16px 0" }}>
         <h1 class="page-title">{p.goal}</h1>
         <div class="row">
+          {data?.spec && data.spec.status !== "pending" ? (
+            <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
+          ) : null}
           <Button variant="filled" onClick={run}>▶ Run</Button>
         </div>
       </div>
       <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
         <StatusLine phase={p.phase} done={done} total={total} busyAgents={busyAgents} spend={0} budget={1} />
       </button>
-      {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : (
+      {addingTask && data?.spec ? (
+        <div style={{ padding: "0 16px 16px" }}>
+          <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
+        </div>
+      ) : null}
+      {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : isPhone() ? (
+        <div class="stack">
+          <CardRail cards={cards} />
+          <div style={{ padding: "0 16px 16px" }}>
+            <PhoneFlow data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} />
+          </div>
+        </div>
+      ) : (
         <div class="row" style={{ alignItems: "flex-start", flexWrap: "nowrap" }}>
           <div style={{ flex: 1, minWidth: 0, padding: "0 16px 16px" }}>
-            {isPhone() ? <PhoneFlow data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} /> : <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} />}
+            <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} />
           </div>
           <CardRail cards={cards} />
         </div>

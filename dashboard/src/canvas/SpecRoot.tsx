@@ -9,6 +9,7 @@ import { Button } from "../ui/Button";
 import { Pill } from "../ui/Pill";
 import { AgentChip } from "./AgentChip";
 import { agentStateOf } from "./agentState";
+import { BreakdownButton } from "./AddForm";
 
 function SubmitSpecForm({ projectId }: { projectId: number }) {
   const [title, setTitle] = useState("");
@@ -52,6 +53,7 @@ export function SpecRoot({ spec, projectId, taskCount, projectPhase }: { spec: C
           {canApproveTasks ? <Button variant="filled" onClick={(e: Event) => { e.stopPropagation(); void approveTasks(); }}>Approve task list</Button> : null}
         </div>
       </div>
+      {spec.status !== "pending" ? <div onClick={(e) => e.stopPropagation()}><BreakdownButton nodeId={spec.id} /></div> : null}
     </div>
   );
 }

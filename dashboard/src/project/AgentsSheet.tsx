@@ -7,10 +7,18 @@ type AgentStatus = { name: string; roles: string[]; current: { node_id: number; 
 
 export function AgentsSheet({ projectId, onClose }: { projectId: number; onClose: () => void }) {
   const [agents, setAgents] = useState<AgentStatus[] | null>(null);
-  useEffect(() => { api<{ agents: AgentStatus[] }>(routes.agentsStatus(projectId)).then((r) => setAgents(r.agents)); }, [projectId]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api<{ agents: AgentStatus[] }>(routes.agentsStatus(projectId)).then(
+      (r) => { if (!alive) return; setAgents(r.agents); setError(null); },
+      (e) => { if (!alive) return; setError(e.message); },
+    );
+    return () => { alive = false; };
+  }, [projectId]);
   return (
     <Sheet title="Agents" onClose={onClose}>
-      {!agents ? <p class="muted">loading…</p> : (
+      {error ? <div class="callout danger">{error}</div> : !agents ? <p class="muted">loading…</p> : (
         <div class="list">
           {agents.map((a) => (
             <div class="list-row" style={{ cursor: "default" }}>

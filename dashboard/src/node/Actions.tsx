@@ -5,6 +5,7 @@ import { authed, refresh, toast, toastError } from "../state";
 import { Button } from "../ui/Button";
 import { Confirm } from "../ui/Confirm";
 import { StartPicker } from "./StartPicker";
+import { startBreakdown } from "../canvas/pending";
 import type { NodeDetail } from "./NodeSheet";
 
 export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => void }) {
@@ -28,7 +29,11 @@ export function Actions({ detail, onDone }: { detail: NodeDetail; onDone: () => 
   }
   async function breakDown() {
     setBreakingDown(true);
-    try { await post(routes.nodeBreakdown(n.id)); toast("breakdown started"); refresh(); } catch (e) { toastError(e); } finally { setBreakingDown(false); }
+    try {
+      const r = await post<{ spawned: { agent: string; log: string } }>(routes.nodeBreakdown(n.id), {});
+      startBreakdown(n.id, { nodeId: n.id, agent: r.spawned.agent, log: r.spawned.log, startChildIds: new Set() });
+      toast("breakdown started"); refresh();
+    } catch (e) { toastError(e); } finally { setBreakingDown(false); }
   }
 
   const buttons = [];

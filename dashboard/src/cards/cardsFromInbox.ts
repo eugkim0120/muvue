@@ -10,8 +10,8 @@ export type Inbox = {
 export type Revision = { n: number; approved_at: string | null };
 export type NodesById = Record<number, { title: string; project_id: number }>;
 
-export type CardKind = "spec_review" | "gate2_review" | "task_review" | "question" | "blocked" | "revision" | "ack";
-export type Card = { id: string; kind: CardKind; nodeId: number | null; projectId: number | null; title: string; context: string; agent: string; ts: string; raw: unknown };
+export type CardKind = "spec_review" | "gate2_review" | "task_review" | "question" | "blocked" | "revision" | "ack" | "awaiting_approval";
+export type Card = { id: string; kind: CardKind; nodeId: number | null; projectId: number | null; title: string; context: string; agent: string; ts: string; raw?: unknown };
 
 export type Ctx = { spec: CanvasSpec | null; taskCount: number; projectPhase: string; revisions: Revision[]; nodesById: NodesById; projectId: number };
 
@@ -31,8 +31,9 @@ export function cardsFromInbox(inbox: Inbox, ctx: Ctx): Card[] {
   }
   for (const n of inbox.review) cards.push({ id: "task_review:" + n.id, kind: "task_review", nodeId: n.id, projectId: n.project_id, title: n.title, context: "in review", agent: n.owner ?? "", ts: "" });
   for (const n of inbox.blocked) cards.push({ id: "blocked:" + n.id, kind: "blocked", nodeId: n.id, projectId: n.project_id, title: n.title, context: n.block_reason ?? "blocked", agent: n.owner ?? "", ts: "" });
+  for (const n of inbox.awaiting_approval) cards.push({ id: "awaiting_approval:" + n.id, kind: "awaiting_approval", nodeId: n.id, projectId: n.project_id, title: n.title, context: "criteria changed, awaiting approval", agent: n.owner ?? "", ts: "" });
   for (const r of ctx.revisions.filter((r) => r.approved_at === null)) {
-    cards.push({ id: "revision:" + r.n, kind: "revision", nodeId: ctx.projectId, projectId: ctx.projectId, title: `Revision ${r.n}`, context: "plan revision proposed", agent: "", ts: "" });
+    cards.push({ id: "revision:" + r.n, kind: "revision", nodeId: null, projectId: ctx.projectId, title: `Revision ${r.n}`, context: "plan revision proposed", agent: "", ts: "" });
   }
   const ackSources: Ev[] = [...inbox.structure_updates, ...inbox.audit_items, ...inbox.signals, ...inbox.unattributed_commits];
   for (const ev of ackSources) {

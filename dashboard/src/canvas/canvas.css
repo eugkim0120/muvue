@@ -35,6 +35,7 @@
 .phone-step-row .task-box { flex: 1 1 260px; }
 .parallel-label { text-transform: uppercase; letter-spacing: .04em; }
 .status-line { padding: 4px 16px; }
+.status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
 .spend-amber { color: var(--tier-medium); }
 .spend-red { color: var(--danger); }
 .spec-body { padding: 8px 0; }

@@ -1,6 +1,11 @@
 import type { CanvasTask, CanvasEdge } from "./canvasData";
 
-export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 64, MAX_SUBTASK_ROWS = 4;
+// BOX_H_BASE is the rendered height (in px) of a .task-box with zero subtasks:
+// title row + purpose caption + the agent-chip row (.chip's min-height: 44px
+// plus its 8px margin-top is most of it) + the box's own 12px/14px padding
+// and 1px top/bottom border. Measured against the real DOM, not guessed --
+// the old value of 64 undercounted this by ~60px, causing canvas overlaps.
+export const BOX_W = 240, PAD = 16, GAP_X = 72, GAP_Y = 24, SUBTASK_ROW_H = 44, BOX_H_BASE = 124, MAX_SUBTASK_ROWS = 4;
 
 export function boxHeight(subtaskCount: number): number {
   const rows = subtaskCount === 0 ? 0 : Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
