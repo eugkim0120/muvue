@@ -69,6 +69,6 @@ test("Minor: SubmitSpecForm is gated on authed, matching NextStepBar's read-only
     return Promise.resolve({});
   });
   render(<ProjectPage />);
-  await waitFor(() => screen.getByText("Read-only. Open the link printed by muvue serve to act."));
+  await waitFor(() => screen.getByText("Sign in to act"));
   expect(screen.queryByPlaceholderText("title")).toBeNull();
 });

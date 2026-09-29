@@ -11,6 +11,7 @@ export const routes = {
   healthz: () => "/healthz",
   authCheck: () => "/auth/check",
   authExchange: () => "/auth/exchange",
+  authSession: () => "/auth/session",
   eventsStream: () => "/events/stream",
   projects: () => "/projects",
   projectSpec: (id: number) => `/projects/${id}/spec`,

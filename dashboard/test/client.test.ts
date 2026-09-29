@@ -1,11 +1,11 @@
 import { api, post, setToken, onForbidden, ApiError } from "../src/api/client";
 
-function mockFetch(status: number, body: unknown, json = true) {
+function mockFetch(status: number, body: unknown, json = true, extra: Record<string, string> = {}) {
   const fn = vi.fn(async () => ({
     ok: status < 400,
     status,
     statusText: "status " + status,
-    headers: new Headers({ "content-type": json ? "application/json" : "text/plain" }),
+    headers: new Headers({ "content-type": json ? "application/json" : "text/plain", ...extra }),
     json: async () => body,
     text: async () => String(body),
   }));
@@ -33,20 +33,35 @@ test("a token becomes a bearer header", async () => {
   expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer abc");
 });
 
-test("detail is the error message and 403 on POST calls the forbidden hook", async () => {
-  mockFetch(403, { detail: "no session" });
+test("detail is the error message and an auth refusal calls the forbidden hook with its reason", async () => {
+  mockFetch(401, { detail: "session expired" }, true, { "x-muvue-auth": "expired" });
   const hook = vi.fn();
   onForbidden(hook);
-  await expect(post("/x")).rejects.toMatchObject({ message: "no session", status: 403 });
-  expect(hook).toHaveBeenCalledTimes(1);
+  await expect(post("/x")).rejects.toMatchObject({ message: "session expired", status: 401, auth: "expired" });
+  expect(hook).toHaveBeenCalledWith("expired");
 });
 
-test("403 on GET does not call the forbidden hook", async () => {
-  mockFetch(403, { detail: "no" });
+test("a 403 that is not about sign-in (no X-Muvue-Auth) does not call the forbidden hook", async () => {
+  mockFetch(403, { detail: "mutating requests must use Content-Type: application/json" });
   const hook = vi.fn();
   onForbidden(hook);
-  await expect(api("/x")).rejects.toBeInstanceOf(ApiError);
+  await expect(post("/x")).rejects.toMatchObject({ status: 403, auth: null });
   expect(hook).not.toHaveBeenCalled();
+});
+
+test("a GET auth refusal also reports its reason", async () => {
+  mockFetch(403, { detail: "invalid session token" }, true, { "x-muvue-auth": "invalid" });
+  const hook = vi.fn();
+  onForbidden(hook);
+  await expect(api("/auth/check")).rejects.toMatchObject({ auth: "invalid" });
+  expect(hook).toHaveBeenCalledWith("invalid");
+});
+
+test("a bodyless GET sends no Content-Type", async () => {
+  const fetchMock = mockFetch(200, {});
+  await api("/x");
+  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
 });
 
 test("plain text bodies are returned as text", async () => {

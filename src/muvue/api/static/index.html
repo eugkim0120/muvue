@@ -994,9 +994,10 @@ function isLegacyRoute(r2) {
   return LEGACY_PAGES.has(r2.page) || r2.page === "spec";
 }
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, auth = null) {
     super(message);
     this.status = status;
+    this.auth = auth;
   }
 }
 let token = "";
@@ -1008,16 +1009,22 @@ function setToken(t2) {
 function onForbidden(handler) {
   forbidden = handler;
 }
+function authProblemOf(status, header) {
+  if (status !== 401 && status !== 403) return null;
+  return header === "missing" || header === "invalid" || header === "expired" ? header : null;
+}
 async function api(path, init = {}) {
-  const headers = { "Content-Type": "application/json", ...init.headers };
+  const sendsBody = init.body !== void 0 || init.method !== void 0 && init.method !== "GET";
+  const headers = { ...sendsBody ? { "Content-Type": "application/json" } : {}, ...init.headers };
   if (token) headers["Authorization"] = "Bearer " + token;
   const r2 = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const type = r2.headers.get("content-type") || "";
   const body = type.startsWith("application/json") ? await r2.json() : await r2.text();
-  if (r2.status === 403 && init.method === "POST") forbidden();
+  const problem = authProblemOf(r2.status, r2.headers.get("x-muvue-auth"));
+  if (problem) forbidden(problem);
   if (!r2.ok) {
     const detail = typeof body === "object" && body !== null && "detail" in body ? String(body.detail) : "";
-    throw new ApiError(detail || r2.statusText || `HTTP ${r2.status}`, r2.status);
+    throw new ApiError(detail || r2.statusText || `HTTP ${r2.status}`, r2.status, problem);
   }
   return body;
 }
@@ -1034,6 +1041,7 @@ const routes = {
   healthz: () => "/healthz",
   authCheck: () => "/auth/check",
   authExchange: () => "/auth/exchange",
+  authSession: () => "/auth/session",
   eventsStream: () => "/events/stream",
   projects: () => "/projects",
   projectSpec: (id) => `/projects/${id}/spec`,
@@ -1072,13 +1080,19 @@ const projects = y([]);
 const projectId = y(null);
 const currentProject = g(() => projects.value.find((p2) => p2.id === projectId.value) ?? null);
 const authed = y(false);
+const signedOutReason = y("read_only");
+const signInOpen = y(false);
+function setSignedIn() {
+  authed.value = true;
+}
+function setSignedOut(reason) {
+  authed.value = false;
+  signedOutReason.value = reason;
+}
 const refreshTick = y(0);
 const protocolVersion = y(null);
 function refresh() {
   refreshTick.value = refreshTick.value + 1;
-}
-function setAuthed(ok) {
-  authed.value = ok;
 }
 const toasts = y([]);
 let toastSeq = 0;
@@ -1458,7 +1472,7 @@ function Sidebar() {
       ] })
     ] }),
     /* @__PURE__ */ u$1("div", { class: "sidebar-foot caption", children: [
-      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : "read-only" }),
+      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : signedOutReason.value === "expired" ? "session expired" : "read-only" }),
       protocolVersion.value !== null ? /* @__PURE__ */ u$1("div", { children: [
         "protocol v",
         protocolVersion.value
@@ -1479,12 +1493,28 @@ function TopBar({ onSearch }) {
     menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
   ] });
 }
+const COPY = {
+  read_only: { text: "Read-only view.", action: "Sign in" },
+  stale: { text: "Signed out: muvue serve restarted since you signed in.", action: "Sign in" },
+  expired: { text: "Signed out after 8 hours without activity.", action: "Sign in again" }
+};
+function AuthStrip() {
+  if (authed.value) return null;
+  const reason = signedOutReason.value;
+  const c2 = COPY[reason];
+  return /* @__PURE__ */ u$1("div", { class: "auth-strip" + (reason === "read_only" ? "" : " warn"), "data-auth-strip": reason, role: "status", children: [
+    /* @__PURE__ */ u$1("span", { class: "grow", children: c2.text }),
+    /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => {
+      signInOpen.value = true;
+    }, children: c2.action })
+  ] });
+}
 async function checkAuth() {
   try {
     await api(routes.authCheck());
-    return true;
+    return "ok";
   } catch (e2) {
-    if (e2 instanceof ApiError && (e2.status === 401 || e2.status === 403)) return false;
+    if (e2 instanceof ApiError && (e2.status === 401 || e2.status === 403)) return e2.auth ?? "missing";
     throw e2;
   }
 }
@@ -1502,34 +1532,86 @@ async function exchangeFragmentNonce() {
   if (r2.ok) {
     const body = await r2.json();
     if (body.token) setToken(body.token);
+  } else if (authProblemOf(r2.status, r2.headers.get("x-muvue-auth")) === "expired") {
+    return "expired";
   }
   return checkAuth();
 }
-function TokenBanner() {
-  const [value, setValue] = d$2("");
-  async function use() {
-    setToken(value.trim());
-    setValue("");
-    try {
-      setAuthed(await checkAuth());
-    } catch (e2) {
-      toastError(e2);
-    }
+async function signInWithToken(pasted) {
+  const t2 = pasted.trim();
+  if (!t2) return "missing";
+  setToken(t2);
+  const result = await checkAuth();
+  if (result !== "ok") {
+    setToken("");
+    return result;
   }
-  return /* @__PURE__ */ u$1("form", { class: "token-banner", onSubmit: (e2) => {
+  await post(routes.authSession());
+  return "ok";
+}
+function applyAuthResult(r2) {
+  if (r2 === "ok") setSignedIn();
+  else setSignedOut(r2 === "expired" ? "expired" : r2 === "invalid" ? "stale" : "read_only");
+}
+const REFUSED = {
+  missing: "Paste the api token first.",
+  invalid: "That token was not accepted. Tokens change every time muvue serve restarts — run muvue link for the current one.",
+  expired: "That token's session expired after 8 hours without activity. Run muvue link on the server to start a new one."
+};
+function SignInSheet() {
+  const [value, setValue] = d$2("");
+  const [refused, setRefused] = d$2(null);
+  const a2 = useAction();
+  const close = () => {
+    signInOpen.value = false;
+  };
+  async function submit(e2) {
     e2.preventDefault();
-    void use();
-  }, children: [
-    /* @__PURE__ */ u$1("div", { class: "caption", children: [
-      "Read-only. Paste the api token printed by ",
-      /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
-      " to act. It stays in this tab's memory only."
+    setRefused(null);
+    let result = "missing";
+    const ok = await a2.run(async () => {
+      result = await signInWithToken(value);
+    });
+    setValue("");
+    if (!ok) return;
+    if (result === "ok") {
+      applyAuthResult("ok");
+      toast("Signed in");
+      close();
+      refresh();
+      return;
+    }
+    setRefused(REFUSED[result]);
+    if (result === "expired") applyAuthResult("expired");
+  }
+  return /* @__PURE__ */ u$1(Sheet, { title: "Sign in", onClose: close, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    /* @__PURE__ */ u$1("p", { children: "Signing in lets this page approve, plan and run. Either way works:" }),
+    /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "Open a fresh link" }),
+      /* @__PURE__ */ u$1("p", { class: "muted", children: [
+        "On the machine running muvue, in the project's folder, run ",
+        /* @__PURE__ */ u$1("code", { children: "muvue link" }),
+        ", then open the link it prints on this device."
+      ] })
     ] }),
-    /* @__PURE__ */ u$1("div", { class: "row", children: [
-      /* @__PURE__ */ u$1("input", { type: "password", placeholder: "api token printed by muvue serve", value, onInput: (e2) => setValue(e2.target.value) }),
-      /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", children: "Use token" })
+    /* @__PURE__ */ u$1("form", { class: "stack tight", onSubmit: submit, children: [
+      /* @__PURE__ */ u$1("h3", { children: "Or paste the api token" }),
+      /* @__PURE__ */ u$1("p", { class: "muted", children: [
+        /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
+        " and ",
+        /* @__PURE__ */ u$1("code", { children: "muvue link" }),
+        " print it. It changes every time ",
+        /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
+        " restarts."
+      ] }),
+      /* @__PURE__ */ u$1("div", { class: "row nowrap", children: [
+        /* @__PURE__ */ u$1("input", { type: "password", autocomplete: "off", "aria-label": "api token", placeholder: "api token", value, onInput: (e2) => setValue(e2.target.value) }),
+        /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Checking…", disabled: !value.trim(), children: "Use token" })
+      ] }),
+      refused ? /* @__PURE__ */ u$1("div", { class: "callout danger", "data-sign-in-error": true, children: refused }) : null,
+      a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
     ] })
-  ] });
+  ] }) });
 }
 function Toasts() {
   return /* @__PURE__ */ u$1("div", { class: "toasts", "aria-live": "polite", children: toasts.value.map((t2) => /* @__PURE__ */ u$1("button", { type: "button", class: "toast " + t2.kind, onClick: () => dismissToast(t2.id), children: t2.text }, t2.id)) });
@@ -2387,7 +2469,9 @@ function NextStepBar({
         /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveTasksA.busy, busyLabel: "Approving…", onClick: approveTasks, children: "Approve task list" }),
         approveTasksA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveTasksA.error }) : null
       ] }) : null
-    ] }) : /* @__PURE__ */ u$1("p", { class: "caption", children: "Read-only. Open the link printed by muvue serve to act." })
+    ] }) : /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => {
+      signInOpen.value = true;
+    }, children: "Sign in to act" })
   ] });
 }
 function nextStep(i2) {
@@ -3099,11 +3183,12 @@ function App() {
     /* @__PURE__ */ u$1(Sidebar, {}),
     /* @__PURE__ */ u$1("div", { class: "stack", style: { flex: 1, minWidth: 0, gap: 0 }, children: [
       /* @__PURE__ */ u$1(TopBar, { onSearch: () => setPalette(true) }),
-      authed.value ? null : /* @__PURE__ */ u$1(TokenBanner, {}),
+      /* @__PURE__ */ u$1(AuthStrip, {}),
       /* @__PURE__ */ u$1("main", { children: /* @__PURE__ */ u$1(ProjectPage, {}) })
     ] }),
     nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}, nodeId) : null,
     palette ? /* @__PURE__ */ u$1(CommandPalette, { onClose: () => setPalette(false) }) : null,
+    signInOpen.value ? /* @__PURE__ */ u$1(SignInSheet, {}) : null,
     /* @__PURE__ */ u$1(Toasts, {})
   ] });
 }
@@ -3112,9 +3197,12 @@ function connectStream() {
   const src = new EventSource(routes.eventsStream());
   src.onmessage = () => refresh();
 }
-onForbidden(() => setAuthed(false));
+onForbidden((problem) => {
+  if (problem === "expired") setSignedOut("expired");
+  else if (authed.value) setSignedOut(problem === "invalid" ? "stale" : "read_only");
+});
 async function boot() {
-  setAuthed(await exchangeFragmentNonce());
+  applyAuthResult(await exchangeFragmentNonce());
   resetRouteFromLocation();
   const h2 = await api(routes.healthz());
   protocolVersion.value = h2.protocol_version;
@@ -3187,6 +3275,8 @@ pre.scroll-x { white-space: pre; overflow-x: auto; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; box-shadow: var(--shadow); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
+.row.nowrap { flex-wrap: nowrap; }
+.row.nowrap input { flex: 1; min-width: 0; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .stack.tight { gap: 6px; }
 .grid-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
@@ -3275,9 +3365,8 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .project-btn .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .project-goal { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar { display: none; }
-.token-banner { margin: 16px 16px 0; padding: 12px 16px; border-radius: var(--radius-lg); background: var(--surface-2); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
-.token-banner .row { flex-wrap: nowrap; }
-.token-banner input { flex: 1; }
+.auth-strip { display: flex; align-items: center; gap: 12px; margin: 8px 16px 0; padding: 4px 4px 4px 14px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); font-size: 14px; }
+.auth-strip.warn { border-color: var(--st-in_progress); background: color-mix(in srgb, var(--st-in_progress) 12%, var(--surface)); }
 @media (min-width: 900px) {
   .app { flex-direction: row; }
   .topbar { display: none; }

@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { projects, projectId, currentProject, authed, protocolVersion, refresh } from "../state";
+import { projects, projectId, currentProject, authed, signedOutReason, protocolVersion, refresh } from "../state";
 import { openProject } from "../router";
 import { Icon } from "../ui/Icon";
 import { Pill } from "../ui/Pill";
@@ -24,7 +24,7 @@ export function Sidebar() {
         <button type="button" class="nav-item" onClick={() => openProject(0)}><Icon name="plan" /><span class="grow">+ New project</span></button>
       </nav>
       <div class="sidebar-foot caption">
-        <div>{authed.value ? "signed in" : "read-only"}</div>
+        <div>{authed.value ? "signed in" : signedOutReason.value === "expired" ? "session expired" : "read-only"}</div>
         {protocolVersion.value !== null ? <div>protocol v{protocolVersion.value}</div> : null}
       </div>
       {menu ? <ProjectMenu onClose={() => setMenu(false)} /> : null}

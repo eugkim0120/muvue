@@ -1,6 +1,6 @@
 import { post } from "../api/client";
 import { routes } from "../api/routes";
-import { refresh, toast } from "../state";
+import { refresh, signInOpen, toast } from "../state";
 import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
 import { BreakdownButton } from "../canvas/AddForm";
@@ -68,7 +68,7 @@ export function NextStepBar({
           ) : null}
         </>
       ) : (
-        <p class="caption">Read-only. Open the link printed by muvue serve to act.</p>
+        <Button variant="plain" onClick={() => { signInOpen.value = true; }}>Sign in to act</Button>
       )}
     </section>
   );

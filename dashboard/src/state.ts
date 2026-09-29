@@ -15,11 +15,16 @@ export const projects = signal<Project[]>([]);
 export const projectId = signal<number | null>(null);
 export const currentProject = computed(() => projects.value.find((p) => p.id === projectId.value) ?? null);
 export const authed = signal(false);
+// Why the page is read-only, so the sign-in strip can say it plainly.
+export type SignedOutReason = "read_only" | "stale" | "expired";
+export const signedOutReason = signal<SignedOutReason>("read_only");
+export const signInOpen = signal(false);
+export function setSignedIn(): void { authed.value = true; }
+export function setSignedOut(reason: SignedOutReason): void { authed.value = false; signedOutReason.value = reason; }
 export const refreshTick = signal(0);
 export const protocolVersion = signal<number | null>(null);
 
 export function refresh(): void { refreshTick.value = refreshTick.value + 1; }
-export function setAuthed(ok: boolean): void { authed.value = ok; }
 
 export type Toast = { id: number; text: string; kind: "info" | "error" };
 export const toasts = signal<Toast[]>([]);

@@ -13,7 +13,7 @@ test("approve_tasks approves gate2 by project id", async () => {
 test("read-only viewers see how to act instead of buttons", () => {
   render(<NextStepBar step={{ id: "approve_spec", title: "Approve the spec", detail: "d" }} authed={false} projectId={7} specId={1} activity={null} onAddTask={() => {}} />);
   expect(screen.queryByText("Approve spec")).toBeNull();
-  expect(screen.getByText("Read-only. Open the link printed by muvue serve to act.")).toBeTruthy();
+  expect(screen.getByText("Sign in to act")).toBeTruthy();
 });
 
 test("plan_tasks offers both ways to create tasks", () => {

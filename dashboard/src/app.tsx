@@ -1,9 +1,10 @@
 import { useEffect, useState } from "preact/hooks";
 import { route, navigate, isLegacyRoute } from "./router";
-import { authed, projectId } from "./state";
+import { projectId, signInOpen } from "./state";
 import { Sidebar } from "./shell/Sidebar";
 import { TopBar } from "./shell/TopBar";
-import { TokenBanner } from "./shell/TokenBanner";
+import { AuthStrip } from "./shell/AuthStrip";
+import { SignInSheet } from "./shell/SignInSheet";
 import { Toasts } from "./ui/Toasts";
 import { ProjectPage } from "./project/ProjectPage";
 import { NodeSheet } from "./node/NodeSheet";
@@ -31,11 +32,12 @@ export function App() {
       <Sidebar />
       <div class="stack" style={{ flex: 1, minWidth: 0, gap: 0 }}>
         <TopBar onSearch={() => setPalette(true)} />
-        {authed.value ? null : <TokenBanner />}
+        <AuthStrip />
         <main><ProjectPage /></main>
       </div>
       {nodeId ? <NodeSheet key={nodeId} /> : null}
       {palette ? <CommandPalette onClose={() => setPalette(false)} /> : null}
+      {signInOpen.value ? <SignInSheet /> : null}
       <Toasts />
     </div>
   );

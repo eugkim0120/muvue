@@ -17,14 +17,15 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-test("the shell shows the project and no token banner when signed in", () => {
+test("the shell shows the project and no sign-in strip when signed in", () => {
   render(<App />);
   expect(screen.getAllByText("build the thing").length).toBeGreaterThan(0);
-  expect(screen.queryByPlaceholderText(/api token/)).toBeNull();
+  expect(document.querySelector("[data-auth-strip]")).toBeNull();
 });
 
-test("read-only shows the token banner", () => {
+test("read-only shows the one-line sign-in strip, not a token form", () => {
   authed.value = false;
   render(<App />);
-  expect(screen.getByPlaceholderText(/api token/)).toBeInTheDocument();
+  expect(document.querySelector('[data-auth-strip="read_only"]')).toBeTruthy();
+  expect(screen.queryByLabelText("api token")).toBeNull();
 });
