@@ -414,8 +414,8 @@ def serve(
     control = control_mod.ControlServer(
         control_mod.socket_path(repo_root), session, base_url=f"http://{host}:{port}",
     )
-    control.start()
     try:
+        control.start()
         typer.echo(f"muvue daemon listening on http://{host}:{port}")
         uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
     except KeyboardInterrupt:
@@ -441,7 +441,16 @@ def link(path: Path = typer.Argument(Path("."), help="Repo root the daemon serve
     if not sock.exists():
         port_file = daemon_mod.port_file_path(repo_root)
         if port_file.exists():
-            pid = json_mod.loads(port_file.read_text()).get("pid")
+            try:
+                info = json_mod.loads(port_file.read_text())
+                pid = info["pid"]
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                typer.echo(
+                    f"muvue link: the port file {port_file} is unreadable ({type(exc).__name__}: {exc}); "
+                    "delete it if no `muvue serve` is running, otherwise restart the daemon.",
+                    err=True,
+                )
+                raise typer.Exit(1) from exc
             typer.echo(
                 f"muvue link: `muvue serve` (pid {pid}) is running for {repo_root} but has no control "
                 "socket: it was started by an older muvue. Restart it once, then `muvue link` works.",
