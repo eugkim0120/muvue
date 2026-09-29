@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Sheet } from "../ui/Sheet";
 import { Button } from "../ui/Button";
 import { useAction } from "../ui/useAction";
@@ -15,6 +15,8 @@ export function SignInSheet() {
   const [value, setValue] = useState("");
   const [refused, setRefused] = useState<string | null>(null);
   const a = useAction();
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { input.current?.focus(); }, []);
   const close = () => { signInOpen.value = false; };
 
   async function submit(e: Event) {
@@ -50,7 +52,7 @@ export function SignInSheet() {
           <h3>Or paste the api token</h3>
           <p class="muted"><code>muvue serve</code> and <code>muvue link</code> print it. It changes every time <code>muvue serve</code> restarts.</p>
           <div class="row nowrap">
-            <input type="password" autocomplete="off" aria-label="api token" placeholder="api token" value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
+            <input ref={input} type="password" autocomplete="off" aria-label="api token" placeholder="api token" value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
             <Button type="submit" variant="filled" busy={a.busy} busyLabel="Checking…" disabled={!value.trim()}>Use token</Button>
           </div>
           {refused ? <div class="callout danger" data-sign-in-error>{refused}</div> : null}

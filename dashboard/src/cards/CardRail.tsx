@@ -5,7 +5,7 @@ import { refresh } from "../state";
 
 export function CardRail({ cards }: { cards: CardT[] }) {
   const [collapsed, setCollapsed] = useState(false);
-  if (!cards.length) return <div class="card-rail-empty caption">Nothing waiting on you</div>;
+  if (!cards.length) return null;
   if (collapsed) return <button type="button" class="card-rail-pill" onClick={() => setCollapsed(false)}>{cards.length} need you</button>;
   return (
     <div class="card-rail stack tight">

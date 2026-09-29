@@ -69,3 +69,8 @@ test("Use token is disabled until something is typed", () => {
   render(<SignInSheet />);
   expect((screen.getByText("Use token").closest("button") as HTMLButtonElement).disabled).toBe(true);
 });
+
+test("opening the sign-in sheet puts the cursor in the token field", () => {
+  render(<SignInSheet />);
+  expect(document.activeElement).toBe(screen.getByLabelText("api token"));
+});

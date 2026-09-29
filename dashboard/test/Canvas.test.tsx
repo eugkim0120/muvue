@@ -11,7 +11,7 @@ const data: CanvasData = {
   ],
   edges: [{ from: 2, to: 3, carries: "audio frames" }],
 };
-const props = { projectId: 1, projectPhase: "executing", needsYou: new Set<number>(), activity: null, onAddTask: () => {} };
+const props = { projectId: 1, projectPhase: "executing", needsYou: new Set<number>(), activity: null };
 
 test("renders spec and tasks as one DAG with a spec arrow, a dep arrow, and arrowheads", () => {
   const { container } = render(<Canvas data={data} {...props} />);

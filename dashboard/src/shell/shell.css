@@ -5,6 +5,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .project-btn:hover { background: var(--surface-2); }
 .project-btn .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .project-goal { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-head { padding: 12px 12px 4px; }
 .sidebar { display: none; }
 .auth-strip { display: flex; align-items: center; gap: 12px; margin: 8px 16px 0; padding: 4px 4px 4px 14px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); font-size: 14px; }
 .auth-strip.warn { border-color: var(--st-in_progress); background: color-mix(in srgb, var(--st-in_progress) 12%, var(--surface)); }
@@ -17,8 +18,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }
   .nav-item.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-strong); font-weight: 500; }
-  .nav-item .grow { flex: 1; }
+  .nav-item .grow { flex: 1; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .sidebar-foot { margin-top: auto; padding: 8px 12px; }
   .list-row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-  .sidebar .project-btn { flex: none; }
 }

@@ -12,6 +12,9 @@ import { SubmitSpecForm } from "../canvas/SpecRoot";
 import { StatusLine } from "./StatusLine";
 import { AgentsSheet } from "./AgentsSheet";
 import { NewProject } from "./NewProject";
+import { FakeAgentNotice } from "./FakeAgentNotice";
+import { ProjectMenu } from "../shell/ProjectMenu";
+import { Icon } from "../ui/Icon";
 import { Button } from "../ui/Button";
 import { Empty } from "../ui/Empty";
 import { useAction } from "../ui/useAction";
@@ -23,6 +26,7 @@ import { nextStep, runBlockReason, type NextStepInput } from "./nextStep";
 
 export function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = useState(false);
+  const [menu, setMenu] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
   const [openLog, setOpenLog] = useState<LogRef | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -94,44 +98,44 @@ export function ProjectPage() {
 
   return (
     <div class="page-canvas">
-      <div class="project-layout">
-        <div class="project-main">
-          <div class="row between" style={{ padding: "16px 16px 0" }}>
-            <h1 class="page-title">{p.goal}</h1>
-            <div class="row">
-              {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
-                <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
-              ) : null}
-              <Button variant="filled" busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
-              {reason ? <span class="caption" data-run-reason>{reason}</span> : null}
-            </div>
+      <div class="project-grid">
+        <header class="project-head">
+          <div class="row between nowrap">
+            <h1 class="page-title clamp-2">{p.goal}</h1>
+            <button type="button" class="icon-btn project-menu-btn" aria-label="project menu" onClick={() => setMenu(true)}><Icon name="more" /></button>
           </div>
-          {runA.error ? <div class="callout danger" style={{ margin: "0 16px" }}>{runA.error}</div> : null}
-          {hasFakeAgent ? <div class="callout" data-fake-notice style={{ margin: "0 16px" }}>Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.</div> : null}
+          <div class="row meta-row">
+            <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
+              <StatusLine phase={p.phase} done={done} total={total} working={working} />
+            </button>
+            {hasFakeAgent ? <FakeAgentNotice /> : null}
+          </div>
+          <div class="row toolbar">
+            {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
+              <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
+            ) : null}
+            <Button variant={step.id === "run" ? "filled" : "outline"} busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
+            {reason ? <span class="caption" data-run-reason>{reason}</span> : null}
+          </div>
+          {runA.error ? <div class="callout danger">{runA.error}</div> : null}
+        </header>
+        <aside class="project-rail">
           <NextStepBar step={step} authed={authed.value} projectId={pid!} specId={data?.spec?.id ?? null} activity={activity} onAddTask={openAddTask} />
           <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
-          <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
-            <StatusLine phase={p.phase} done={done} total={total} working={working} />
-          </button>
+          <CardRail cards={cards} />
+        </aside>
+        <section class="project-dag">
           {authed.value && addingTask && data?.spec ? (
-            <div style={{ padding: "0 16px 16px" }}>
-              <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
-            </div>
+            <AddForm parentId={data.spec.id} kind="task" candidates={data.tasks} onClose={() => setAddingTask(false)} />
           ) : null}
           {graphQ.error || nodesQ.error ? <div class="callout danger">{graphQ.error || nodesQ.error}</div> : !data ? <Empty text="loading…" /> : step.id === "write_spec" ? (
-            authed.value ? (
-              <div style={{ padding: "0 16px 16px" }}>
-                <SubmitSpecForm projectId={pid!} />
-              </div>
-            ) : null
+            authed.value ? <SubmitSpecForm projectId={pid!} /> : null
           ) : (
-            <div style={{ padding: "0 16px 16px" }}>
-              <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} onAddTask={openAddTask} />
-            </div>
+            <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
           )}
-        </div>
-        <CardRail cards={cards} />
+        </section>
       </div>
+      {menu ? <ProjectMenu onClose={() => setMenu(false)} /> : null}
       {agentsSheet ? <AgentsSheet projectId={pid!} onClose={() => setAgentsSheet(false)} /> : null}
       {openLog ? <LogSheet log={openLog} onClose={() => setOpenLog(null)} /> : null}
     </div>

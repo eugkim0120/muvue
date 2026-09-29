@@ -1132,6 +1132,32 @@ const PATHS = {
 function Icon({ name }) {
   return /* @__PURE__ */ u$1("svg", { class: "icon", viewBox: "0 0 24 24", width: "22", height: "22", fill: "none", stroke: "currentColor", "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", children: /* @__PURE__ */ u$1("path", { d: PATHS[name] }) });
 }
+function Sidebar() {
+  return /* @__PURE__ */ u$1("aside", { class: "sidebar", children: [
+    /* @__PURE__ */ u$1("div", { class: "sidebar-head caption", children: "Projects" }),
+    /* @__PURE__ */ u$1("nav", { children: [
+      projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
+        projectId.value = pr.id;
+        refresh();
+        openProject(pr.id);
+      }, children: [
+        /* @__PURE__ */ u$1("span", { class: "dot", style: { background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" } }),
+        /* @__PURE__ */ u$1("span", { class: "grow", children: pr.goal })
+      ] })),
+      /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item", onClick: () => openProject(0), children: [
+        /* @__PURE__ */ u$1(Icon, { name: "plan" }),
+        /* @__PURE__ */ u$1("span", { class: "grow", children: "+ New project" })
+      ] })
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "sidebar-foot caption", children: [
+      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : signedOutReason.value === "expired" ? "session expired" : "read-only" }),
+      protocolVersion.value !== null ? /* @__PURE__ */ u$1("div", { children: [
+        "protocol v",
+        protocolVersion.value
+      ] }) : null
+    ] })
+  ] });
+}
 function Pill({ status }) {
   return /* @__PURE__ */ u$1("span", { class: "pill st-" + status, children: status.replace(/_/g, " ") });
 }
@@ -1141,17 +1167,44 @@ function Tier({ tier }) {
     " risk"
   ] });
 }
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 function Sheet({ title, onClose, children }) {
+  const dialog = A(null);
+  const closeRef = A(onClose);
+  closeRef.current = onClose;
   h$2(() => {
+    const opener = document.activeElement;
+    const el = dialog.current;
+    if (!el.contains(document.activeElement)) (el.querySelector(FOCUSABLE) ?? el).focus();
     const onKey = (e2) => {
-      if (e2.key === "Escape") onClose();
+      if (e2.key === "Escape") {
+        closeRef.current();
+        return;
+      }
+      if (e2.key !== "Tab") return;
+      const items = [...el.querySelectorAll(FOCUSABLE)];
+      if (!items.length) {
+        e2.preventDefault();
+        return;
+      }
+      const first = items[0], last = items[items.length - 1];
+      if (e2.shiftKey && (document.activeElement === first || !el.contains(document.activeElement))) {
+        e2.preventDefault();
+        last.focus();
+      } else if (!e2.shiftKey && (document.activeElement === last || !el.contains(document.activeElement))) {
+        e2.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (opener && opener.isConnected) opener.focus();
+    };
+  }, []);
   return /* @__PURE__ */ u$1("div", { class: "sheet-overlay", onClick: (e2) => {
     if (e2.target === e2.currentTarget) onClose();
-  }, children: /* @__PURE__ */ u$1("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": title, children: [
+  }, children: /* @__PURE__ */ u$1("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": title, tabIndex: -1, ref: dialog, children: [
     /* @__PURE__ */ u$1("div", { class: "sheet-handle", "aria-hidden": "true" }),
     /* @__PURE__ */ u$1("div", { class: "sheet-head", children: [
       /* @__PURE__ */ u$1("h2", { children: title }),
@@ -1446,41 +1499,6 @@ function ProjectMenu({ onClose }) {
     ] }) : null
   ] }) });
 }
-function Sidebar() {
-  const [menu, setMenu] = d$2(false);
-  const p2 = currentProject.value;
-  return /* @__PURE__ */ u$1("aside", { class: "sidebar", children: [
-    /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
-      /* @__PURE__ */ u$1("span", { class: "grow", children: [
-        /* @__PURE__ */ u$1("span", { class: "project-goal", children: p2 ? p2.goal : "no project" }),
-        p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
-      ] }),
-      /* @__PURE__ */ u$1(Icon, { name: "more" })
-    ] }),
-    /* @__PURE__ */ u$1("nav", { children: [
-      projects.value.map((pr) => /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item" + (pr.id === projectId.value ? " on" : ""), onClick: () => {
-        projectId.value = pr.id;
-        refresh();
-        openProject(pr.id);
-      }, children: [
-        /* @__PURE__ */ u$1("span", { class: "dot", style: { background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" } }),
-        /* @__PURE__ */ u$1("span", { class: "grow", children: pr.goal })
-      ] })),
-      /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item", onClick: () => openProject(0), children: [
-        /* @__PURE__ */ u$1(Icon, { name: "plan" }),
-        /* @__PURE__ */ u$1("span", { class: "grow", children: "+ New project" })
-      ] })
-    ] }),
-    /* @__PURE__ */ u$1("div", { class: "sidebar-foot caption", children: [
-      /* @__PURE__ */ u$1("div", { children: authed.value ? "signed in" : signedOutReason.value === "expired" ? "session expired" : "read-only" }),
-      protocolVersion.value !== null ? /* @__PURE__ */ u$1("div", { children: [
-        "protocol v",
-        protocolVersion.value
-      ] }) : null
-    ] }),
-    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null
-  ] });
-}
 function TopBar({ onSearch }) {
   const [menu, setMenu] = d$2(false);
   const p2 = currentProject.value;
@@ -1562,6 +1580,10 @@ function SignInSheet() {
   const [value, setValue] = d$2("");
   const [refused, setRefused] = d$2(null);
   const a2 = useAction();
+  const input = A(null);
+  h$2(() => {
+    input.current?.focus();
+  }, []);
   const close = () => {
     signInOpen.value = false;
   };
@@ -1605,7 +1627,7 @@ function SignInSheet() {
         " restarts."
       ] }),
       /* @__PURE__ */ u$1("div", { class: "row nowrap", children: [
-        /* @__PURE__ */ u$1("input", { type: "password", autocomplete: "off", "aria-label": "api token", placeholder: "api token", value, onInput: (e2) => setValue(e2.target.value) }),
+        /* @__PURE__ */ u$1("input", { ref: input, type: "password", autocomplete: "off", "aria-label": "api token", placeholder: "api token", value, onInput: (e2) => setValue(e2.target.value) }),
         /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Checking…", disabled: !value.trim(), children: "Use token" })
       ] }),
       refused ? /* @__PURE__ */ u$1("div", { class: "callout danger", "data-sign-in-error": true, children: refused }) : null,
@@ -2039,7 +2061,7 @@ function boxStyle(p2) {
   return { position: "absolute", left: p2.x + "px", top: p2.y + "px", width: p2.w + "px", height: p2.h + "px" };
 }
 const distance = (a2, b2) => Math.hypot(a2.x - b2.x, a2.y - b2.y);
-function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity, onAddTask }) {
+function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
   const planning = data.spec ? planningNodeIds(activity, launches.value, projectId2).has(data.spec.id) : false;
   const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
   const viewportRef = A(null);
@@ -2236,7 +2258,7 @@ function Card({ card, onActed }) {
 }
 function CardRail({ cards }) {
   const [collapsed, setCollapsed] = d$2(false);
-  if (!cards.length) return /* @__PURE__ */ u$1("div", { class: "card-rail-empty caption", children: "Nothing waiting on you" });
+  if (!cards.length) return null;
   if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
     cards.length,
     " need you"
@@ -2387,6 +2409,12 @@ function NewProject() {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Create" }) })
   ] }) });
 }
+function FakeAgentNotice() {
+  return /* @__PURE__ */ u$1("details", { class: "demo-notice", "data-fake-notice": true, children: [
+    /* @__PURE__ */ u$1("summary", { children: "Demo agent: writes no code" }),
+    /* @__PURE__ */ u$1("p", { class: "muted", children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' })
+  ] });
+}
 function ActivityBar({ items, now, onDismiss, onOpenLog }) {
   if (!items.length) return null;
   return /* @__PURE__ */ u$1("div", { class: "activity-bar stack tight", "data-activity": true, role: "status", "aria-live": "polite", children: items.map((i2) => /* @__PURE__ */ u$1("div", { class: "activity-item " + i2.tone, children: [
@@ -2531,6 +2559,7 @@ function runBlockReason(i2) {
 }
 function ProjectPage() {
   const [agentsSheet, setAgentsSheet] = d$2(false);
+  const [menu, setMenu] = d$2(false);
   const [addingTask, setAddingTask] = d$2(false);
   const [openLog, setOpenLog] = d$2(null);
   const [now, setNow] = d$2(Date.now());
@@ -2593,26 +2622,34 @@ function ProjectPage() {
   }
   const openAddTask = () => setAddingTask(true);
   return /* @__PURE__ */ u$1("div", { class: "page-canvas", children: [
-    /* @__PURE__ */ u$1("div", { class: "project-layout", children: [
-      /* @__PURE__ */ u$1("div", { class: "project-main", children: [
-        /* @__PURE__ */ u$1("div", { class: "row between", style: { padding: "16px 16px 0" }, children: [
-          /* @__PURE__ */ u$1("h1", { class: "page-title", children: p2.goal }),
-          /* @__PURE__ */ u$1("div", { class: "row", children: [
-            authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-            /* @__PURE__ */ u$1(Button, { variant: "filled", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
-            reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
-          ] })
+    /* @__PURE__ */ u$1("div", { class: "project-grid", children: [
+      /* @__PURE__ */ u$1("header", { class: "project-head", children: [
+        /* @__PURE__ */ u$1("div", { class: "row between nowrap", children: [
+          /* @__PURE__ */ u$1("h1", { class: "page-title clamp-2", children: p2.goal }),
+          /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn project-menu-btn", "aria-label": "project menu", onClick: () => setMenu(true), children: /* @__PURE__ */ u$1(Icon, { name: "more" }) })
         ] }),
-        runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", style: { margin: "0 16px" }, children: runA.error }) : null,
-        hasFakeAgent ? /* @__PURE__ */ u$1("div", { class: "callout", "data-fake-notice": true, style: { margin: "0 16px" }, children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' }) : null,
+        /* @__PURE__ */ u$1("div", { class: "row meta-row", children: [
+          /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
+          hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null
+        ] }),
+        /* @__PURE__ */ u$1("div", { class: "row toolbar", children: [
+          authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
+          /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
+          reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
+        ] }),
+        runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: runA.error }) : null
+      ] }),
+      /* @__PURE__ */ u$1("aside", { class: "project-rail", children: [
         /* @__PURE__ */ u$1(NextStepBar, { step, authed: authed.value, projectId: pid, specId: data?.spec?.id ?? null, activity, onAddTask: openAddTask }),
         /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
-        /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
-        authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) }) : null,
-        graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : step.id === "write_spec" ? authed.value ? /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: pid }) }) : null : /* @__PURE__ */ u$1("div", { style: { padding: "0 16px 16px" }, children: /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity, onAddTask: openAddTask }) })
+        /* @__PURE__ */ u$1(CardRail, { cards })
       ] }),
-      /* @__PURE__ */ u$1(CardRail, { cards })
+      /* @__PURE__ */ u$1("section", { class: "project-dag", children: [
+        authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) : null,
+        graphQ.error || nodesQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: graphQ.error || nodesQ.error }) : !data ? /* @__PURE__ */ u$1(Empty, { text: "loading…" }) : step.id === "write_spec" ? authed.value ? /* @__PURE__ */ u$1(SubmitSpecForm, { projectId: pid }) : null : /* @__PURE__ */ u$1(Canvas, { data, projectId: pid, projectPhase: p2.phase, needsYou, activity })
+      ] })
     ] }),
+    menu ? /* @__PURE__ */ u$1(ProjectMenu, { onClose: () => setMenu(false) }) : null,
     agentsSheet ? /* @__PURE__ */ u$1(AgentsSheet, { projectId: pid, onClose: () => setAgentsSheet(false) }) : null,
     openLog ? /* @__PURE__ */ u$1(LogSheet, { log: openLog, onClose: () => setOpenLog(null) }) : null
   ] });
@@ -3354,10 +3391,10 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
   .sheet-handle { display: none; }
   @keyframes sheet-in { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
 }
-.toasts { position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom) + 12px); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 30; pointer-events: none; }
+.toasts { position: fixed; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 68px); display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 30; pointer-events: none; }
 .toast { pointer-events: auto; background: var(--text); color: var(--bg); border: 0; border-radius: 999px; padding: 10px 18px; font-size: 13px; box-shadow: var(--shadow); max-width: 90vw; }
 .toast.error { background: color-mix(in srgb, var(--danger) 80%, #000000); color: #ffffff; }
-@media (min-width: 900px) { .toasts { bottom: 20px; } }
+@media (min-width: 900px) { .toasts { top: auto; bottom: 20px; left: auto; right: 20px; align-items: flex-end; } }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 .btn.busy:disabled { opacity: 1; cursor: progress; }
@@ -3370,6 +3407,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .project-btn:hover { background: var(--surface-2); }
 .project-btn .grow { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .project-goal { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-head { padding: 12px 12px 4px; }
 .sidebar { display: none; }
 .auth-strip { display: flex; align-items: center; gap: 12px; margin: 8px 16px 0; padding: 4px 4px 4px 14px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); font-size: 14px; }
 .auth-strip.warn { border-color: var(--st-in_progress); background: color-mix(in srgb, var(--st-in_progress) 12%, var(--surface)); }
@@ -3382,19 +3420,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }
   .nav-item.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-strong); font-weight: 500; }
-  .nav-item .grow { flex: 1; }
+  .nav-item .grow { flex: 1; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .sidebar-foot { margin-top: auto; padding: 8px 12px; }
   .list-row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-  .sidebar .project-btn { flex: none; }
 }
 /* dashboard/src/canvas/canvas.css */
-.project-layout { display: flex; flex-direction: column; }
-.project-layout > .card-rail, .project-layout > .card-rail-empty, .project-layout > .card-rail-pill { order: -1; }
-@media (min-width: 900px) {
-  .project-layout { flex-direction: row; align-items: flex-start; }
-  .project-main { flex: 1; min-width: 0; }
-  .project-layout > .card-rail, .project-layout > .card-rail-empty, .project-layout > .card-rail-pill { order: 0; position: sticky; top: 0; max-height: 100dvh; }
-}
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
 .canvas-viewport { position: relative; width: 100%; overflow: hidden; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
@@ -3430,8 +3460,27 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .more-row { padding-left: 20px; }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
-.status-line { padding: 4px 16px; }
-.status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.project-grid { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "head" "rail" "dag"; }
+.project-head { grid-area: head; display: flex; flex-direction: column; gap: 6px; padding: 12px 16px 8px; min-width: 0; }
+.project-head .page-title { margin: 0; font-size: 20px; flex: 1; min-width: 0; }
+.project-rail { grid-area: rail; display: flex; flex-direction: column; min-width: 0; }
+.project-dag { grid-area: dag; padding: 0 16px 16px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.meta-row { gap: 8px; }
+.toolbar { gap: 8px; }
+.status-line { padding: 0; }
+.status-line-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.demo-notice summary { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer; list-style: none; font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
+.demo-notice summary::-webkit-details-marker { display: none; }
+.demo-notice[open] { flex-basis: 100%; }
+.demo-notice p { margin: 8px 0 0; max-width: 60ch; }
+@media (max-width: 899px) {
+  .project-head .page-title, .project-menu-btn { display: none; }
+}
+@media (min-width: 1100px) {
+  .project-grid { grid-template-columns: minmax(0, 1fr) 340px; grid-template-areas: "head rail" "dag rail"; align-items: start; }
+  .project-head { padding-top: 16px; }
+  .project-rail { position: sticky; top: 0; max-height: 100dvh; overflow-y: auto; padding-top: 16px; border-left: 1px solid var(--border); }
+}
 .spec-body { padding: 8px 0; }
 .spec-line { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px; text-align: left; background: none; border: 0; padding: 2px 12px; font-family: var(--mono); font-size: 13px; cursor: pointer; color: var(--text); }
 .spec-line:hover { background: var(--surface-2); }
@@ -3446,6 +3495,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .activity-item.error { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-color: var(--danger); }
 .activity-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--danger); color: #fff; font-weight: 700; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 .next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
+.next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
 [data-run-reason] { max-width: 220px; }
 .agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
@@ -3459,13 +3509,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .agent-tag.st-paused .agent-dot { background: var(--st-blocked); }
 .agent-dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
 /* dashboard/src/cards/cards.css */
-.card-rail { width: 320px; flex: none; padding: 12px; border-left: 1px solid var(--border); overflow-y: auto; }
-.card-rail-empty { padding: 12px; }
+.card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
-.notif-title:disabled { cursor: default; }
-@media (max-width: 899px) { .card-rail { width: 100%; border-left: 0; border-bottom: 1px solid var(--border); } }</style>
+.notif-title:disabled { cursor: default; }</style>
 </head>
 <body>
 <div id="root"></div>

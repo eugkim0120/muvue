@@ -16,7 +16,7 @@ function boxStyle(p: Placed): Record<string, string> {
 type Point = { x: number; y: number };
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
-export function Canvas({ data, projectId, projectPhase, needsYou, activity, onAddTask }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number>; activity: Activity | null; onAddTask: () => void }) {
+export function Canvas({ data, projectId, projectPhase, needsYou, activity }: { data: CanvasData; projectId: number; projectPhase: string; needsYou: Set<number>; activity: Activity | null }) {
   const planning = data.spec ? planningNodeIds(activity, launches.value, projectId).has(data.spec.id) : false;
   const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
 

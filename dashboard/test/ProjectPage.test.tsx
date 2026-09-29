@@ -72,3 +72,59 @@ test("Minor: SubmitSpecForm is gated on authed, matching NextStepBar's read-only
   await waitFor(() => screen.getByText("Sign in to act"));
   expect(screen.queryByPlaceholderText("title")).toBeNull();
 });
+
+function mockProject(specStatus: string, tasks: Array<{ id: number; status: string }>, phase: "planning" | "executing") {
+  projects.value = [{ id: 1, goal: "Voxscore", phase }];
+  projectId.value = 1;
+  const spec = { id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: specStatus, risk_tier: "low", owner: null, agent: "fake" };
+  const taskRows = tasks.map((t) => ({ id: t.id, project_id: 1, parent_id: 1, kind: "task", title: "T" + t.id, status: t.status, risk_tier: "low", owner: null, agent: "fake" }));
+  const full = (n: any) => ({ ...n, body_md: "x", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null });
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    if (path.startsWith("/graph")) return Promise.resolve({ nodes: [spec, ...taskRows], edges: [] });
+    if (path.startsWith("/nodes")) return Promise.resolve([full(spec), ...taskRows.map(full)]);
+    if (path === "/inbox") return Promise.resolve({ questions: [], review: [], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] });
+    if (path.startsWith("/projects/1/revisions")) return Promise.resolve([]);
+    if (path.startsWith("/projects/1/activity")) return Promise.resolve({ active: [], breakdowns: [], working: [] });
+    return Promise.resolve({});
+  });
+}
+
+test("one primary action: while the task list awaits approval, Run is not filled", async () => {
+  authed.value = true;
+  mockProject("ready", [{ id: 2, status: "pending" }], "planning");
+  const { container } = render(<ProjectPage />);
+  await waitFor(() => screen.getByText("Approve task list"));
+  const filledEnabled = [...container.querySelectorAll(".btn-filled")].filter((b) => !(b as HTMLButtonElement).disabled);
+  expect(filledEnabled.map((b) => b.textContent)).toEqual(["Approve task list"]);
+  authed.value = false;
+});
+
+test("when Run is the next step, Run is the one filled button", async () => {
+  authed.value = true;
+  mockProject("ready", [{ id: 2, status: "ready" }], "executing");
+  const { container } = render(<ProjectPage />);
+  await waitFor(() => screen.getByText("▶ Run tasks"));
+  const filled = [...container.querySelectorAll(".btn-filled")].filter((b) => !(b as HTMLButtonElement).disabled);
+  expect(filled.map((b) => b.textContent)).toEqual(["▶ Run tasks"]);
+  authed.value = false;
+});
+
+test("the fake-agent notice is one tappable line that expands for detail", async () => {
+  mockProject("ready", [{ id: 2, status: "pending" }], "planning");
+  render(<ProjectPage />);
+  await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
+  const notice = document.querySelector("[data-fake-notice]")!;
+  expect(notice.tagName).toBe("DETAILS");
+  expect(notice.querySelector("summary")!.textContent).toBe("Demo agent: writes no code");
+  expect(notice.textContent).toContain("demo agent");
+});
+
+test("the header, rail and diagram are separate regions, with the Next step in the rail", async () => {
+  mockProject("ready", [{ id: 2, status: "pending" }], "planning");
+  const { container } = render(<ProjectPage />);
+  await waitFor(() => container.querySelector(".canvas-wrap"));
+  expect(container.querySelector(".project-head h1")!.textContent).toBe("Voxscore");
+  expect(container.querySelector(".project-rail [data-next-step]")).toBeTruthy();
+  expect(container.querySelector(".project-dag .canvas-wrap")).toBeTruthy();
+  expect(screen.queryByText("Nothing waiting on you")).toBeNull();
+});

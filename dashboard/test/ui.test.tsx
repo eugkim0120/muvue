@@ -12,6 +12,24 @@ test("Sheet closes on Escape and on the close button", () => {
   expect(onClose).toHaveBeenCalledTimes(2);
 });
 
+test("Sheet moves focus in on open, traps Tab, and restores focus on close", () => {
+  const opener = document.createElement("button");
+  document.body.appendChild(opener);
+  opener.focus();
+  const { unmount } = render(<Sheet title="t" onClose={() => {}}><input aria-label="a" /><input aria-label="b" /></Sheet>);
+  const close = screen.getByLabelText("close");
+  const b = screen.getByLabelText("b");
+  expect(document.activeElement).toBe(close);
+  b.focus();
+  fireEvent.keyDown(b, { key: "Tab" });
+  expect(document.activeElement).toBe(close);
+  fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+  expect(document.activeElement).toBe(b);
+  unmount();
+  expect(document.activeElement).toBe(opener);
+  opener.remove();
+});
+
 test("Segmented reports the chosen value", () => {
   const onChange = vi.fn();
   render(<Segmented options={[{ value: "a", label: "A" }, { value: "b", label: "B" }]} value="a" onChange={onChange} />);
