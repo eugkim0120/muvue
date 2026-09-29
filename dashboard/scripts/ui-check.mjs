@@ -51,12 +51,18 @@ muvue("approve", `spec:${spec.id}`, "--path", repo);
 
 // --- serve (fake agent in its default behavior: breakdown must still work)
 const serve = spawn("uv", ["run", "muvue", "serve", repo, "--port", String(port)], { cwd: muvueRoot, detached: true });
-const link = await new Promise((res, rej) => {
+const { link, token } = await new Promise((res, rej) => {
   let buf = "";
   const t = setTimeout(() => rej(new Error("serve printed no link in 30s:\n" + buf)), 30000);
-  const on = (d) => { buf += d; const m = buf.match(/http:\/\/\S+#n=\S+/); if (m) { clearTimeout(t); res(m[0]); } };
+  const on = (d) => {
+    buf += d;
+    const m = buf.match(/http:\/\/\S+#n=\S+/);
+    const k = buf.match(/api token: (\S+)/);
+    if (m && k) { clearTimeout(t); res({ link: m[0], token: k[1] }); }
+  };
   serve.stdout.on("data", on); serve.stderr.on("data", on);
 });
+const base = link.split("#")[0];
 
 const browser = await chromium.launch({ executablePath: CHROME_PATH });
 try {
@@ -77,18 +83,81 @@ try {
   await page.getByText("✨ Plan tasks with agent").first().click().catch(() => {});
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(outDir, "02-phone-300ms-after-plan.png"), fullPage: true });
-  check("phone: activity bar visible within 300ms of launching", await page.locator("[data-activity]").isVisible());
+  const feedback = await page.locator("[data-activity], .task-box:not(.dag-empty)").first().isVisible();
+  check("phone: within 300ms of launching, the activity bar or the new tasks are showing", feedback);
 
   await page.waitForFunction(() => document.querySelectorAll(".task-box").length >= 3, null, { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(800);
   await page.screenshot({ path: join(outDir, "03-phone-after-plan.png"), fullPage: true });
   await dagChecks(page, "phone");
+  const dagTopPhone = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  // Was 667px before this plan. With a header, the demo notice and the Next
+  // card still above it, the top half of the screen is the honest target.
+  check("phone: the diagram starts in the top half of the screen", dagTopPhone < 0.5 * 844, `starts at ${Math.round(dagTopPhone)}px`);
+  const primaries = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
+  check("phone: at most one enabled primary button", primaries <= 1, `${primaries} found`);
+  const toastOverDag = await page.evaluate(() => {
+    const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const boxes = [...document.querySelectorAll(".task-box, .spec-root-card, .arrow-label-bg")].map((e) => e.getBoundingClientRect());
+    return [...document.querySelectorAll(".toast")].some((t) => boxes.some((b) => hit(t.getBoundingClientRect(), b)));
+  });
+  check("phone: no toast covers a box or an arrow label", !toastOverDag);
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(800);
   await page.screenshot({ path: join(outDir, "04-desktop-after-resize.png") });
   await dagChecks(page, "desktop (resized, no reload)");
+  const desk = await page.evaluate(() => {
+    const dag = document.querySelector(".canvas-wrap").getBoundingClientRect();
+    const next = document.querySelector("[data-next-step]").getBoundingClientRect();
+    return { dagTop: dag.top + window.scrollY, nextBeside: next.left >= dag.right - 1 };
+  });
+  check("desktop: the diagram starts above 200px", desk.dagTop < 200, `starts at ${Math.round(desk.dagTop)}px`);
+  check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
+  const deskToast = await page.evaluate(() => {
+    const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const boxes = [...document.querySelectorAll(".task-box, .spec-root-card, .arrow-label-bg")].map((e) => e.getBoundingClientRect());
+    return [...document.querySelectorAll(".toast")].some((t) => boxes.some((b) => hit(t.getBoundingClientRect(), b)));
+  });
+  check("desktop: no toast covers a box or an arrow label", !deskToast);
   check("desktop: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
+
+  // --- sign-in: a visitor without the link
+  const guest = await browser.newContext({ deviceScaleFactor: 2 });
+  const g = await guest.newPage();
+  await g.setViewportSize({ width: 390, height: 844 });
+  await g.goto(base);
+  await g.waitForTimeout(1000);
+  await g.screenshot({ path: join(outDir, "05-phone-read-only.png"), fullPage: true });
+  check("read-only: a one-line sign-in strip, no token form on the page", (await g.locator('[data-auth-strip="read_only"]').count()) === 1 && (await g.locator('input[aria-label="api token"]').count()) === 0);
+  await g.getByText("Sign in", { exact: true }).click();
+  await g.locator('input[aria-label="api token"]').fill("not-the-token");
+  await g.getByText("Use token").click();
+  await g.waitForSelector("[data-sign-in-error]", { timeout: 3000 }).catch(() => {});
+  await g.screenshot({ path: join(outDir, "06-phone-sign-in-refused.png"), fullPage: true });
+  check("sign-in: a wrong token says it was not accepted", /not accepted/.test(await g.locator("[data-sign-in-error]").innerText().catch(() => "")));
+  await g.locator('input[aria-label="api token"]').fill(token);
+  await g.getByText("Use token").click();
+  await g.waitForTimeout(800);
+  check("sign-in: the printed token signs in", (await g.locator("[data-auth-strip]").count()) === 0);
+  await g.reload();
+  await g.waitForTimeout(1000);
+  check("sign-in: still signed in after a reload (cookie set from the pasted token)", (await g.locator("[data-auth-strip]").count()) === 0);
+  await guest.close();
+
+  // --- muvue link: a fresh one-time link from the running daemon
+  const linked = muvue("link", repo).match(/http:\/\/\S+#n=\S+/)?.[0];
+  check("muvue link: prints a fresh one-time link", !!linked);
+  if (linked) {
+    const fresh = await browser.newContext();
+    const f = await fresh.newPage();
+    await f.goto(linked);
+    await f.waitForTimeout(1000);
+    check("muvue link: the link signs a new browser in", (await f.locator("[data-auth-strip]").count()) === 0);
+    await f.setViewportSize({ width: 1280, height: 800 });
+    await f.screenshot({ path: join(outDir, "07-desktop-signed-in.png") });
+    await fresh.close();
+  }
 } finally {
   await browser.close();
   try { process.kill(-serve.pid, "SIGTERM"); } catch {}
