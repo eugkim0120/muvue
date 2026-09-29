@@ -12,6 +12,8 @@
   --text-2: #6B6A66;
   --accent: #D97757;
   --accent-hover: #C4623F;
+  --accent-strong: #AE5130;
+  --accent-strong-hover: #93432A;
   --on-accent: #FFFFFF;
   --danger: #C94F4F;
   --shadow: 0 1px 2px rgb(0 0 0 / .06), 0 4px 12px rgb(0 0 0 / .06);
@@ -35,6 +37,8 @@
     --text: #F4F3EE;
     --text-2: #A8A69F;
     --accent-hover: #E58A6C;
+    --accent-strong: #E08A6D;
+    --accent-strong-hover: #EA9D82;
     --on-accent: #1F1E1D;
     --danger: #E06B6B;
     --shadow: 0 1px 2px rgb(0 0 0 / .4);

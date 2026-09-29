@@ -3,7 +3,7 @@ html, body { margin: 0; height: 100%; }
 body { font-family: var(--font); font-size: 15px; line-height: 1.4; color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
 h1, h2, h3 { margin: 0; font-weight: 600; }
 h1 { font-size: 22px; } h2 { font-size: 17px; } h3 { font-size: 15px; }
-a { color: var(--accent); }
+a { color: var(--accent-strong); }
 button { font: inherit; color: inherit; }
 input, textarea, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; width: 100%; min-height: 44px; }
 textarea { min-height: 88px; resize: vertical; }
@@ -45,7 +45,7 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
 .chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; min-height: 44px; }
-.chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.chip.on { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
 .group-head.sticky { position: sticky; top: 0; background: var(--bg); padding: 6px 0; z-index: 1; }
 .list-row:disabled { cursor: default; }
 .list-row:disabled:hover { background: none; }

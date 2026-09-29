@@ -16,7 +16,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .sidebar nav { display: flex; flex-direction: column; gap: 2px; }
   .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }
-  .nav-item.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent); font-weight: 500; }
+  .nav-item.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); color: var(--accent-strong); font-weight: 500; }
   .nav-item .grow { flex: 1; }
   .sidebar-foot { margin-top: auto; padding: 8px 12px; }
   .list-row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }

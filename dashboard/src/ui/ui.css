@@ -1,22 +1,22 @@
 .btn { border-radius: var(--radius); padding: 10px 16px; min-height: 44px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-weight: 500; }
-.btn:disabled { opacity: .5; cursor: default; }
-.btn-filled { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.btn-filled:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn:disabled:not(.busy) { cursor: default; background: var(--surface-2); border-color: var(--border); color: var(--text-2); }
+.btn-filled { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--on-accent); }
+.btn-filled:hover:not(:disabled) { background: var(--accent-strong-hover); border-color: var(--accent-strong-hover); }
 .btn-outline:hover:not(:disabled) { background: var(--surface-2); }
 .btn-danger { color: var(--danger); border-color: var(--danger); background: transparent; }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
-.btn-plain { border-color: transparent; background: transparent; color: var(--accent); }
+.btn-plain { border-color: transparent; background: transparent; color: var(--accent-strong); }
 .icon-btn { background: none; border: 0; padding: 10px; border-radius: var(--radius); cursor: pointer; color: var(--text-2); min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 .icon-btn:hover { background: var(--surface-2); }
-.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--st-pending); background: color-mix(in srgb, var(--st-pending) 14%, var(--surface)); text-transform: capitalize; }
-.pill.st-ready { color: var(--st-ready); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
-.pill.st-in_progress { color: var(--st-in_progress); background: color-mix(in srgb, var(--st-in_progress) 14%, var(--surface)); }
-.pill.st-review { color: var(--st-review); background: color-mix(in srgb, var(--st-review) 14%, var(--surface)); }
-.pill.st-awaiting_approval { color: var(--st-awaiting_approval); background: color-mix(in srgb, var(--st-awaiting_approval) 14%, var(--surface)); }
-.pill.st-done, .pill.st-executing { color: var(--st-done); background: color-mix(in srgb, var(--st-done) 14%, var(--surface)); }
-.pill.st-blocked, .pill.st-paused { color: var(--st-blocked); background: color-mix(in srgb, var(--st-blocked) 14%, var(--surface)); }
-.pill.st-failed { color: var(--st-failed); background: color-mix(in srgb, var(--st-failed) 14%, var(--surface)); }
-.pill.st-planning { color: var(--st-ready); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; color: color-mix(in srgb, var(--st-pending) 50%, var(--text)); background: color-mix(in srgb, var(--st-pending) 14%, var(--surface)); text-transform: capitalize; }
+.pill.st-ready { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
+.pill.st-in_progress { color: color-mix(in srgb, var(--st-in_progress) 50%, var(--text)); background: color-mix(in srgb, var(--st-in_progress) 14%, var(--surface)); }
+.pill.st-review { color: color-mix(in srgb, var(--st-review) 50%, var(--text)); background: color-mix(in srgb, var(--st-review) 14%, var(--surface)); }
+.pill.st-awaiting_approval { color: color-mix(in srgb, var(--st-awaiting_approval) 50%, var(--text)); background: color-mix(in srgb, var(--st-awaiting_approval) 14%, var(--surface)); }
+.pill.st-done, .pill.st-executing { color: color-mix(in srgb, var(--st-done) 50%, var(--text)); background: color-mix(in srgb, var(--st-done) 14%, var(--surface)); }
+.pill.st-blocked, .pill.st-paused { color: color-mix(in srgb, var(--st-blocked) 50%, var(--text)); background: color-mix(in srgb, var(--st-blocked) 14%, var(--surface)); }
+.pill.st-failed { color: color-mix(in srgb, var(--st-failed) 50%, var(--text)); background: color-mix(in srgb, var(--st-failed) 14%, var(--surface)); }
+.pill.st-planning { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
 .tier { font-size: 12px; }
 .segmented { display: inline-flex; background: var(--surface-2); border-radius: var(--radius); padding: 3px; gap: 2px; }
 .segmented button { border: 0; background: transparent; padding: 8px 14px; border-radius: 8px; cursor: pointer; color: var(--text-2); min-height: 44px; transition: background 180ms ease-out; }
