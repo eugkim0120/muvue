@@ -26,10 +26,8 @@
 /* Inside a fixed-height box nothing may widen or push past the box: the chip
    wraps instead of running off the right edge and sits at the box's bottom,
    and a long subtask title ends in an ellipsis rather than growing its row. */
-.task-box .agent-chip { white-space: normal; max-width: 100%; align-self: flex-start; margin-top: auto; }
 .task-box .subtask-list { margin: 0; }
 .task-box .subtask-row .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.dag-empty .btn { width: 100%; }
 .dag-skeleton { height: 10px; border-radius: 5px; background: var(--border); animation: pulse 1.2s ease-in-out infinite; }
 .task-box.st-bar-ready { border-left-color: var(--st-ready); }
 .task-box.st-bar-in_progress { border-left-color: var(--st-in_progress); }
@@ -42,8 +40,6 @@
 .subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
 .more-row { padding-left: 20px; }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
-.agent-chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
-.agent-chip .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--st-in_progress); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
 .status-line { padding: 4px 16px; }
 .status-line-btn { display: block; width: 100%; min-height: 44px; padding: 4px 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
@@ -63,3 +59,13 @@
 .next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
 .next-step h2 { margin: 2px 0 4px; }
 [data-run-reason] { max-width: 220px; }
+.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-pending); }
+.agent-tag.st-ready .agent-dot { background: var(--st-ready); }
+.agent-tag.st-running .agent-dot { background: var(--st-in_progress); }
+.agent-tag.st-waiting_on_you .agent-dot { background: var(--st-review); }
+.agent-tag.st-done .agent-dot { background: var(--st-done); }
+.agent-tag.st-failed .agent-dot { background: var(--st-failed); }
+.agent-tag.st-paused .agent-dot { background: var(--st-blocked); }
+.agent-dot.pulse { animation: pulse 1.2s ease-in-out infinite; }

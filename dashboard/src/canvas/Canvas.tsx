@@ -108,7 +108,7 @@ export function Canvas({ data, projectId, projectPhase, needsYou, activity, onAd
           </svg>
           {data.spec ? <SpecRoot spec={data.spec} style={boxStyle(lay.pos[data.spec.id]!)} /> : null}
           {data.tasks.map((t) => <TaskBox key={t.id} task={t} needsYou={needsYou} projectPhase={projectPhase} style={boxStyle(lay.pos[t.id]!)} />)}
-          {lay.pos[PLACEHOLDER_ID] && data.spec ? <DagPlaceholder specId={data.spec.id} planning={planning} activity={activity} onAddTask={onAddTask} style={boxStyle(lay.pos[PLACEHOLDER_ID]!)} /> : null}
+          {lay.pos[PLACEHOLDER_ID] && data.spec ? <DagPlaceholder planning={planning} style={boxStyle(lay.pos[PLACEHOLDER_ID]!)} /> : null}
         </div>
       </div>
       <div class="canvas-zoom-controls">

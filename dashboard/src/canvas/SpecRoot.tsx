@@ -6,7 +6,6 @@ import type { CanvasSpec } from "./canvasData";
 import { purposeLine } from "./canvasData";
 import { openNode } from "../router";
 import { Button } from "../ui/Button";
-import { Pill } from "../ui/Pill";
 import { useAction } from "../ui/useAction";
 
 export function SubmitSpecForm({ projectId }: { projectId: number }) {
@@ -29,12 +28,21 @@ export function SubmitSpecForm({ projectId }: { projectId: number }) {
   );
 }
 
+// The spec's own badge: whether it is approved, in the words the Next bar
+// uses. A node status like "ready" read as the same blue as the phase pill
+// but meant something else.
+function SpecBadge({ status }: { status: string }) {
+  return status === "pending"
+    ? <span class="pill st-awaiting_approval">needs approval</span>
+    : <span class="pill st-done">approved</span>;
+}
+
 export function SpecRoot({ spec, style }: { spec: CanvasSpec; style?: Record<string, string | number> }) {
   return (
     <div class="spec-root-card" style={style} tabIndex={0} onClick={() => openNode(spec.id)} onKeyDown={(e) => { if (e.key === "Enter") openNode(spec.id); }}>
       <div class="row between" style={{ flexWrap: "nowrap", alignItems: "flex-start" }}>
         <span class="title grow clamp-2">{spec.title}</span>
-        <Pill status={spec.status} />
+        <SpecBadge status={spec.status} />
       </div>
       {spec.body_md ? <div class="caption clamp-1">{purposeLine(spec.body_md)}</div> : null}
       {spec.agent ? <div class="caption">{`planned by ${spec.agent}`}</div> : null}

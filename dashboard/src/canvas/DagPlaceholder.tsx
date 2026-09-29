@@ -1,5 +1,3 @@
-import type { Activity } from "../project/activity";
-
 // It sits inside the pannable canvas frame, so click and keydown must not
 // bubble up to the frame's pointer handlers.
 function stopBubble(e: { stopPropagation: () => void }): void {
@@ -12,7 +10,7 @@ function stopBubble(e: { stopPropagation: () => void }): void {
 // this state. Two independent "plan tasks" controls on screen at once was a
 // D8-class regression (final review, Important #4); this placeholder is
 // caption-only so there's never a second one.
-export function DagPlaceholder({ specId, planning, activity, onAddTask, style }: { specId: number; planning: boolean; activity: Activity | null; onAddTask: () => void; style?: Record<string, string | number> }) {
+export function DagPlaceholder({ planning, style }: { planning: boolean; style?: Record<string, string | number> }) {
   return (
     <div class="task-box dag-empty" style={style} onClick={stopBubble} onKeyDown={stopBubble}>
       {planning ? (
@@ -26,7 +24,7 @@ export function DagPlaceholder({ specId, planning, activity, onAddTask, style }:
       ) : (
         <>
           <span class="title">No tasks yet</span>
-          <div class="caption">Tasks the spec breaks into will appear here, with arrows for what each one hands to the next. Use "Plan tasks with agent" above.</div>
+          <div class="caption">Tasks will appear here, with arrows showing what each one hands to the next. Start with "✨ Plan tasks with agent" under Next.</div>
         </>
       )}
     </div>

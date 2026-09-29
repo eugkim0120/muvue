@@ -1,4 +1,4 @@
-import { computeLayout, taskHeight, labelWidth, truncateLabel, NODE_W, GAP_X, PLACEHOLDER_ID, TASK_H_BASE, SUBTASK_ROW_H } from "../src/canvas/flowLayout";
+import { computeLayout, taskHeight, labelWidth, truncateLabel, NODE_W, GAP_X, PLACEHOLDER_ID, TASK_H_BASE, SUBTASK_ROW_H, SUBTASK_LIST_EXTRA } from "../src/canvas/flowLayout";
 import type { CanvasTask, CanvasEdge } from "../src/canvas/canvasData";
 
 const task = (id: number, subtaskCount = 0): CanvasTask => ({
@@ -43,7 +43,7 @@ test("with no tasks, a placeholder node hangs under the spec with a dashed arrow
 
 test("box height is fixed by subtask count, capped at 3 rows plus a +N more row", () => {
   expect(taskHeight(0)).toBe(TASK_H_BASE);
-  expect(taskHeight(2)).toBe(TASK_H_BASE + 2 * SUBTASK_ROW_H);
+  expect(taskHeight(2)).toBe(TASK_H_BASE + SUBTASK_LIST_EXTRA + 2 * SUBTASK_ROW_H);
   expect(taskHeight(4)).toBe(taskHeight(10));
 });
 

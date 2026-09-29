@@ -2,16 +2,19 @@ import type { CanvasTask, CanvasEdge } from "./canvasData";
 
 // Box heights are fixed by the layout and set as CSS heights on the boxes, so
 // a wrong estimate can only clip a box's content, never overlap two boxes.
-// Measured in headless Chromium against the built CSS at the worst case: a
-// 2-line title, a 1-line purpose, and an agent chip whose label wraps to two
-// lines ("claude · starts after the task list is approved") needs 151px;
-// the placeholder with both create buttons (the agent one wraps) needs 214px.
-export const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 152, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 216, PAD = 16, GAP_X = 24, GAP_Y = 72;
+// From the built CSS (15px/1.4 body, 12px/1.4 caption): a task box with a
+// 2-line title, a 1-line purpose and the 1-line agent tag is 114px of content,
+// padding and border; 118 leaves 4px of slack. The subtask list adds its
+// 4px+4px margins and a 4px flex gap once. The placeholder's 4-line caption
+// needs 131px. ui-check's "every box's content fits" check verifies all of
+// this in a real browser: raise a constant if it fails, never lower it below
+// what that check measures.
+export const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 118, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
 export const PLACEHOLDER_ID = -1;
 
 export function taskHeight(subtaskCount: number): number {
   const rows = Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
-  return TASK_H_BASE + rows * SUBTASK_ROW_H;
+  return rows ? TASK_H_BASE + SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : TASK_H_BASE;
 }
 
 export function labelWidth(text: string): number {

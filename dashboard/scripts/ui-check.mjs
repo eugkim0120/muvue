@@ -68,6 +68,8 @@ try {
   await page.screenshot({ path: join(outDir, "01-phone-no-tasks.png"), fullPage: true });
 
   check("phone: empty-state placeholder node is shown", await page.locator(".dag-empty").count() === 1);
+  const placeholderFits = await page.locator(".dag-empty").evaluate((e) => e.scrollHeight <= e.clientHeight + 1);
+  check("phone: the empty-state placeholder's text fits", placeholderFits);
   const runReason = page.locator("[data-run-reason]");
   check("phone: Run explains why it is disabled", (await runReason.count()) > 0 && /approve/i.test(await runReason.first().innerText()));
   check("phone: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
@@ -110,6 +112,8 @@ async function dagChecks(page, label) {
   check(`${label}: arrow labels fit their backgrounds`, clipped === 0, `${clipped} clipped`);
   const offscreen = await page.locator(".task-box").evaluateAll((els) => els.filter((e) => { const r = e.getBoundingClientRect(); return r.left < 0 || r.right > window.innerWidth; }).length);
   check(`${label}: every task box is within the viewport width`, offscreen === 0, `${offscreen} cut off`);
+  const overflowing = await page.locator(".task-box, .spec-root-card").evaluateAll((els) => els.filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => `${e.querySelector(".title")?.textContent ?? "?"}: needs ${e.scrollHeight}px, has ${e.clientHeight}px`));
+  check(`${label}: every box's content fits (nothing clipped)`, overflowing.length === 0, overflowing.join("; "));
 }
 
 console.log(`\nscreenshots: ${outDir}`);
