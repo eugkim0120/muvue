@@ -1,6 +1,6 @@
-import { checkAuth, signInWithToken, applyAuthResult } from "../src/api/auth";
+import { checkAuth, signInWithToken, applyAuthResult, handleLinkHashChange } from "../src/api/auth";
 import { setToken } from "../src/api/client";
-import { authed, signedOutReason } from "../src/state";
+import { authed, signedOutReason, refreshTick } from "../src/state";
 
 type Reply = { status: number; auth?: string };
 function stub(replies: Record<string, Reply>) {
@@ -62,4 +62,32 @@ test("applyAuthResult sets authed and the signed-out reason", () => {
   expect(signedOutReason.value).toBe("stale");
   applyAuthResult("missing");
   expect(signedOutReason.value).toBe("read_only");
+});
+
+test("signInWithToken: if the cookie request fails the client token is forgotten and the error propagates", async () => {
+  stub({ "/auth/check": { status: 200 }, "/auth/session": { status: 500 } });
+  await expect(signInWithToken("tok")).rejects.toThrow();
+  const again = stub({ "/auth/check": { status: 200 } });
+  await checkAuth();
+  expect(((again.mock.calls[0]![1] as RequestInit).headers as Record<string, string>)["Authorization"]).toBeUndefined();
+});
+
+test("a muvue link pasted into an open tab is exchanged, scrubbed and signs the page in", async () => {
+  window.location.hash = "#n=abc123";
+  const fetchMock = stub({ "/auth/exchange": { status: 200 }, "/auth/check": { status: 200 } });
+  const tick = refreshTick.value;
+  await handleLinkHashChange();
+  expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(["/auth/exchange", "/auth/check"]);
+  expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string).nonce).toBe("abc123");
+  expect(window.location.hash).toBe("");
+  expect(authed.value).toBe(true);
+  expect(refreshTick.value).toBe(tick + 1);
+});
+
+test("a hash change that is not a link does nothing", async () => {
+  window.location.hash = "#/p/1";
+  const fetchMock = stub({});
+  await handleLinkHashChange();
+  expect(fetchMock).not.toHaveBeenCalled();
+  window.location.hash = "";
 });

@@ -99,3 +99,32 @@ def test_auth_session_without_a_token_is_403_and_sets_no_cookie(client):
     r = client.post("/auth/session", json={})
     assert r.status_code == 403
     assert "muvue_session" not in client.cookies
+
+
+def test_background_request_authenticates_but_does_not_extend_the_session(client, session):
+    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    session.last_activity = old
+    r = client.get("/auth/check", headers={"Authorization": f"Bearer {session.token}", "X-Muvue-Background": "1"})
+    assert r.status_code == 200
+    assert session.last_activity == old
+    r = client.get("/auth/check", headers={"Authorization": f"Bearer {session.token}"})
+    assert r.status_code == 200
+    assert session.last_activity > old
+
+
+def test_background_request_after_expiry_is_still_401_expired(client, session):
+    _expire(session)
+    r = client.get("/auth/check", headers={"Authorization": f"Bearer {session.token}", "X-Muvue-Background": "1"})
+    assert r.status_code == 401
+    assert r.headers["x-muvue-auth"] == "expired"
+
+
+def test_background_request_with_a_bad_token_is_still_refused(client):
+    r = client.get("/auth/check", headers={"Authorization": "Bearer nope", "X-Muvue-Background": "1"})
+    assert r.status_code == 403
+    assert r.headers["x-muvue-auth"] == "invalid"
+
+
+def test_the_invalid_detail_covers_both_restart_and_a_new_link(client):
+    r = client.get("/auth/check", headers={"Authorization": "Bearer nope"})
+    assert "muvue serve` restarted or `muvue link` issued a new token" in r.json()["detail"]

@@ -381,15 +381,6 @@ def serve(
         typer.echo(f"reconciled expired lease: node {reverted['id']} -> {reverted['status']}")
 
     session = daemon_mod.SessionManager()
-    dashboard_url = f"http://{host}:{port}/#n={session.mint_nonce()}"
-    typer.echo(f"dashboard (one-time link, works once): {dashboard_url}")
-    typer.echo(f"api token: {session.token}")
-    typer.echo(
-        "  (send as `Authorization: Bearer <token>`; the VS Code extension asks for it. "
-        "It lives only in this process: do not paste it into files or logs.)"
-    )
-    typer.echo(f"lost the link later? run `muvue link {repo_root}` on this machine for a fresh one")
-
     app_instance = create_app(repo_root, config=config, session=session, port=port, bind_host=hostname)
 
     # Bind the socket ourselves and start listening *before* printing
@@ -410,12 +401,26 @@ def serve(
     # give SIGTERM the same treatment so the `finally` below always
     # removes the port file instead of the process dying mid-unwind.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    daemon_mod.write_port_file(repo_root, port=port, pid=os.getpid())
     control = control_mod.ControlServer(
         control_mod.socket_path(repo_root), session, base_url=f"http://{host}:{port}",
     )
+    # Before the port file and the link: a second `serve` on this repo must
+    # not overwrite (then delete) the running daemon's port file.
     try:
         control.start()
+    except (RuntimeError, PermissionError) as exc:
+        typer.echo(f"muvue serve: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    daemon_mod.write_port_file(repo_root, port=port, pid=os.getpid())
+    try:
+        dashboard_url = f"http://{host}:{port}/#n={session.mint_nonce()}"
+        typer.echo(f"dashboard (one-time link, works once): {dashboard_url}")
+        typer.echo(f"api token: {session.token}")
+        typer.echo(
+            "  (send as `Authorization: Bearer <token>`; the VS Code extension asks for it. "
+            "It lives only in this process: do not paste it into files or logs.)"
+        )
+        typer.echo(f"lost the link later? run `muvue link {repo_root}` on this machine for a fresh one")
         typer.echo(f"muvue daemon listening on http://{host}:{port}")
         uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
     except KeyboardInterrupt:

@@ -68,3 +68,14 @@ test("plain text bodies are returned as text", async () => {
   mockFetch(200, "line1\nline2", false);
   expect(await api<string>("/logs")).toBe("line1\nline2");
 });
+
+test("a background read sends X-Muvue-Background and the option never reaches fetch", async () => {
+  const fetchMock = mockFetch(200, {});
+  await api("/x", { background: true });
+  const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit & { background?: boolean }];
+  expect((init.headers as Record<string, string>)["X-Muvue-Background"]).toBe("1");
+  expect("background" in init).toBe(false);
+  await api("/y");
+  const [, plain] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+  expect((plain.headers as Record<string, string>)["X-Muvue-Background"]).toBeUndefined();
+});

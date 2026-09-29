@@ -26,10 +26,13 @@ export function authProblemOf(status: number, header: string | null): AuthProble
   return header === "missing" || header === "invalid" || header === "expired" ? header : null;
 }
 
-export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+// `background` marks polling and refetches, which the daemon authenticates
+// without counting them as activity that keeps the session alive.
+export async function api<T = unknown>(path: string, { background, ...init }: RequestInit & { background?: boolean } = {}): Promise<T> {
   const sendsBody = init.body !== undefined || (init.method !== undefined && init.method !== "GET");
   const headers: Record<string, string> = { ...(sendsBody ? { "Content-Type": "application/json" } : {}), ...(init.headers as Record<string, string> | undefined) };
   if (token) headers["Authorization"] = "Bearer " + token;
+  if (background) headers["X-Muvue-Background"] = "1";
   const r = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const type = r.headers.get("content-type") || "";
   const body: unknown = type.startsWith("application/json") ? await r.json() : await r.text();

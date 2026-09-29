@@ -172,7 +172,7 @@ export function useActivity(projectId: number | null): Activity | null {
     // The activity route is guarded: a guest would only get a 403.
     if (projectId === null || !authed.value) { setActivity(null); return; }
     let alive = true;
-    api<Activity>(routes.projectActivity(projectId)).then((a) => {
+    api<Activity>(routes.projectActivity(projectId), { background: true }).then((a) => {
       if (!alive) return;
       // `launches` is a global signal, not scoped per project, so a launch
       // fired against a different project must never be confirmed, pruned,

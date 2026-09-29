@@ -1013,10 +1013,11 @@ function authProblemOf(status, header) {
   if (status !== 401 && status !== 403) return null;
   return header === "missing" || header === "invalid" || header === "expired" ? header : null;
 }
-async function api(path, init = {}) {
+async function api(path, { background, ...init } = {}) {
   const sendsBody = init.body !== void 0 || init.method !== void 0 && init.method !== "GET";
   const headers = { ...sendsBody ? { "Content-Type": "application/json" } : {}, ...init.headers };
   if (token) headers["Authorization"] = "Bearer " + token;
+  if (background) headers["X-Muvue-Background"] = "1";
   const r2 = await fetch(path, { ...init, headers, credentials: "same-origin" });
   const type = r2.headers.get("content-type") || "";
   const body = type.startsWith("application/json") ? await r2.json() : await r2.text();
@@ -1513,8 +1514,8 @@ function TopBar({ onSearch }) {
 }
 const COPY = {
   read_only: { text: "Read-only view.", action: "Sign in" },
-  stale: { text: "Signed out: muvue serve restarted since you signed in.", action: "Sign in" },
-  expired: { text: "Signed out after 8 hours without activity.", action: "Sign in again" }
+  stale: { text: "Signed out: muvue serve restarted or muvue link issued a new token.", action: "Sign in" },
+  expired: { text: "Signed out after sitting idle too long.", action: "Sign in again" }
 };
 function AuthStrip() {
   if (authed.value) return null;
@@ -1559,22 +1560,32 @@ async function signInWithToken(pasted) {
   const t2 = pasted.trim();
   if (!t2) return "missing";
   setToken(t2);
-  const result = await checkAuth();
-  if (result !== "ok") {
+  try {
+    const result = await checkAuth();
+    if (result !== "ok") {
+      setToken("");
+      return result;
+    }
+    await post(routes.authSession());
+  } catch (e2) {
     setToken("");
-    return result;
+    throw e2;
   }
-  await post(routes.authSession());
   return "ok";
 }
 function applyAuthResult(r2) {
   if (r2 === "ok") setSignedIn();
   else setSignedOut(r2 === "expired" ? "expired" : r2 === "invalid" ? "stale" : "read_only");
 }
+async function handleLinkHashChange() {
+  if (!/(?:^#|[&#])n=/.test(window.location.hash)) return;
+  applyAuthResult(await exchangeFragmentNonce());
+  refresh();
+}
 const REFUSED = {
   missing: "Paste the api token first.",
-  invalid: "That token was not accepted. Tokens change every time muvue serve restarts — run muvue link for the current one.",
-  expired: "That token's session expired after 8 hours without activity. Run muvue link on the server to start a new one."
+  invalid: "That token was not accepted. Tokens change when muvue serve restarts or muvue link issues a new one — run muvue link for the current one.",
+  expired: "That token's session expired after sitting idle. Run muvue link on the server to start a new one."
 };
 function SignInSheet() {
   const [value, setValue] = d$2("");
@@ -1622,15 +1633,17 @@ function SignInSheet() {
         /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
         " and ",
         /* @__PURE__ */ u$1("code", { children: "muvue link" }),
-        " print it. It changes every time ",
+        " print it. It changes when ",
         /* @__PURE__ */ u$1("code", { children: "muvue serve" }),
-        " restarts."
+        " restarts or ",
+        /* @__PURE__ */ u$1("code", { children: "muvue link" }),
+        " issues a new one."
       ] }),
       /* @__PURE__ */ u$1("div", { class: "row nowrap", children: [
-        /* @__PURE__ */ u$1("input", { ref: input, type: "password", autocomplete: "off", "aria-label": "api token", placeholder: "api token", value, onInput: (e2) => setValue(e2.target.value) }),
+        /* @__PURE__ */ u$1("input", { ref: input, type: "password", autocomplete: "off", "aria-label": "api token", "aria-describedby": refused ? "sign-in-error" : void 0, placeholder: "api token", value, onInput: (e2) => setValue(e2.target.value) }),
         /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", busy: a2.busy, busyLabel: "Checking…", disabled: !value.trim(), children: "Use token" })
       ] }),
-      refused ? /* @__PURE__ */ u$1("div", { class: "callout danger", "data-sign-in-error": true, children: refused }) : null,
+      refused ? /* @__PURE__ */ u$1("div", { class: "callout danger", id: "sign-in-error", role: "alert", "data-sign-in-error": true, children: refused }) : null,
       a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
     ] })
   ] }) });
@@ -2026,7 +2039,7 @@ function useActivity(projectId2) {
       return;
     }
     let alive = true;
-    api(routes.projectActivity(projectId2)).then((a2) => {
+    api(routes.projectActivity(projectId2), { background: true }).then((a2) => {
       if (!alive) return;
       for (const l2 of launches.value) {
         if (l2.projectId !== null && l2.projectId !== projectId2) continue;
@@ -3246,6 +3259,9 @@ function connectStream() {
 onForbidden((problem) => {
   if (problem === "expired") setSignedOut("expired");
   else if (authed.value) setSignedOut(problem === "invalid" ? "stale" : "read_only");
+});
+window.addEventListener("hashchange", () => {
+  handleLinkHashChange().catch(toastError);
 });
 async function boot() {
   applyAuthResult(await exchangeFragmentNonce());

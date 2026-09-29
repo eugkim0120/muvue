@@ -1,6 +1,6 @@
 import { routes } from "./routes";
 import { api, post, ApiError, setToken, authProblemOf, type AuthProblem } from "./client";
-import { setSignedIn, setSignedOut } from "../state";
+import { setSignedIn, setSignedOut, refresh } from "../state";
 
 export type AuthResult = "ok" | AuthProblem;
 
@@ -44,16 +44,28 @@ export async function signInWithToken(pasted: string): Promise<AuthResult> {
   const t = pasted.trim();
   if (!t) return "missing";
   setToken(t);
-  const result = await checkAuth();
-  if (result !== "ok") {
+  try {
+    const result = await checkAuth();
+    if (result !== "ok") {
+      setToken("");
+      return result;
+    }
+    await post(routes.authSession());
+  } catch (e) {
     setToken("");
-    return result;
+    throw e;
   }
-  await post(routes.authSession());
   return "ok";
 }
 
 export function applyAuthResult(r: AuthResult): void {
   if (r === "ok") setSignedIn();
   else setSignedOut(r === "expired" ? "expired" : r === "invalid" ? "stale" : "read_only");
+}
+
+// A link pasted into an already-open tab is a hashchange, not a reload.
+export async function handleLinkHashChange(): Promise<void> {
+  if (!/(?:^#|[&#])n=/.test(window.location.hash)) return;
+  applyAuthResult(await exchangeFragmentNonce());
+  refresh();
 }

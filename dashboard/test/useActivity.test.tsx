@@ -45,3 +45,11 @@ test("signing in triggers the activity fetch", async () => {
   await act(async () => { authed.value = true; });
   await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
 });
+
+test("activity fetches are marked as background so they do not keep the session alive", async () => {
+  authed.value = true;
+  const spy = vi.spyOn(client, "api").mockResolvedValue({ active: [], breakdowns: [], working: [] });
+  render(<Probe />);
+  await waitFor(() => expect(spy).toHaveBeenCalled());
+  expect(spy.mock.calls[0]![1]).toMatchObject({ background: true });
+});

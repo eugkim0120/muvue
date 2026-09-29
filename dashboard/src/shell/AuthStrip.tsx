@@ -3,8 +3,8 @@ import { Button } from "../ui/Button";
 
 const COPY = {
   read_only: { text: "Read-only view.", action: "Sign in" },
-  stale: { text: "Signed out: muvue serve restarted since you signed in.", action: "Sign in" },
-  expired: { text: "Signed out after 8 hours without activity.", action: "Sign in again" },
+  stale: { text: "Signed out: muvue serve restarted or muvue link issued a new token.", action: "Sign in" },
+  expired: { text: "Signed out after sitting idle too long.", action: "Sign in again" },
 } as const;
 
 // One line, not a form: the form lives in SignInSheet, one tap away.

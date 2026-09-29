@@ -6,7 +6,7 @@ import "./canvas/canvas.css";
 import "./cards/cards.css";
 import { render } from "preact";
 import { App } from "./app";
-import { exchangeFragmentNonce, applyAuthResult } from "./api/auth";
+import { exchangeFragmentNonce, applyAuthResult, handleLinkHashChange } from "./api/auth";
 import { onForbidden, api } from "./api/client";
 import { routes } from "./api/routes";
 import { connectStream } from "./api/stream";
@@ -21,6 +21,8 @@ onForbidden((problem) => {
   if (problem === "expired") setSignedOut("expired");
   else if (authed.value) setSignedOut(problem === "invalid" ? "stale" : "read_only");
 });
+
+window.addEventListener("hashchange", () => { handleLinkHashChange().catch(toastError); });
 
 async function boot() {
   applyAuthResult(await exchangeFragmentNonce());

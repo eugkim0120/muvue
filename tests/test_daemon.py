@@ -4,6 +4,7 @@ session token (`SessionManager`, v4 section 8a control 5/6 -- see
 tests/test_daemon_security.py for the live-daemon HTTP-layer coverage
 of the daemon security controls themselves)."""
 
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -270,3 +271,39 @@ def test_relink_after_expiry_renews_with_a_new_token_and_kills_the_old_one():
     assert session.consume_nonce(old_nonce, now=later) == "invalid"
     assert session.consume_nonce(nonce, now=later) == "ok"
     assert session.check(session.token, now=later) == "ok"
+
+
+def test_check_without_touch_authenticates_but_leaves_the_idle_clock():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    session = daemon.SessionManager(now=start)
+    later = start + timedelta(hours=1)
+    assert session.check(session.token, now=later, touch=False) == "ok"
+    assert session.last_activity == start
+    assert session.check(session.token, now=later) == "ok"
+    assert session.last_activity == later
+
+
+def test_check_without_touch_still_reports_expired():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    session = daemon.SessionManager(now=start)
+    assert session.check(session.token, now=start + timedelta(hours=9), touch=False) == "expired"
+
+
+def test_consume_nonce_spends_and_checks_in_one_lock_hold():
+    class CountingLock:
+        def __init__(self):
+            self.acquired = 0
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            self.acquired += 1
+            return self._lock.__enter__()
+
+        def __exit__(self, *exc):
+            return self._lock.__exit__(*exc)
+
+    session = daemon.SessionManager()
+    nonce = session.mint_nonce()
+    session._lock = CountingLock()
+    assert session.consume_nonce(nonce) == "ok"
+    assert session._lock.acquired == 1

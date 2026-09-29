@@ -7,8 +7,8 @@ import { signInOpen, refresh, toast } from "../state";
 
 const REFUSED: Record<Exclude<AuthResult, "ok">, string> = {
   missing: "Paste the api token first.",
-  invalid: "That token was not accepted. Tokens change every time muvue serve restarts — run muvue link for the current one.",
-  expired: "That token's session expired after 8 hours without activity. Run muvue link on the server to start a new one.",
+  invalid: "That token was not accepted. Tokens change when muvue serve restarts or muvue link issues a new one — run muvue link for the current one.",
+  expired: "That token's session expired after sitting idle. Run muvue link on the server to start a new one.",
 };
 
 export function SignInSheet() {
@@ -50,12 +50,12 @@ export function SignInSheet() {
         </div>
         <form class="stack tight" onSubmit={submit}>
           <h3>Or paste the api token</h3>
-          <p class="muted"><code>muvue serve</code> and <code>muvue link</code> print it. It changes every time <code>muvue serve</code> restarts.</p>
+          <p class="muted"><code>muvue serve</code> and <code>muvue link</code> print it. It changes when <code>muvue serve</code> restarts or <code>muvue link</code> issues a new one.</p>
           <div class="row nowrap">
-            <input ref={input} type="password" autocomplete="off" aria-label="api token" placeholder="api token" value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
+            <input ref={input} type="password" autocomplete="off" aria-label="api token" aria-describedby={refused ? "sign-in-error" : undefined} placeholder="api token" value={value} onInput={(e) => setValue((e.target as HTMLInputElement).value)} />
             <Button type="submit" variant="filled" busy={a.busy} busyLabel="Checking…" disabled={!value.trim()}>Use token</Button>
           </div>
-          {refused ? <div class="callout danger" data-sign-in-error>{refused}</div> : null}
+          {refused ? <div class="callout danger" id="sign-in-error" role="alert" data-sign-in-error>{refused}</div> : null}
           {a.error ? <div class="callout danger">{a.error}</div> : null}
         </form>
       </div>

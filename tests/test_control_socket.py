@@ -299,7 +299,9 @@ def test_other_users_are_refused(server, monkeypatch):
         control.request_link(path)
 
 
-def test_serve_removes_its_port_file_when_the_control_socket_cannot_start(tmp_path: Path, monkeypatch):
+def test_second_serve_on_the_same_repo_leaves_the_running_daemons_port_file(tmp_path: Path, monkeypatch):
+    from muvue.core.daemon import port_file_path, write_port_file
+
     repo = tmp_path / "repo"
     repo.mkdir()
     init_repo(repo)
@@ -307,6 +309,8 @@ def test_serve_removes_its_port_file_when_the_control_socket_cannot_start(tmp_pa
     monkeypatch.setenv("HOME", str(home))
     sock_path = control.socket_path(repo)
     sock_path.parent.mkdir(parents=True)
+    write_port_file(repo, port=4321, pid=99999)
+    before = port_file_path(repo).read_text()
     listener = _silent_listener(sock_path)
     try:
         env = {**os.environ, "HOME": str(home)}
@@ -314,9 +318,12 @@ def test_serve_removes_its_port_file_when_the_control_socket_cannot_start(tmp_pa
             [sys.executable, "-m", "muvue", "serve", str(repo), "--port", str(_free_port())],
             capture_output=True, text=True, env=env, timeout=30,
         )
-        assert r.returncode != 0
+        assert r.returncode == 1
+        assert r.stderr.strip().count("\n") == 0
         assert "already answering" in r.stderr
-        assert not list(sock_path.parent.glob("*.json"))
+        assert "Traceback" not in r.stderr
+        assert "api token" not in r.stdout
+        assert port_file_path(repo).read_text() == before
     finally:
         listener.close()
 

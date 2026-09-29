@@ -19,10 +19,10 @@ test("the strip says why the page is read-only, and hides when signed in", () =>
   expect(screen.getByText("Read-only view.")).toBeTruthy();
   signedOutReason.value = "stale";
   rerender(<AuthStrip />);
-  expect(screen.getByText("Signed out: muvue serve restarted since you signed in.")).toBeTruthy();
+  expect(screen.getByText("Signed out: muvue serve restarted or muvue link issued a new token.")).toBeTruthy();
   signedOutReason.value = "expired";
   rerender(<AuthStrip />);
-  expect(screen.getByText("Signed out after 8 hours without activity.")).toBeTruthy();
+  expect(screen.getByText("Signed out after sitting idle too long.")).toBeTruthy();
   expect(screen.getByText("Sign in again")).toBeTruthy();
   authed.value = true;
   rerender(<AuthStrip />);
@@ -41,7 +41,7 @@ test("a refused token shows why, in the sheet", async () => {
   fireEvent.input(screen.getByLabelText("api token"), { target: { value: "wrong" } });
   fireEvent.click(screen.getByText("Use token"));
   await waitFor(() => expect(document.querySelector("[data-sign-in-error]")?.textContent).toBe(
-    "That token was not accepted. Tokens change every time muvue serve restarts — run muvue link for the current one.",
+    "That token was not accepted. Tokens change when muvue serve restarts or muvue link issues a new one — run muvue link for the current one.",
   ));
   expect(authed.value).toBe(false);
 });
@@ -51,7 +51,7 @@ test("an expired token says so and marks the page expired", async () => {
   render(<SignInSheet />);
   fireEvent.input(screen.getByLabelText("api token"), { target: { value: "old" } });
   fireEvent.click(screen.getByText("Use token"));
-  await waitFor(() => expect(document.querySelector("[data-sign-in-error]")?.textContent).toContain("expired after 8 hours"));
+  await waitFor(() => expect(document.querySelector("[data-sign-in-error]")?.textContent).toContain("expired after sitting idle"));
   expect(signedOutReason.value).toBe("expired");
 });
 
@@ -73,4 +73,18 @@ test("Use token is disabled until something is typed", () => {
 test("opening the sign-in sheet puts the cursor in the token field", () => {
   render(<SignInSheet />);
   expect(document.activeElement).toBe(screen.getByLabelText("api token"));
+});
+
+test("a refusal is announced and tied to the token field", async () => {
+  stubAuth({ status: 403, auth: "invalid" });
+  render(<SignInSheet />);
+  const input = screen.getByLabelText("api token");
+  expect(input.getAttribute("aria-describedby")).toBeNull();
+  fireEvent.input(input, { target: { value: "wrong" } });
+  fireEvent.click(screen.getByText("Use token"));
+  await waitFor(() => expect(document.querySelector("[data-sign-in-error]")).toBeTruthy());
+  const callout = document.querySelector("[data-sign-in-error]")!;
+  expect(callout.getAttribute("role")).toBe("alert");
+  expect(input.getAttribute("aria-describedby")).toBe(callout.id);
+  expect(callout.id).not.toBe("");
 });

@@ -203,7 +203,7 @@ def create_app(
         hours = session.idle_timeout_minutes // 60
         detail = {
             "missing": "missing session token",
-            "invalid": "invalid session token: tokens change every time `muvue serve` restarts; run `muvue link` for the current one",
+            "invalid": "invalid session token: the token changed because `muvue serve` restarted or `muvue link` issued a new token; run `muvue link` for the current one",
             "expired": f"session expired after {hours} hours without activity; run `muvue link` on the server for a fresh link",
         }[status]
         return HTTPException(status_code=401 if status == "expired" else 403, detail=detail, headers={AUTH_HEADER: status})
@@ -221,7 +221,8 @@ def create_app(
             token = authorization.split(" ", 1)[1].strip()
         if token is None:
             token = request.cookies.get(SESSION_COOKIE_NAME)
-        status = session.check(token)
+        # Background polling authenticates but must not keep the session alive.
+        status = session.check(token, touch=request.headers.get("x-muvue-background") != "1")
         if status != "ok":
             raise _auth_error(status)
 

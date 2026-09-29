@@ -187,22 +187,27 @@ class SessionManager:
             self._nonces.add(nonce)
         return nonce
 
-    def check(self, token: str | None, *, now: datetime | None = None) -> AuthStatus:
+    def _check_locked(self, token: str, current: datetime, touch: bool) -> AuthStatus:
+        if not secrets.compare_digest(token.encode(), self.token.encode()):
+            return "invalid"
+        if self._idle(current):
+            return "expired"
+        if touch:
+            self.last_activity = current
+        return "ok"
+
+    def check(self, token: str | None, *, now: datetime | None = None, touch: bool = True) -> AuthStatus:
         """Why a token does or doesn't work: `missing` (none sent),
         `invalid` (not this process's token: wrong, or from before a
         restart), `expired` (this process's token, idle past the
-        timeout). Only `ok` resets the idle clock. Compared as UTF-8
-        bytes: `compare_digest` raises TypeError on non-ASCII `str`."""
+        timeout). Only `ok` resets the idle clock, and not even that
+        when `touch` is false (background reads authenticate without
+        keeping the session alive). Compared as UTF-8 bytes:
+        `compare_digest` raises TypeError on non-ASCII `str`."""
         if not token:
             return "missing"
         with self._lock:
-            if not secrets.compare_digest(token.encode(), self.token.encode()):
-                return "invalid"
-            current = now or _now()
-            if self._idle(current):
-                return "expired"
-            self.last_activity = current
-            return "ok"
+            return self._check_locked(token, now or _now(), touch)
 
     def verify_and_touch(self, token: str | None, *, now: datetime | None = None) -> bool:
         """Constant-time compare against the live token; on success,
@@ -220,7 +225,7 @@ class SessionManager:
             if nonce not in self._nonces:
                 return "invalid"
             self._nonces.discard(nonce)
-        status = self.check(self.token, now=now)
+            status = self._check_locked(self.token, now or _now(), True)
         return "ok" if status == "ok" else "expired"
 
     def relink(self, *, now: datetime | None = None) -> tuple[str, bool]:
