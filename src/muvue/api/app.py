@@ -43,6 +43,7 @@ from muvue.core.daemon import SessionManager
 
 STATIC_DIR = Path(__file__).parent / "static"
 SESSION_COOKIE_NAME = "muvue_session"
+AUTH_HEADER = "X-Muvue-Auth"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost"})
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::", ""})
@@ -195,6 +196,18 @@ def create_app(
                 del response.headers[header]
         return response
 
+    def _auth_error(status: str) -> HTTPException:
+        """403 for a missing or wrong token (doctor's control-4 probes
+        rely on it), 401 for this process's token after idle expiry, and
+        always `X-Muvue-Auth` so the dashboard can say which."""
+        hours = session.idle_timeout_minutes // 60
+        detail = {
+            "missing": "missing session token",
+            "invalid": "invalid session token: tokens change every time `muvue serve` restarts; run `muvue link` for the current one",
+            "expired": f"session expired after {hours} hours without activity; run `muvue link` on the server for a fresh link",
+        }[status]
+        return HTTPException(status_code=401 if status == "expired" else 403, detail=detail, headers={AUTH_HEADER: status})
+
     def _require_session(request: Request) -> None:
         """Control 4 (token half): a valid token via `Authorization:
         Bearer <token>` (non-browser clients: CLI, VS Code extension) or
@@ -208,8 +221,19 @@ def create_app(
             token = authorization.split(" ", 1)[1].strip()
         if token is None:
             token = request.cookies.get(SESSION_COOKIE_NAME)
-        if not session.verify_and_touch(token):
-            raise HTTPException(status_code=403, detail="missing or invalid session token")
+        status = session.check(token)
+        if status != "ok":
+            raise _auth_error(status)
+
+    def _set_session_cookie(resp: JSONResponse) -> None:
+        resp.set_cookie(
+            SESSION_COOKIE_NAME,
+            session.token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
 
     def _request_id(request: Request) -> str | None:
         """Plan section 4: every mutating verb accepts a request id. Verbs
@@ -268,17 +292,23 @@ def create_app(
     def exchange_nonce(
         nonce: str = Body(..., embed=True), header: bool = Body(default=False, embed=True),
     ) -> JSONResponse:
-        if not session.consume_nonce(nonce):
-            raise HTTPException(status_code=403, detail="invalid or already used nonce")
+        status = session.consume_nonce(nonce)
+        if status == "expired":
+            raise _auth_error("expired")
+        if status != "ok":
+            raise HTTPException(status_code=403, detail="invalid or already used nonce", headers={AUTH_HEADER: "invalid"})
         resp = JSONResponse({"ok": True, "token": session.token} if header else {"ok": True})
-        resp.set_cookie(
-            SESSION_COOKIE_NAME,
-            session.token,
-            httponly=True,
-            samesite="strict",
-            secure=False,
-            path="/",
-        )
+        _set_session_cookie(resp)
+        return resp
+
+    @app.post("/auth/session")
+    def cookie_from_token(request: Request) -> JSONResponse:
+        """A pasted api token (sent as the Authorization header) becomes
+        the same HttpOnly cookie the nonce exchange sets, so a phone that
+        signed in by pasting stays signed in across reloads."""
+        _require_session(request)
+        resp = JSONResponse({"ok": True})
+        _set_session_cookie(resp)
         return resp
 
     @app.post("/auth/nonce")

@@ -26,8 +26,10 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from . import db as db_mod
 from . import hooks as hooks_mod
@@ -35,6 +37,7 @@ from . import nodes as nodes_mod
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 DEFAULT_IDLE_TIMEOUT_MINUTES = 480  # 8h idle expiry, v4 section 8a control 6
+AuthStatus = Literal["ok", "missing", "invalid", "expired"]
 
 
 def _now() -> datetime:
@@ -167,6 +170,12 @@ class SessionManager:
         self.idle_timeout_minutes = idle_timeout_minutes
         self.last_activity: datetime = now or _now()
         self._nonces: set[str] = set()
+        # uvicorn's worker thread and the control-socket thread (`muvue link`)
+        # both touch the token and the idle clock.
+        self._lock = threading.Lock()
+
+    def _idle(self, current: datetime) -> bool:
+        return current - self.last_activity > timedelta(minutes=self.idle_timeout_minutes)
 
     def mint_nonce(self) -> str:
         """A single-use value for a dashboard link's `#n=` fragment
@@ -174,26 +183,60 @@ class SessionManager:
         browser history or a screenshot is dead once the page has
         exchanged it."""
         nonce = secrets.token_urlsafe(32)
-        self._nonces.add(nonce)
+        with self._lock:
+            self._nonces.add(nonce)
         return nonce
 
-    def consume_nonce(self, nonce: str | None, *, now: datetime | None = None) -> bool:
-        """True once per minted nonce, and only while the session itself
-        is still live."""
-        if not nonce or nonce not in self._nonces:
-            return False
-        self._nonces.discard(nonce)
-        return self.verify_and_touch(self.token, now=now)
+    def check(self, token: str | None, *, now: datetime | None = None) -> AuthStatus:
+        """Why a token does or doesn't work: `missing` (none sent),
+        `invalid` (not this process's token: wrong, or from before a
+        restart), `expired` (this process's token, idle past the
+        timeout). Only `ok` resets the idle clock. Compared as UTF-8
+        bytes: `compare_digest` raises TypeError on non-ASCII `str`."""
+        if not token:
+            return "missing"
+        with self._lock:
+            if not secrets.compare_digest(token.encode(), self.token.encode()):
+                return "invalid"
+            current = now or _now()
+            if self._idle(current):
+                return "expired"
+            self.last_activity = current
+            return "ok"
 
     def verify_and_touch(self, token: str | None, *, now: datetime | None = None) -> bool:
         """Constant-time compare against the live token; on success,
         resets the idle clock. Never logged, never written anywhere."""
-        if not token:
-            return False
-        if not secrets.compare_digest(token, self.token):
-            return False
+        return self.check(token, now=now) == "ok"
+
+    def consume_nonce(self, nonce: str | None, *, now: datetime | None = None) -> Literal["ok", "invalid", "expired"]:
+        """`ok` once per minted nonce while the session is live;
+        `invalid` for an unknown or already-used nonce; `expired` when
+        the nonce is real but the session idled out. A real nonce is
+        spent either way."""
+        if not nonce:
+            return "invalid"
+        with self._lock:
+            if nonce not in self._nonces:
+                return "invalid"
+            self._nonces.discard(nonce)
+        status = self.check(self.token, now=now)
+        return "ok" if status == "ok" else "expired"
+
+    def relink(self, *, now: datetime | None = None) -> tuple[str, bool]:
+        """For `muvue link`: a fresh single-use nonce, reviving the
+        session if it idled out. An expired session gets a brand-new
+        token, so a token that leaked before the expiry stays dead; a
+        live one keeps its token, so other signed-in tabs keep working.
+        Asking is proof someone is at the server, so the idle clock
+        resets. Returns (nonce, renewed)."""
         current = now or _now()
-        if current - self.last_activity > timedelta(minutes=self.idle_timeout_minutes):
-            return False
-        self.last_activity = current
-        return True
+        with self._lock:
+            renewed = self._idle(current)
+            if renewed:
+                self.token = secrets.token_urlsafe(32)
+                self._nonces.clear()
+            self.last_activity = current
+            nonce = secrets.token_urlsafe(32)
+            self._nonces.add(nonce)
+        return nonce, renewed

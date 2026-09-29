@@ -205,3 +205,68 @@ def test_rebuild_matches_live_after_reconcile(conn, project):
     nodes.start(conn, task["id"], owner="agent-1", lease_minutes=-1)
     daemon.reconcile_leases(conn)
     assert rebuild.diff_state(conn) == {}
+
+
+# -- session auth states (sign-in plan, Task 1) --------------------------------
+
+
+def test_check_distinguishes_missing_invalid_expired_and_ok():
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    assert session.check(None, now=now) == "missing"
+    assert session.check("", now=now) == "missing"
+    assert session.check("not-the-token", now=now) == "invalid"
+    assert session.check(session.token, now=now + timedelta(hours=1)) == "ok"
+    assert session.check(session.token, now=now + timedelta(hours=1, minutes=1) + timedelta(hours=8)) == "expired"
+
+
+def test_check_rejects_non_ascii_token_instead_of_raising():
+    session = daemon.SessionManager()
+    assert session.check("tok\u201cen") == "invalid"
+    assert session.check("\U0001F600") == "invalid"
+
+
+def test_expired_check_does_not_reset_the_idle_clock():
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    later = now + timedelta(hours=9)
+    assert session.check(session.token, now=later) == "expired"
+    assert session.check(session.token, now=later + timedelta(minutes=1)) == "expired"
+
+
+def test_consume_nonce_reports_ok_invalid_and_expired():
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    nonce = session.mint_nonce()
+    assert session.consume_nonce(nonce, now=now) == "ok"
+    assert session.consume_nonce(nonce, now=now) == "invalid"  # single use
+    assert session.consume_nonce("never-minted", now=now) == "invalid"
+    assert session.consume_nonce(None, now=now) == "invalid"
+    stale = session.mint_nonce()
+    assert session.consume_nonce(stale, now=now + timedelta(hours=9)) == "expired"
+    assert session.consume_nonce(stale, now=now + timedelta(hours=9)) == "invalid"  # spent either way
+
+
+def test_relink_keeps_a_live_token_and_mints_a_working_nonce():
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    token = session.token
+    nonce, renewed = session.relink(now=now + timedelta(hours=2))
+    assert renewed is False
+    assert session.token == token
+    assert session.consume_nonce(nonce, now=now + timedelta(hours=2)) == "ok"
+
+
+def test_relink_after_expiry_renews_with_a_new_token_and_kills_the_old_one():
+    now = datetime.now(timezone.utc)
+    session = daemon.SessionManager(now=now)
+    old_token = session.token
+    old_nonce = session.mint_nonce()
+    later = now + timedelta(hours=9)
+    nonce, renewed = session.relink(now=later)
+    assert renewed is True
+    assert session.token != old_token
+    assert session.check(old_token, now=later) == "invalid"
+    assert session.consume_nonce(old_nonce, now=later) == "invalid"
+    assert session.consume_nonce(nonce, now=later) == "ok"
+    assert session.check(session.token, now=later) == "ok"
