@@ -2388,7 +2388,7 @@ reading here. Real `decisions` table entries start once dogfooding begins
     expiry is unchanged.** The 8-hour idle expiry (control 6) stays, and
     only a successful user-initiated authenticated request resets it.
     There is no heartbeat, because an open tab polling in the background
-    is not a person: the dashboard marks its polling and refetch reads
+    is not a person: the dashboard marks its project activity reads (the route that refetches on every event and every 1.5 s during a run)
     with `X-Muvue-Background: 1`, and the daemon authenticates those
     (an expired or invalid token is still refused) without extending the
     session. `muvue link` also resets the idle clock on a live session,
