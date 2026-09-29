@@ -89,23 +89,36 @@ function mockProject(specStatus: string, tasks: Array<{ id: number; status: stri
   });
 }
 
-test("one primary action: while the task list awaits approval, Run is not filled", async () => {
+const runButton = () => screen.getByText("▶ Run tasks") as HTMLButtonElement;
+
+test("one primary action: Run enabled but another step is next, so Run is not filled", async () => {
+  authed.value = true;
+  mockProject("ready", [{ id: 2, status: "ready" }, { id: 3, status: "in_progress" }], "executing");
+  const { container } = render(<ProjectPage />);
+  await waitFor(() => screen.getByText("Agents are working"));
+  expect(runButton().disabled).toBe(false);
+  expect(runButton().classList.contains("btn-filled")).toBe(false);
+  expect(container.querySelectorAll(".btn-filled").length).toBeLessThanOrEqual(1);
+  authed.value = false;
+});
+
+test("one primary action: while the task list awaits approval, only Approve is filled", async () => {
   authed.value = true;
   mockProject("ready", [{ id: 2, status: "pending" }], "planning");
   const { container } = render(<ProjectPage />);
   await waitFor(() => screen.getByText("Approve task list"));
-  const filledEnabled = [...container.querySelectorAll(".btn-filled")].filter((b) => !(b as HTMLButtonElement).disabled);
-  expect(filledEnabled.map((b) => b.textContent)).toEqual(["Approve task list"]);
+  expect(runButton().classList.contains("btn-filled")).toBe(false);
+  expect([...container.querySelectorAll(".btn-filled")].map((b) => b.textContent)).toEqual(["Approve task list"]);
   authed.value = false;
 });
 
-test("when Run is the next step, Run is the one filled button", async () => {
+test("when Run is the next step, Run is enabled and the only filled button", async () => {
   authed.value = true;
   mockProject("ready", [{ id: 2, status: "ready" }], "executing");
   const { container } = render(<ProjectPage />);
-  await waitFor(() => screen.getByText("▶ Run tasks"));
-  const filled = [...container.querySelectorAll(".btn-filled")].filter((b) => !(b as HTMLButtonElement).disabled);
-  expect(filled.map((b) => b.textContent)).toEqual(["▶ Run tasks"]);
+  await waitFor(() => screen.getByText("Run the tasks"));
+  expect(runButton().disabled).toBe(false);
+  expect([...container.querySelectorAll(".btn-filled")].map((b) => b.textContent)).toEqual(["▶ Run tasks"]);
   authed.value = false;
 });
 
