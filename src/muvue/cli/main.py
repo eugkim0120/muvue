@@ -347,6 +347,7 @@ def serve(
     import uvicorn
 
     from muvue.api import create_app
+    from muvue.core import control as control_mod
     from muvue.core import daemon as daemon_mod
 
     repo_root = _find_repo_root(path)
@@ -387,6 +388,7 @@ def serve(
         "  (send as `Authorization: Bearer <token>`; the VS Code extension asks for it. "
         "It lives only in this process: do not paste it into files or logs.)"
     )
+    typer.echo(f"lost the link later? run `muvue link {repo_root}` on this machine for a fresh one")
 
     app_instance = create_app(repo_root, config=config, session=session, port=port, bind_host=hostname)
 
@@ -409,13 +411,54 @@ def serve(
     # removes the port file instead of the process dying mid-unwind.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     daemon_mod.write_port_file(repo_root, port=port, pid=os.getpid())
+    control = control_mod.ControlServer(
+        control_mod.socket_path(repo_root), session, base_url=f"http://{host}:{port}",
+    )
+    control.start()
     try:
         typer.echo(f"muvue daemon listening on http://{host}:{port}")
         uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
     except KeyboardInterrupt:
         pass
     finally:
+        control.stop()
         daemon_mod.remove_port_file(repo_root, pid=os.getpid())
+
+
+@app.command(help="Print a fresh one-time dashboard link for the running `muvue serve`.")
+def link(path: Path = typer.Argument(Path("."), help="Repo root the daemon serves")) -> None:
+    """Asks the running daemon, over its same-user control socket, for a
+    new single-use dashboard link and the current api token. If the
+    session idled out (8h), the daemon first starts a new one with a new
+    token (decision #173)."""
+    import json as json_mod
+
+    from muvue.core import control as control_mod
+    from muvue.core import daemon as daemon_mod
+
+    repo_root = _find_repo_root(path)
+    sock = control_mod.socket_path(repo_root)
+    if not sock.exists():
+        port_file = daemon_mod.port_file_path(repo_root)
+        if port_file.exists():
+            pid = json_mod.loads(port_file.read_text()).get("pid")
+            typer.echo(
+                f"muvue link: `muvue serve` (pid {pid}) is running for {repo_root} but has no control "
+                "socket: it was started by an older muvue. Restart it once, then `muvue link` works.",
+                err=True,
+            )
+        else:
+            typer.echo(f"muvue link: no `muvue serve` is running for {repo_root}; start one with `muvue serve`", err=True)
+        raise typer.Exit(1)
+    try:
+        reply = control_mod.request_link(sock)
+    except control_mod.LinkError as exc:
+        typer.echo(f"muvue link: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"dashboard (one-time link, works once): {reply['url']}")
+    typer.echo(f"api token: {reply['token']}")
+    if reply["renewed"]:
+        typer.echo("(the old session had expired: this is a new token; earlier links, cookies and tokens no longer work)")
 
 
 @adapter_app.command("install", help="Connect an agent (claude-code, codex, gemini, cursor) to muvue.")
