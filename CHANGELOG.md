@@ -11,6 +11,20 @@ All notable changes to this project are documented here.
 - Dashboard: status words say what is true ("starts after the task list is approved", "waits for earlier tasks", "ready — starts on Run"); the always-zero spend figure is gone; projects routed to the `fake` agent say it is a demo agent that writes no code.
 - The `fake` agent's default behavior now answers breakdown briefs, so a freshly initialised project can be planned from the dashboard.
 - Breakdown logs are served by `GET /nodes/{id}/logs`; the whole-project run log by `GET /projects/{id}/logs`.
+- Sign-in says why it fails. The daemon marks every refusal with `X-Muvue-Auth: missing|invalid|expired`, and an idle-expired session is now `401` (missing or wrong tokens stay `403`). The dashboard shows the exact reason: a one-line strip says whether the page is read-only, whether `serve` restarted, or whether the session expired, and a sign-in sheet explains a refused token.
+- New `muvue link [PATH]` prints a fresh one-time dashboard link and the current api token from the running `muvue serve`, over a same-user local socket (`~/.muvue/daemon/<repo-hash>.sock`). If the 8-hour idle expiry has passed, it starts a new session with a new token, so you no longer need to restart `serve`, which also killed every link already handed out.
+- A pasted api token now becomes the same HttpOnly session cookie the link sets (`POST /auth/session`), so a phone stays signed in across reloads.
+- Dashboard layout:
+  - On wide screens the Next step, activity and cards sit in a right-hand rail beside the diagram.
+  - On phones the title is no longer repeated under the top bar, so the diagram starts near the top.
+  - Only the next step's button is filled; a disabled button no longer looks like a faded primary.
+  - The demo-agent notice is one line that expands.
+  - Toasts stay off the diagram.
+- Diagram boxes:
+  - The agent line is a short one-line status ("waits for approval", "ready to run", "working now"), not a button-shaped chip.
+  - The spec's badge says "approved" or "needs approval".
+  - Box heights fit their content.
+- Text colours pass WCAG AA (4.5:1) in light and dark mode, including buttons, links and every status pill; `dashboard/test/contrast.test.ts` checks it.
 
 ## [0.2.5] - 2026-09-28
 

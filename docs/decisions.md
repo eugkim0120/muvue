@@ -2383,3 +2383,43 @@ reading here. Real `decisions` table entries start once dogfooding begins
     confirming it, and turns an unconfirmed launch into a visible error
     after 15 seconds. Cost if wrong: one extra small request every 1.5 s
     while something is running.
+
+173. **Recovering a session is `muvue link`, not a restart, and idle
+    expiry is unchanged.** The 8-hour idle expiry (control 6) stays, and
+    only a successful authenticated request resets it. There is no
+    heartbeat, because an open tab polling in the background is not a
+    person. What changes is recovery. The running daemon listens on a
+    Unix socket beside its port file (0600 in a 0700 directory, peer uid
+    checked on Linux), and `muvue link` asks it for a fresh one-time
+    link. If the session has expired, that also mints a new token, so a
+    token that leaked before the expiry stays dead. The socket answers
+    only the user who could already read the daemon's stdout, so it adds
+    no new reader of the token. Refusals now carry `X-Muvue-Auth` and
+    expiry is `401`, so the page can say which problem it hit instead of
+    one generic "missing or invalid". A pasted token is exchanged for
+    the HttpOnly cookie (`POST /auth/session`), which is what the link
+    already did. Cost if wrong: one more local surface (the socket) to
+    keep same-user, and it is covered by `tests/test_control_socket.py`.
+
+174. **Design pass: the diagram is the page.** A review against the
+    seven Figma UI principles (hierarchy, progressive disclosure,
+    consistency, contrast, accessibility, proximity, alignment) moved
+    everything that is not the diagram into one line or a side rail:
+    - the Next step, activity and cards go into a right rail at 1100px
+      and wider;
+    - there is one filled button per page;
+    - the demo-agent notice becomes a one-line `<details>`;
+    - toasts move off the diagram;
+    - the sidebar no longer repeats the project title.
+
+    Two changes reverse parts of the dashboard-clarity plan on purpose:
+    - The per-box agent labels are shorter ("waits for approval" instead
+      of "starts after the task list is approved"). The Next bar already
+      says the project-wide step, and the long label wrapped to two
+      lines on every box.
+    - The approved spec shows "approved" instead of the node status
+      "ready".
+
+    Colour tokens were changed to pass WCAG AA, and a unit test computes
+    the ratios from `tokens.css`. Cost if wrong: layout churn for anyone
+    used to the old page; no behavior change.

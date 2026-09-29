@@ -121,6 +121,16 @@ web-page-originated**, not local:
    blast radius of a token that *does* leak (over-the-shoulder, a
    screen share, a copy-pasted log) to, at most, one `serve` session's
    worth of time, and to periods of actual use within it.
+
+   Recovering after expiry does not need a restart. `muvue link` asks
+   the running daemon over a Unix socket at
+   `~/.muvue/daemon/<repo-hash>.sock`. The socket is created 0600
+   (umask set before `bind`, so it is never briefly wider), lives in the
+   0700 daemon directory, and on Linux checks the peer's uid with
+   `SO_PEERCRED`. It answers one request, `link`, with a new one-time
+   nonce link and the current token. That is what `serve` already
+   printed to the same user's terminal. An expired session is renewed
+   with a new token, never revived with the old one (decision #173).
 7. **`doctor` live probes.** Controls 2–4 are probed with real
    requests, and control 1 by trying to connect to the daemon's port on
    each of this machine's non-loopback addresses (`probe_bind`). That

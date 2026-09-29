@@ -332,6 +332,21 @@ URL with a single-use nonce as its `#fragment`
 (`http://host:port/#n=<nonce>`, decision #144) and, on a separate
 `api token: <token>` line, the token itself for API clients.
 
+`serve` also prints a hint line naming `muvue link`, and listens on a
+same-user Unix socket, `~/.muvue/daemon/<repo-hash>.sock`, removed on
+exit. `muvue link [PATH]` asks that socket for a fresh
+`dashboard (one-time link, works once): …` line and the current
+`api token: …` line. If the session had idled out, the daemon first
+mints a new token and prints a note saying so. Exit code 1 means no
+daemon is running, or the one running predates the socket.
+
+Auth refusals: `403` with `X-Muvue-Auth: missing` (no token) or
+`invalid` (not this process's token), `401` with
+`X-Muvue-Auth: expired` (this process's token after 8h idle). The same
+header appears on `/auth/exchange` refusals. `POST /auth/session`, with
+a valid token in the Authorization header, sets the HttpOnly
+`muvue_session` cookie.
+
 `muvue.api.create_app(repo_root, config, *, session=None, port=None)`
 mirrors the CLI verbs 1:1 (FastAPI, OpenAPI at `/openapi.json` for
 free). Every request first passes `SecurityMiddleware` (runs before any
