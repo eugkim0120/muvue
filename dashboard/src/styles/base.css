@@ -35,12 +35,12 @@ pre.scroll-x { white-space: pre; overflow-x: auto; }
 .list-row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--st-pending); }
 .chev { color: var(--text-2); flex: none; }
-.tier-low { color: var(--text-2); } .tier-medium { color: var(--tier-medium); } .tier-high { color: var(--danger); }
+.tier-low { color: var(--text-2); } .tier-medium { color: color-mix(in srgb, var(--tier-medium) 50%, var(--text)); } .tier-high { color: color-mix(in srgb, var(--danger) 80%, var(--text)); }
 .progress { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .progress > span { display: block; height: 100%; background: var(--accent); }
 .progress.warn > span { background: var(--tier-medium); }
 .progress.exhausted > span { background: var(--danger); }
-.d-add { color: var(--st-done); } .d-del { color: var(--danger); } .d-hunk { color: var(--st-ready); } .d-meta { color: var(--text-2); }
+.d-add { color: color-mix(in srgb, var(--st-done) 50%, var(--text)); } .d-del { color: color-mix(in srgb, var(--danger) 80%, var(--text)); } .d-hunk { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); } .d-meta { color: var(--text-2); }
 ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh; overflow: auto; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
