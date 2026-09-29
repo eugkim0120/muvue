@@ -13,11 +13,14 @@ All notable changes to this project are documented here.
 - Breakdown logs are served by `GET /nodes/{id}/logs`; the whole-project run log by `GET /projects/{id}/logs`.
 - Sign-in says why it fails. The daemon marks every refusal with `X-Muvue-Auth: missing|invalid|expired`, and an idle-expired session is now `401` (missing or wrong tokens stay `403`). The dashboard shows the exact reason: a one-line strip says whether the page is read-only, whether `serve` restarted, or whether the session expired, and a sign-in sheet explains a refused token.
 - New `muvue link [PATH]` prints a fresh one-time dashboard link and the current api token from the running `muvue serve`, over a same-user local socket (`~/.muvue/daemon/<repo-hash>.sock`). If the 8-hour idle expiry has passed, it starts a new session with a new token, so you no longer need to restart `serve`, which also killed every link already handed out.
+- The dashboard's background polling is sent with `X-Muvue-Background: 1`; the daemon authenticates it but does not count it as activity, so an open tab no longer keeps a session alive past the idle expiry.
+- A `muvue link` URL pasted into an already-open dashboard tab now signs it in (it was ignored until a reload). A second `muvue serve` on the same repo now exits with a one-line error instead of deleting the running daemon's port file. A pasted token that fails to become a session cookie is forgotten by the page.
+- Sign-in copy no longer states a fixed number of hours, and says a token changes when `muvue serve` restarts or `muvue link` issues a new one. The sign-in error is announced to screen readers.
 - A pasted api token now becomes the same HttpOnly session cookie the link sets (`POST /auth/session`), so a phone stays signed in across reloads.
 - Dashboard layout:
   - On wide screens the Next step, activity and cards sit in a right-hand rail beside the diagram.
   - On phones the title is no longer repeated under the top bar, so the diagram starts near the top.
-  - Only the next step's button is filled; a disabled button no longer looks like a faded primary.
+  - The next-step bar carries the one filled primary action; a disabled button no longer looks like a faded primary. "Needs you" cards keep their own approve and acknowledge buttons.
   - The demo-agent notice is one line that expands.
   - Toasts stay off the diagram.
 - Diagram boxes:

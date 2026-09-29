@@ -334,11 +334,25 @@ URL with a single-use nonce as its `#fragment`
 
 `serve` also prints a hint line naming `muvue link`, and listens on a
 same-user Unix socket, `~/.muvue/daemon/<repo-hash>.sock`, removed on
-exit. `muvue link [PATH]` asks that socket for a fresh
+a clean exit only. After a crash or SIGKILL it stays until the next
+`serve` start clears it, and `serve` refuses to start if a live daemon
+already answers there (one-line error, exit 1, and the running daemon's
+port file is left alone). `muvue link [PATH]` asks that socket for a fresh
 `dashboard (one-time link, works once): …` line and the current
 `api token: …` line. If the session had idled out, the daemon first
-mints a new token and prints a note saying so. Exit code 1 means no
-daemon is running, or the one running predates the socket.
+mints a new token and prints a note saying so. Exit code 1 means the
+link could not be issued, with a one-line reason on stderr: no port
+file (no daemon running), an unreadable port file, a running daemon
+that predates the socket, a stale socket left by a crashed daemon
+(connection refused), permission denied on the socket or a refused
+peer, a connect or reply timeout, an error reply from the daemon, or a
+malformed reply.
+
+Background reads: a request carrying `X-Muvue-Background: 1` is fully
+authenticated and is refused when the token is invalid or expired, but
+a success does not reset the idle clock. The dashboard sends it on its
+polling and refetches (the project activity route), so an open tab
+does not keep a session alive. Requests without it reset the clock.
 
 Auth refusals: `403` with `X-Muvue-Auth: missing` (no token) or
 `invalid` (not this process's token), `401` with

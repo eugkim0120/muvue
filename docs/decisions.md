@@ -2386,9 +2386,13 @@ reading here. Real `decisions` table entries start once dogfooding begins
 
 173. **Recovering a session is `muvue link`, not a restart, and idle
     expiry is unchanged.** The 8-hour idle expiry (control 6) stays, and
-    only a successful authenticated request resets it. There is no
-    heartbeat, because an open tab polling in the background is not a
-    person. What changes is recovery. The running daemon listens on a
+    only a successful user-initiated authenticated request resets it.
+    There is no heartbeat, because an open tab polling in the background
+    is not a person: the dashboard marks its polling and refetch reads
+    with `X-Muvue-Background: 1`, and the daemon authenticates those
+    (an expired or invalid token is still refused) without extending the
+    session. `muvue link` also resets the idle clock on a live session,
+    since asking is proof someone is at the server. What changes is recovery. The running daemon listens on a
     Unix socket beside its port file (0600 in a 0700 directory, peer uid
     checked on Linux), and `muvue link` asks it for a fresh one-time
     link. If the session has expired, that also mints a new token, so a
@@ -2407,7 +2411,9 @@ reading here. Real `decisions` table entries start once dogfooding begins
     everything that is not the diagram into one line or a side rail:
     - the Next step, activity and cards go into a right rail at 1100px
       and wider;
-    - there is one filled button per page;
+    - the page's next-step bar carries the one filled primary action,
+      and "Needs you" cards carry their own approve and acknowledge
+      actions;
     - the demo-agent notice becomes a one-line `<details>`;
     - toasts move off the diagram;
     - the sidebar no longer repeats the project title.

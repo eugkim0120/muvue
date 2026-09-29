@@ -131,6 +131,11 @@ web-page-originated**, not local:
    nonce link and the current token. That is what `serve` already
    printed to the same user's terminal. An expired session is renewed
    with a new token, never revived with the old one (decision #173).
+   Requests sent with `X-Muvue-Background: 1` (the dashboard's
+   polling) authenticate but do not reset the idle clock, so an
+   unattended open tab cannot keep a session alive. The socket is
+   removed on a clean exit only; a crashed daemon's leftover is cleared
+   by the next `serve`.
 7. **`doctor` live probes.** Controls 2–4 are probed with real
    requests, and control 1 by trying to connect to the daemon's port on
    each of this machine's non-loopback addresses (`probe_bind`). That
