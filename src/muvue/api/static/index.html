@@ -2021,7 +2021,10 @@ function useActivity(projectId2) {
   const [tick, setTick] = d$2(0);
   const prev = A(null);
   h$2(() => {
-    if (projectId2 === null) return;
+    if (projectId2 === null || !authed.value) {
+      setActivity(null);
+      return;
+    }
     let alive = true;
     api(routes.projectActivity(projectId2)).then((a2) => {
       if (!alive) return;
@@ -2041,12 +2044,14 @@ function useActivity(projectId2) {
       prev.current = a2;
       setActivity(a2);
     }, (e2) => {
-      if (alive) toast(e2 instanceof Error ? e2.message : String(e2), "error");
+      if (!alive) return;
+      if (e2 instanceof ApiError && e2.auth) return;
+      toast(e2 instanceof Error ? e2.message : String(e2), "error");
     });
     return () => {
       alive = false;
     };
-  }, [projectId2, refreshTick.value, tick]);
+  }, [projectId2, refreshTick.value, tick, authed.value]);
   const polling = !!activity && (activity.active.length > 0 || launches.value.some((l2) => (l2.projectId === null || l2.projectId === projectId2) && Date.now() - l2.at < LAUNCH_TIMEOUT_MS));
   h$2(() => {
     if (!polling) return;

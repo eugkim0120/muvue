@@ -1,8 +1,8 @@
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
 import { routes } from "../api/routes";
-import { refresh, refreshTick, toast } from "../state";
+import { authed, refresh, refreshTick, toast } from "../state";
 
 export type ActiveProc = { kind: "run" | "breakdown"; pid: number; node_id: number | null; started_at: string };
 export type BreakdownOutcome = {
@@ -169,7 +169,8 @@ export function useActivity(projectId: number | null): Activity | null {
   const [tick, setTick] = useState(0);
   const prev = useRef<Activity | null>(null);
   useEffect(() => {
-    if (projectId === null) return;
+    // The activity route is guarded: a guest would only get a 403.
+    if (projectId === null || !authed.value) { setActivity(null); return; }
     let alive = true;
     api<Activity>(routes.projectActivity(projectId)).then((a) => {
       if (!alive) return;
@@ -189,9 +190,14 @@ export function useActivity(projectId: number | null): Activity | null {
       });
       prev.current = a;
       setActivity(a);
-    }, (e) => { if (alive) toast(e instanceof Error ? e.message : String(e), "error"); });
+    }, (e) => {
+      if (!alive) return;
+      // Signed out (or the session lapsed): the sign-in strip already says so.
+      if (e instanceof ApiError && e.auth) return;
+      toast(e instanceof Error ? e.message : String(e), "error");
+    });
     return () => { alive = false; };
-  }, [projectId, refreshTick.value, tick]);
+  }, [projectId, refreshTick.value, tick, authed.value]);
   // A launch past LAUNCH_TIMEOUT_MS already has its (dismissable) error
   // item; it will never confirm, so it must not keep the poll alive forever.
   // A launch against a different project must not extend this project's
