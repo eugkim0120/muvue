@@ -46,3 +46,10 @@ test("a dep edge whose endpoint was deleted (absent from fullNodes) is dropped, 
 test("subtaskProgress counts done subtasks", () => {
   expect(subtaskProgress([{ id: 1, title: "a", status: "done", parent_id: 9, owner: null }, { id: 2, title: "b", status: "ready", parent_id: 9, owner: null }])).toEqual({ done: 1, total: 2 });
 });
+
+test("subtaskProgress handles no subtasks, all done, and a failed subtask", () => {
+  const st = (id: number, status: "done" | "failed" | "ready") => ({ id, title: "s", status, parent_id: 9, owner: null });
+  expect(subtaskProgress([])).toEqual({ done: 0, total: 0 });
+  expect(subtaskProgress([st(1, "done"), st(2, "done")])).toEqual({ done: 2, total: 2 });
+  expect(subtaskProgress([st(1, "done"), st(2, "failed")])).toEqual({ done: 1, total: 2 });
+});

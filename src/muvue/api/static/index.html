@@ -1854,6 +1854,7 @@ function SubtaskRow({ subtask, needsYou }) {
 function TaskBox({ task, needsYou, projectPhase, style }) {
   const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
   const more = task.subtasks.length - shown.length;
+  const purpose = purposeLine(task.body_md);
   const state = agentStateOf(task, projectPhase, needsYou.has(task.id));
   return /* @__PURE__ */ u$1("div", { class: "task-box st-bar-" + task.status + (task.status === "in_progress" ? " running" : ""), style, tabIndex: 0, onClick: () => openNode(task.id), onKeyDown: (e2) => {
     if (e2.key === "Enter") openNode(task.id);
@@ -1862,8 +1863,8 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
       /* @__PURE__ */ u$1("span", { class: "title grow clamp-2", children: task.title }),
       needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you", title: "Needs your attention" }) : null
     ] }),
-    task.body_md ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purposeLine(task.body_md) }) : null,
-    task.status === "blocked" ? /* @__PURE__ */ u$1("div", { class: "caption reason", children: task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked" }) : null,
+    purpose ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purpose }) : null,
+    task.status === "blocked" ? /* @__PURE__ */ u$1("div", { class: "caption reason clamp-1", children: task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked" }) : null,
     task.subtasks.length ? /* @__PURE__ */ u$1("div", { class: "caption progress-line", children: [
       subtaskProgress(task.subtasks).done,
       " of ",
@@ -3581,7 +3582,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 
 .subtask-owner { flex: none; max-width: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress-line, .reason { margin: 0; }
-.task-box .reason { color: color-mix(in srgb, var(--st-blocked) 80%, var(--text)); }
+.task-box .reason { color: var(--text); }
 .task-box.st-bar-blocked { border-left-style: dashed; }
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }

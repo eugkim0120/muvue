@@ -53,6 +53,10 @@ test("a long title adds a second line, a purpose adds its row, subtasks add rows
   expect(taskHeight({ ...base, hasReason: true })).toBe(taskHeight(base) + 22);
   expect(taskHeight({ ...base, subtaskCount: 2, hasProgress: true })).toBe(taskHeight(base) + 22 + 12 + 2 * 44);
   expect(taskHeight({ ...base, subtaskCount: 5, hasProgress: true })).toBe(taskHeight(base) + 22 + 12 + 4 * 44);
+  const rows = (n: number) => taskHeight({ ...base, subtaskCount: n, hasProgress: true });
+  expect(rows(3)).toBe(taskHeight(base) + 22 + 12 + 3 * 44);
+  expect(rows(4) - rows(3)).toBe(44); // the 4th subtask becomes the "+N more" row, still one row
+  expect(rows(10)).toBe(rows(4));
 });
 
 test("labels are sized to their text and long ones are truncated", () => {
@@ -65,4 +69,13 @@ test("a dependency cycle does not hang and still ranks every node", () => {
   const lay = computeLayout(spec, [task(2), task(3)], [{ from: 2, to: 3, carries: null }, { from: 3, to: 2, carries: null }], false);
   expect(Number.isFinite(lay.pos[2]!.rank)).toBe(true);
   expect(Number.isFinite(lay.pos[3]!.rank)).toBe(true);
+});
+
+test("computeLayout feeds blocked status, purpose and title length into each box height", () => {
+  const plain = task(2);
+  const rich: CanvasTask = { ...task(3), title: "x".repeat(40), status: "blocked", block_reason: "rate_limit", body_md: "purpose line" };
+  const lay = computeLayout(spec, [plain, rich], [], false);
+  expect(lay.pos[2]!.h).toBe(taskHeight({ title: "t2", hasPurpose: false, hasReason: false, subtaskCount: 0, hasProgress: false }));
+  expect(lay.pos[3]!.h).toBe(taskHeight({ title: rich.title, hasPurpose: true, hasReason: true, subtaskCount: 0, hasProgress: false }));
+  expect(lay.pos[3]!.h).toBeGreaterThan(lay.pos[2]!.h);
 });

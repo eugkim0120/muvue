@@ -9,6 +9,7 @@ import { MAX_SUBTASK_ROWS } from "./flowLayout";
 export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasTask; needsYou: Set<number>; projectPhase: string; style?: Record<string, string | number> }) {
   const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
   const more = task.subtasks.length - shown.length;
+  const purpose = purposeLine(task.body_md);
   const state = agentStateOf(task, projectPhase, needsYou.has(task.id));
   return (
     <div class={"task-box st-bar-" + task.status + (task.status === "in_progress" ? " running" : "")} style={style} tabIndex={0} onClick={() => openNode(task.id)} onKeyDown={(e) => { if (e.key === "Enter") openNode(task.id); }}>
@@ -16,8 +17,8 @@ export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasT
         <span class="title grow clamp-2">{task.title}</span>
         {needsYou.has(task.id) ? <span class="needs-you-dot" aria-label="needs you" title="Needs your attention" /> : null}
       </div>
-      {task.body_md ? <div class="caption purpose clamp-1">{purposeLine(task.body_md)}</div> : null}
-      {task.status === "blocked" ? <div class="caption reason">{task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked"}</div> : null}
+      {purpose ? <div class="caption purpose clamp-1">{purpose}</div> : null}
+      {task.status === "blocked" ? <div class="caption reason clamp-1">{task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked"}</div> : null}
       {task.subtasks.length ? <div class="caption progress-line">{subtaskProgress(task.subtasks).done} of {task.subtasks.length} subtasks done</div> : null}
       {shown.length ? (
         <div class="subtask-list">

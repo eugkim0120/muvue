@@ -88,5 +88,5 @@
 
 .subtask-owner { flex: none; max-width: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress-line, .reason { margin: 0; }
-.task-box .reason { color: color-mix(in srgb, var(--st-blocked) 80%, var(--text)); }
+.task-box .reason { color: var(--text); }
 .task-box.st-bar-blocked { border-left-style: dashed; }

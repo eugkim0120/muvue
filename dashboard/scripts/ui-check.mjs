@@ -124,6 +124,26 @@ try {
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
   check("desktop: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
 
+  // A 26-character single word is the widest title the height estimate counts as
+  // one line; if it really wraps, this fails. (A blocked task with a long
+  // reason cannot be seeded: no CLI command blocks a task; the clamp is
+  // covered by a TaskBox unit test.)
+  muvue("decompose", String(spec.id), "--title", "W".repeat(26), "--body", "Stress the one-line title estimate", "--path", repo);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll(".task-box:not(.dag-empty)").length >= 4, null, { timeout: 10000 }).catch(() => {});
+  const stress = await page.locator(".task-box:not(.dag-empty)").evaluateAll((els) => {
+    const rects = els.map((e) => e.getBoundingClientRect());
+    let overlap = false;
+    for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) overlap = true;
+    }
+    const clipped = els.filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => e.querySelector(".title")?.textContent ?? "?");
+    const dead = els.map((e) => { const tag = e.querySelector(".agent-tag"); const prev = tag?.previousElementSibling; return tag && prev ? Math.round(tag.getBoundingClientRect().top - prev.getBoundingClientRect().bottom) : 0; }).filter((g) => g > 20);
+    return { n: els.length, overlap, clipped, dead };
+  });
+  check("desktop: a 26-character one-word title fits its box, with no overlap or dead space", stress.n >= 4 && !stress.overlap && stress.clipped.length === 0 && stress.dead.length === 0, JSON.stringify(stress));
+
   // --- sign-in: a visitor without the link
   const guest = await browser.newContext({ deviceScaleFactor: 2 });
   const g = await guest.newPage();

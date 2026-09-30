@@ -76,3 +76,13 @@ test("blocked boxes also carry a dashed left border, a non-colour shape cue", ()
   const css = readFileSync(join(__dirname, "../src/canvas/canvas.css"), "utf8");
   expect(css).toMatch(/\.task-box\.st-bar-blocked[^{]*\{[^}]*border-left-style:\s*dashed/);
 });
+
+test("a long block reason is clamped to one line so the 18px height estimate holds", () => {
+  const { container } = render(<TaskBox task={{ ...task, status: "blocked", block_reason: "rate_limit ".repeat(20) }} needsYou={new Set()} projectPhase="executing" />);
+  expect(container.querySelector(".reason")!.classList.contains("clamp-1")).toBe(true);
+});
+
+test("a task whose body has no purpose line renders no empty purpose row", () => {
+  const { container } = render(<TaskBox task={{ ...task, body_md: "   \n\n" }} needsYou={new Set()} projectPhase="executing" />);
+  expect(container.querySelector(".purpose")).toBeNull();
+});
