@@ -2114,7 +2114,7 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
   const [showDone, setShowDone] = d$2(false);
   const { data, hiddenDone } = collapseDone(fullData, showDone);
   const planning = data.spec ? planningNodeIds(activity, launches.value, projectId2).has(data.spec.id) : false;
-  const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
+  const lay = computeLayout(data.spec, data.tasks, data.edges, fullData.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
   const viewportRef = A(null);
   const [viewportWidth, setViewportWidth] = d$2(null);
   const [viewportHeight, setViewportHeight] = d$2(null);
@@ -2134,15 +2134,51 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
   }, []);
   const fit = Math.min(1, (viewportWidth ?? lay.width) / lay.width);
   const [zoom, setZoom] = d$2(null);
-  const [pan, setPan] = d$2({ x: 0, y: 0 });
+  const [rawPan, setPan] = d$2({ x: 0, y: 0 });
   const z2 = zoom ?? fit;
   const zoomedIn = z2 > fit + 1e-3;
   const centerX = viewportWidth !== null ? Math.max(0, (viewportWidth - lay.width * z2) / 2) : 0;
   const content = { w: lay.width * z2, h: lay.height * z2 };
   const view = { w: viewportWidth ?? content.w, h: viewportHeight ?? content.h };
+  const pan = clampPan(rawPan, content, view);
   const tallerThanView = content.h > view.h + 1;
   const canPan = zoomedIn || tallerThanView;
   const setPanClamped = (p2) => setPan(clampPan(p2, content, view));
+  const KEY_STEP = 40;
+  function onKeyDown(e2) {
+    if (e2.target !== e2.currentTarget) return;
+    const page = view.h * 0.9;
+    const by = {
+      ArrowUp: { x: 0, y: KEY_STEP },
+      ArrowDown: { x: 0, y: -KEY_STEP },
+      ArrowLeft: { x: KEY_STEP, y: 0 },
+      ArrowRight: { x: -KEY_STEP, y: 0 },
+      PageUp: { x: 0, y: page },
+      PageDown: { x: 0, y: -page }
+    };
+    let next;
+    if (e2.key === "Home") next = { x: pan.x, y: 0 };
+    else if (e2.key === "End") next = { x: pan.x, y: -Infinity };
+    else if (by[e2.key]) next = { x: pan.x + by[e2.key].x, y: pan.y + by[e2.key].y };
+    else return;
+    e2.preventDefault();
+    setPanClamped(next);
+  }
+  function onFocusIn(e2) {
+    const box = e2.target.closest(".task-box, .spec-root-card");
+    if (!box) return;
+    const top = parseFloat(box.style.top) * z2, bottom = top + parseFloat(box.style.height) * z2;
+    const left = parseFloat(box.style.left) * z2, right = left + parseFloat(box.style.width) * z2;
+    const fitAxis = (lo, hi, p2, size) => lo + p2 < 0 ? -lo : hi + p2 > size ? size - hi : p2;
+    setPanClamped({ x: fitAxis(left, right, pan.x, view.w), y: fitAxis(top, bottom, pan.y, view.h) });
+  }
+  _$1(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    el.addEventListener("focusin", onFocusIn);
+    return () => el.removeEventListener("focusin", onFocusIn);
+  });
+  const panByPage = (dir) => setPanClamped({ x: pan.x, y: pan.y - dir * view.h * 0.9 });
   const pointers = A(/* @__PURE__ */ new Map());
   const dragging = A(null);
   const pinch = A(null);
@@ -2193,11 +2229,11 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
     if (next <= fit + 1e-3) setPan({ x: 0, y: 0 });
   }
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
-    hiddenDone > 0 ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", onClick: () => setShowDone(true), children: [
+    hiddenDone > 0 ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", "aria-expanded": false, title: "Finished tasks, and the arrows touching them, are folded away", onClick: () => setShowDone(true), children: [
       hiddenDone,
       " done"
-    ] }) : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", onClick: () => setShowDone(false), children: "Hide finished" }) : null,
-    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: canPan ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
+    ] }) : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", "aria-expanded": true, onClick: () => setShowDone(false), children: "Hide finished" }) : null,
+    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, role: "group", "aria-label": "Task diagram. Arrow keys pan, Page Up and Page Down scroll.", tabIndex: 0, style: { height: Math.ceil(lay.height * z2) + "px" }, onKeyDown, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
       /* @__PURE__ */ u$1("svg", { class: "dag canvas-arrows", width: lay.width, height: lay.height, "aria-hidden": "true", children: [
         /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
         lay.arrows.map((a2) => /* @__PURE__ */ u$1("g", { children: [
@@ -2214,6 +2250,10 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
       lay.pos[PLACEHOLDER_ID] && data.spec ? /* @__PURE__ */ u$1(DagPlaceholder, { planning, style: boxStyle(lay.pos[PLACEHOLDER_ID]) }) : null
     ] }) }),
     /* @__PURE__ */ u$1("div", { class: "canvas-zoom-controls", children: [
+      tallerThanView ? /* @__PURE__ */ u$1(S$1, { children: [
+        /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "pan up", onClick: () => panByPage(-1), children: "↑" }),
+        /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "pan down", onClick: () => panByPage(1), children: "↓" })
+      ] }) : null,
       /* @__PURE__ */ u$1(
         "button",
         {
@@ -3535,7 +3575,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 }
 /* dashboard/src/canvas/canvas.css */
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
-.canvas-viewport { position: relative; width: 100%; overflow: hidden; max-height: min(72dvh, 760px); }
+.canvas-viewport { position: relative; width: 100%; overflow: hidden; overflow: clip; touch-action: pan-y; max-height: min(72dvh, 760px); }
 .canvas-done-toggle { display: block; margin: 8px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: 13px; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }

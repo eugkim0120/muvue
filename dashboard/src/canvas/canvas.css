@@ -1,6 +1,6 @@
 /* dashboard/src/canvas/canvas.css */
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
-.canvas-viewport { position: relative; width: 100%; overflow: hidden; max-height: min(72dvh, 760px); }
+.canvas-viewport { position: relative; width: 100%; overflow: hidden; overflow: clip; touch-action: pan-y; max-height: min(72dvh, 760px); }
 .canvas-done-toggle { display: block; margin: 8px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: 13px; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }

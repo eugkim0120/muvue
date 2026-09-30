@@ -118,6 +118,8 @@ try {
   check("phone: a toast was on screen to test (the 'Added 3 tasks' one)", phoneToast.seen > 0, `${phoneToast.seen} toasts`);
   check("phone: no toast covers a box or an arrow label", !phoneToast.covers);
 
+  check("phone: the diagram viewport never exceeds 72% of the screen height", await page.evaluate(() => document.querySelector(".canvas-viewport").getBoundingClientRect().height <= 0.72 * window.innerHeight + 1));
+
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(800);
   await page.screenshot({ path: join(outDir, "04-desktop-after-resize.png") });
@@ -130,8 +132,6 @@ try {
   check("desktop: the diagram starts above 200px", desk.dagTop < 200, `starts at ${Math.round(desk.dagTop)}px`);
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
   check("desktop: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
-
-  check("phone: the diagram viewport never exceeds 72% of the screen height", await page.evaluate(() => document.querySelector(".canvas-viewport").getBoundingClientRect().height <= 0.72 * window.innerHeight + 1));
 
   // A 26-character single word is the widest title the height estimate counts as
   // one line; if it really wraps, this fails. (A blocked task with a long
@@ -177,7 +177,7 @@ try {
   const bp = await ctx.newPage();
   await bp.setViewportSize({ width: 390, height: 844 });
   await bp.goto(big.link);
-  await bp.waitForSelector(".canvas-done-toggle", { timeout: 10000 }).catch(() => {});
+  await bp.waitForSelector(".canvas-done-toggle", { timeout: 10000 });
   await bp.waitForTimeout(800);
   await bp.screenshot({ path: join(outDir, "08-phone-40-tasks.png"), fullPage: true });
   const bigMeasure = () => bp.evaluate(() => ({
@@ -187,14 +187,14 @@ try {
     boxes: document.querySelectorAll(".task-box").length,
   }));
   const folded = await bigMeasure();
-  check("phone, 40 tasks: the page is at most twice the screen height", folded.page <= 2 * folded.inner, `page ${folded.page}px, screen ${folded.inner}px, uncapped diagram ${Math.round(folded.frame)}px`);
+  check("phone, 40 tasks: the page is at most 1.5x the screen height", folded.page <= 1.5 * folded.inner, `page ${folded.page}px, screen ${folded.inner}px, folded diagram frame ${Math.round(folded.frame)}px`);
   check("phone, 40 tasks: the diagram viewport stays within 72% of the screen", folded.viewport <= 0.72 * folded.inner + 1, `${Math.round(folded.viewport)}px`);
   const toggle = bp.locator(".canvas-done-toggle", { hasText: "13 done" });
   check("phone, 40 tasks: a '13 done' toggle folds the finished tasks away", (await toggle.count()) === 1 && folded.boxes === 27, `${folded.boxes} task boxes shown`);
   await toggle.click();
   await bp.waitForTimeout(300);
   const open = await bigMeasure();
-  check("phone, 40 tasks: expanding shows all 40 and the page still does not grow", open.boxes === 40 && open.page <= 2 * open.inner, `${open.boxes} boxes, page ${open.page}px`);
+  check("phone, 40 tasks: expanding shows all 40 and the page still does not grow", open.boxes === 40 && open.page <= 1.5 * open.inner, `${open.boxes} boxes, page ${open.page}px`);
   await bp.close();
 
   // --- sign-in: a visitor without the link
