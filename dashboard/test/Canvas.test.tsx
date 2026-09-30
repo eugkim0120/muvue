@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/preact";
+import { fireEvent, render, screen } from "@testing-library/preact";
 import { Canvas } from "../src/canvas/Canvas";
 import type { CanvasData } from "../src/canvas/canvasData";
 import { authed } from "../src/state";
@@ -42,4 +42,13 @@ test("task boxes carry no inline action buttons", () => {
   expect(screen.queryByText("+ Subtask")).toBeNull();
   expect(screen.queryByText("✨")).toBeNull();
   authed.value = false;
+});
+
+test("with more than 12 tasks the finished ones fold into a '13 done' toggle that expands them", () => {
+  const tasks = Array.from({ length: 14 }, (_, i) => ({ id: i + 10, title: "T" + i, status: i < 13 ? "done" : "ready", risk_tier: "low", owner: null, agent: "claude", body_md: null, criteria_hash: null, block_reason: null, subtasks: [] })) as never;
+  const big = { spec: { id: 1, title: "S", body_md: null, status: "done", agent: null }, tasks, edges: [] } as CanvasData;
+  const { container } = render(<Canvas data={big} {...props} />);
+  expect(container.querySelectorAll(".task-box")).toHaveLength(1);
+  fireEvent.click(screen.getByText("13 done"));
+  expect(container.querySelectorAll(".task-box")).toHaveLength(14);
 });

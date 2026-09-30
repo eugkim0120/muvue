@@ -1708,6 +1708,23 @@ function buildCanvasData(graph, fullNodes) {
 function subtaskProgress(subtasks) {
   return { done: subtasks.filter((s2) => s2.status === "done").length, total: subtasks.length };
 }
+const COLLAPSE_DONE_OVER = 12;
+function collapseDone(data, expanded) {
+  if (expanded || data.tasks.length <= COLLAPSE_DONE_OVER) return { data, hiddenDone: 0 };
+  const hidden = new Set(data.tasks.filter((t2) => t2.status === "done").map((t2) => t2.id));
+  if (!hidden.size) return { data, hiddenDone: 0 };
+  return {
+    data: { ...data, tasks: data.tasks.filter((t2) => !hidden.has(t2.id)), edges: data.edges.filter((e2) => !hidden.has(e2.from) && !hidden.has(e2.to)) },
+    hiddenDone: hidden.size
+  };
+}
+const clamp = (v2, lo, hi) => Math.min(hi, Math.max(lo, v2));
+function clampPan(pan, content, view) {
+  return {
+    x: content.w <= view.w ? 0 : clamp(pan.x, view.w - content.w, 0),
+    y: content.h <= view.h ? 0 : clamp(pan.y, view.h - content.h, 0)
+  };
+}
 const NODE_W = 240, SPEC_H = 112, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
 const BOX_CHROME = 22, TITLE_LINE = 21, CAPTION_LINE = 18, FLEX_GAP = 4, PURPOSE_MARGIN = 8, SLACK = 4;
 const PLACEHOLDER_ID = -1;
@@ -2093,17 +2110,24 @@ function boxStyle(p2) {
   return { position: "absolute", left: p2.x + "px", top: p2.y + "px", width: p2.w + "px", height: p2.h + "px" };
 }
 const distance = (a2, b2) => Math.hypot(a2.x - b2.x, a2.y - b2.y);
-function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
+function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou, activity }) {
+  const [showDone, setShowDone] = d$2(false);
+  const { data, hiddenDone } = collapseDone(fullData, showDone);
   const planning = data.spec ? planningNodeIds(activity, launches.value, projectId2).has(data.spec.id) : false;
   const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
   const viewportRef = A(null);
   const [viewportWidth, setViewportWidth] = d$2(null);
+  const [viewportHeight, setViewportHeight] = d$2(null);
   _$1(() => {
     const el = viewportRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     setViewportWidth(el.clientWidth);
+    setViewportHeight(el.clientHeight);
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setViewportWidth(entry.contentRect.width);
+      for (const entry of entries) {
+        setViewportWidth(entry.contentRect.width);
+        setViewportHeight(entry.contentRect.height);
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -2114,6 +2138,11 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
   const z2 = zoom ?? fit;
   const zoomedIn = z2 > fit + 1e-3;
   const centerX = viewportWidth !== null ? Math.max(0, (viewportWidth - lay.width * z2) / 2) : 0;
+  const content = { w: lay.width * z2, h: lay.height * z2 };
+  const view = { w: viewportWidth ?? content.w, h: viewportHeight ?? content.h };
+  const tallerThanView = content.h > view.h + 1;
+  const canPan = zoomedIn || tallerThanView;
+  const setPanClamped = (p2) => setPan(clampPan(p2, content, view));
   const pointers = A(/* @__PURE__ */ new Map());
   const dragging = A(null);
   const pinch = A(null);
@@ -2125,7 +2154,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       dragging.current = null;
       return;
     }
-    if (!zoomedIn) return;
+    if (!canPan) return;
     if (e2.target.closest(".task-box, .spec-root-card, button")) return;
     dragging.current = { x: e2.clientX - pan.x, y: e2.clientY - pan.y };
     e2.target.setPointerCapture?.(e2.pointerId);
@@ -2138,7 +2167,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       return;
     }
     if (!dragging.current) return;
-    setPan({ x: e2.clientX - dragging.current.x, y: e2.clientY - dragging.current.y });
+    setPanClamped({ x: e2.clientX - dragging.current.x, y: e2.clientY - dragging.current.y });
   }
   function onPointerUp(e2) {
     pointers.current.delete(e2.pointerId);
@@ -2149,14 +2178,26 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
     dragging.current = null;
   }
   function onWheel(e2) {
-    if (!e2.ctrlKey) return;
+    if (!e2.ctrlKey) {
+      if (!tallerThanView) return;
+      const next2 = clampPan({ x: pan.x, y: pan.y - e2.deltaY }, content, view);
+      if (next2.y !== pan.y) {
+        e2.preventDefault();
+        setPan(next2);
+      }
+      return;
+    }
     e2.preventDefault();
     const next = clampZoom(z2 - e2.deltaY * 1e-3);
     setZoom(next);
     if (next <= fit + 1e-3) setPan({ x: 0, y: 0 });
   }
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
-    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: zoomedIn ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
+    hiddenDone > 0 ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", onClick: () => setShowDone(true), children: [
+      hiddenDone,
+      " done"
+    ] }) : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", onClick: () => setShowDone(false), children: "Hide finished" }) : null,
+    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: canPan ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
       /* @__PURE__ */ u$1("svg", { class: "dag canvas-arrows", width: lay.width, height: lay.height, "aria-hidden": "true", children: [
         /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
         lay.arrows.map((a2) => /* @__PURE__ */ u$1("g", { children: [
@@ -3494,7 +3535,8 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 }
 /* dashboard/src/canvas/canvas.css */
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
-.canvas-viewport { position: relative; width: 100%; overflow: hidden; }
+.canvas-viewport { position: relative; width: 100%; overflow: hidden; max-height: min(72dvh, 760px); }
+.canvas-done-toggle { display: block; margin: 8px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: 13px; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
 .canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 1.5; }

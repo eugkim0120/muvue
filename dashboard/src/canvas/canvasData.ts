@@ -55,3 +55,15 @@ export function buildCanvasData(graph: Graph, fullNodes: FullNode[]): CanvasData
 export function subtaskProgress(subtasks: CanvasSubtask[]): { done: number; total: number } {
   return { done: subtasks.filter((s) => s.status === "done").length, total: subtasks.length };
 }
+
+export const COLLAPSE_DONE_OVER = 12;
+
+export function collapseDone(data: CanvasData, expanded: boolean): { data: CanvasData; hiddenDone: number } {
+  if (expanded || data.tasks.length <= COLLAPSE_DONE_OVER) return { data, hiddenDone: 0 };
+  const hidden = new Set(data.tasks.filter((t) => t.status === "done").map((t) => t.id));
+  if (!hidden.size) return { data, hiddenDone: 0 };
+  return {
+    data: { ...data, tasks: data.tasks.filter((t) => !hidden.has(t.id)), edges: data.edges.filter((e) => !hidden.has(e.from) && !hidden.has(e.to)) },
+    hiddenDone: hidden.size,
+  };
+}

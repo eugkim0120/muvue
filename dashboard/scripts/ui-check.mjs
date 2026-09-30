@@ -49,6 +49,22 @@ function muvue(...args) {
   return execFileSync("uv", ["run", "muvue", ...args], { cwd: muvueRoot, encoding: "utf8" });
 }
 
+function startServe(dir, servePort) {
+  const proc = spawn("uv", ["run", "muvue", "serve", dir, "--port", String(servePort)], { cwd: muvueRoot, detached: true });
+  const ready = new Promise((res, rej) => {
+    let buf = "";
+    const t = setTimeout(() => rej(new Error("serve printed no link in 30s:\n" + buf)), 30000);
+    const on = (d) => {
+      buf += d;
+      const m = buf.match(/http:\/\/\S+#n=\S+/);
+      const k = buf.match(/api token: (\S+)/);
+      if (m && k) { clearTimeout(t); res({ link: m[0], token: k[1] }); }
+    };
+    proc.stdout.on("data", on); proc.stderr.on("data", on);
+  });
+  return { pid: proc.pid, ready };
+}
+
 // --- seed: project + approved spec, no tasks (the voxscore starting state)
 const repo = mkdtempSync(join(tmpdir(), "muvue-ui-check-repo-"));
 execFileSync("git", ["init", "-q"], { cwd: repo });
@@ -60,20 +76,11 @@ const spec = JSON.parse(muvue("spec", String(projectId), "--title", "voxscore v0
 muvue("approve", `spec:${spec.id}`, "--path", repo);
 
 // --- serve (fake agent in its default behavior: breakdown must still work)
-const serve = spawn("uv", ["run", "muvue", "serve", repo, "--port", String(port)], { cwd: muvueRoot, detached: true });
-const { link, token } = await new Promise((res, rej) => {
-  let buf = "";
-  const t = setTimeout(() => rej(new Error("serve printed no link in 30s:\n" + buf)), 30000);
-  const on = (d) => {
-    buf += d;
-    const m = buf.match(/http:\/\/\S+#n=\S+/);
-    const k = buf.match(/api token: (\S+)/);
-    if (m && k) { clearTimeout(t); res({ link: m[0], token: k[1] }); }
-  };
-  serve.stdout.on("data", on); serve.stderr.on("data", on);
-});
+const serve = startServe(repo, port);
+const { link, token } = await serve.ready;
 const base = link.split("#")[0];
 
+let bigServe = null;
 const browser = await chromium.launch({ executablePath: CHROME_PATH });
 try {
   const ctx = await browser.newContext({ deviceScaleFactor: 2 });
@@ -124,6 +131,8 @@ try {
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
   check("desktop: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
 
+  check("phone: the diagram viewport never exceeds 72% of the screen height", await page.evaluate(() => document.querySelector(".canvas-viewport").getBoundingClientRect().height <= 0.72 * window.innerHeight + 1));
+
   // A 26-character single word is the widest title the height estimate counts as
   // one line; if it really wraps, this fails. (A blocked task with a long
   // reason cannot be seeded: no CLI command blocks a task; the clamp is
@@ -143,6 +152,50 @@ try {
     return { n: els.length, overlap, clipped, dead };
   });
   check("desktop: a 26-character one-word title fits its box, with no overlap or dead space", stress.n >= 4 && !stress.overlap && stress.clipped.length === 0 && stress.dead.length === 0, JSON.stringify(stress));
+
+  // --- a 40-task chain with 13 finished: the page must not grow with the task count
+  const bigRepo = mkdtempSync(join(tmpdir(), "muvue-ui-check-big-"));
+  execFileSync("git", ["init", "-q"], { cwd: bigRepo });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: bigRepo });
+  muvue("init", bigRepo);
+  const bigProject = JSON.parse(muvue("project", "create", "--goal", "forty-task stress project", "--path", bigRepo));
+  const bigSpec = JSON.parse(muvue("spec", String(bigProject.id ?? bigProject.project.id), "--title", "big spec", "--body", "Forty chained tasks", "--path", bigRepo));
+  muvue("approve", `spec:${bigSpec.id}`, "--path", bigRepo);
+  const bigIds = [];
+  for (let i = 1; i <= 40; i++) {
+    const deps = bigIds.length ? ["--depends-on", String(bigIds.at(-1))] : [];
+    bigIds.push(JSON.parse(muvue("decompose", String(bigSpec.id), "--title", `Task ${i}`, "--body", `Step ${i} of the chain`, ...deps, "--path", bigRepo)).id);
+  }
+  muvue("approve", `gate2:${bigProject.id ?? bigProject.project.id}`, "--path", bigRepo);
+  for (const id of bigIds.slice(0, 13)) {
+    muvue("start", String(id), "--owner", "ui-check", "--path", bigRepo);
+    muvue("done", String(id), "--owner", "ui-check", "--path", bigRepo);
+    muvue("approve", `review:${id}`, "--path", bigRepo);
+  }
+  bigServe = startServe(bigRepo, port + 1);
+  const big = await bigServe.ready;
+  const bp = await ctx.newPage();
+  await bp.setViewportSize({ width: 390, height: 844 });
+  await bp.goto(big.link);
+  await bp.waitForSelector(".canvas-done-toggle", { timeout: 10000 }).catch(() => {});
+  await bp.waitForTimeout(800);
+  await bp.screenshot({ path: join(outDir, "08-phone-40-tasks.png"), fullPage: true });
+  const bigMeasure = () => bp.evaluate(() => ({
+    page: document.scrollingElement.scrollHeight, inner: window.innerHeight,
+    viewport: document.querySelector(".canvas-viewport").getBoundingClientRect().height,
+    frame: document.querySelector(".canvas-frame").getBoundingClientRect().height,
+    boxes: document.querySelectorAll(".task-box").length,
+  }));
+  const folded = await bigMeasure();
+  check("phone, 40 tasks: the page is at most twice the screen height", folded.page <= 2 * folded.inner, `page ${folded.page}px, screen ${folded.inner}px, uncapped diagram ${Math.round(folded.frame)}px`);
+  check("phone, 40 tasks: the diagram viewport stays within 72% of the screen", folded.viewport <= 0.72 * folded.inner + 1, `${Math.round(folded.viewport)}px`);
+  const toggle = bp.locator(".canvas-done-toggle", { hasText: "13 done" });
+  check("phone, 40 tasks: a '13 done' toggle folds the finished tasks away", (await toggle.count()) === 1 && folded.boxes === 27, `${folded.boxes} task boxes shown`);
+  await toggle.click();
+  await bp.waitForTimeout(300);
+  const open = await bigMeasure();
+  check("phone, 40 tasks: expanding shows all 40 and the page still does not grow", open.boxes === 40 && open.page <= 2 * open.inner, `${open.boxes} boxes, page ${open.page}px`);
+  await bp.close();
 
   // --- sign-in: a visitor without the link
   const guest = await browser.newContext({ deviceScaleFactor: 2 });
@@ -183,7 +236,7 @@ try {
   }
 } finally {
   await browser.close();
-  try { process.kill(-serve.pid, "SIGTERM"); } catch {}
+  for (const s of [serve, bigServe]) if (s) { try { process.kill(-s.pid, "SIGTERM"); } catch {} }
 }
 
 async function dagChecks(page, label) {
