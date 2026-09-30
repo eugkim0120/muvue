@@ -10,7 +10,7 @@ export function CardRail({ cards, authed }: { cards: CardT[]; authed: boolean })
   if (collapsed) return <button type="button" class="card-rail-pill" onClick={() => setCollapsed(false)}>{cards.length} need you</button>;
   return (
     <div class="card-rail stack tight">
-      <div class="row between"><span class="caption">Needs you · {cards.length}</span><button type="button" class="icon-btn" aria-label="collapse" onClick={() => setCollapsed(true)}>—</button></div>
+      <div class="row between"><span class="caption">Needs you · {cards.length}</span><button type="button" class="btn btn-plain" aria-label="hide needs-you list" onClick={() => setCollapsed(true)}>Hide</button></div>
       {authed ? null : <div data-sign-in-to-act><Button variant="plain" onClick={() => { signInOpen.value = true; }}>Sign in to act</Button></div>}
       {cards.map((c) => <Card key={c.id} card={c} readOnly={!authed} onActed={refresh} />)}
     </div>

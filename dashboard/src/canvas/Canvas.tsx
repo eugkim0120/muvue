@@ -91,7 +91,7 @@ export function Canvas({ data, projectId, projectPhase, needsYou, activity }: { 
       <div class="canvas-viewport" ref={viewportRef} style={{ height: Math.ceil(lay.height * z) + "px", touchAction: zoomedIn ? "none" : "pan-y" }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerUp} onWheel={onWheel}>
         <div class="canvas-frame" style={{ width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z})` }}>
           <svg class="dag canvas-arrows" width={lay.width} height={lay.height} aria-hidden="true">
-            <defs><marker id="dag-arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dag-arrowhead" /></marker></defs>
+            <defs><marker id="dag-arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dag-arrowhead" /></marker></defs>
             {lay.arrows.map((a) => (
               <g key={a.from + ">" + a.to}>
                 <path class={"flow-arrow " + a.kind} d={a.path} marker-end="url(#dag-arrowhead)" />

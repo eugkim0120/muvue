@@ -23,3 +23,9 @@ test("signed in: each card keeps its Approve button and there is no sign-in prom
   expect(screen.getAllByText("Approve")).toHaveLength(2);
   expect(screen.queryByText("Sign in to act")).toBeNull();
 });
+
+test("the collapse control is labelled 'Hide' and collapses to a count pill", () => {
+  render(<CardRail cards={cards} authed />);
+  fireEvent.click(screen.getByLabelText("hide needs-you list"));
+  expect(screen.getByText("2 need you")).toBeTruthy();
+});

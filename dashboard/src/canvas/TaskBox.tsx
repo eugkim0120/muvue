@@ -14,7 +14,7 @@ export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasT
     <div class={"task-box st-bar-" + task.status + (task.status === "in_progress" ? " running" : "")} style={style} tabIndex={0} onClick={() => openNode(task.id)} onKeyDown={(e) => { if (e.key === "Enter") openNode(task.id); }}>
       <div class="row between" style={{ flexWrap: "nowrap", alignItems: "flex-start" }}>
         <span class="title grow clamp-2">{task.title}</span>
-        {needsYou.has(task.id) ? <span class="needs-you-dot" aria-label="needs you" /> : null}
+        {needsYou.has(task.id) ? <span class="needs-you-dot" aria-label="needs you" title="Needs your attention" /> : null}
       </div>
       {task.body_md ? <div class="caption purpose clamp-1">{purposeLine(task.body_md)}</div> : null}
       {shown.length ? (

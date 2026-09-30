@@ -98,3 +98,12 @@ test("the disabled button style is not a faded primary", () => {
   expect(ui).not.toMatch(/\.btn:disabled\s*\{[^}]*opacity:\s*\.5/);
   expect(ui).toMatch(/\.btn:disabled:not\(\.busy\)\s*\{[^}]*background:\s*var\(--surface-2\)[^}]*color:\s*var\(--text-2\)/);
 });
+
+describe.each([["light", light], ["dark", dark]] as const)("%s mode: graphics contrast is at least 3:1", (_mode, t) => {
+  test.each([
+    ["working-now dot on a surface", t["st-in_progress-strong"]!, t["surface"]!],
+    ["arrow line on the canvas", t["text-2"]!, t["surface-2"]!],
+  ])("%s", (_n, fg, bg) => {
+    expect(ratio(fg, bg)).toBeGreaterThanOrEqual(3);
+  });
+});

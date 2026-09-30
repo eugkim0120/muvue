@@ -17,7 +17,7 @@
 .pill.st-blocked, .pill.st-paused { color: color-mix(in srgb, var(--st-blocked) 50%, var(--text)); background: color-mix(in srgb, var(--st-blocked) 14%, var(--surface)); }
 .pill.st-failed { color: color-mix(in srgb, var(--st-failed) 50%, var(--text)); background: color-mix(in srgb, var(--st-failed) 14%, var(--surface)); }
 .pill.st-planning { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
-.tier { font-size: 12px; }
+.tier { font-size: 13px; }
 .segmented { display: inline-flex; background: var(--surface-2); border-radius: var(--radius); padding: 3px; gap: 2px; }
 .segmented button { border: 0; background: transparent; padding: 8px 14px; border-radius: 8px; cursor: pointer; color: var(--text-2); min-height: 44px; transition: background 180ms ease-out; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 500; }

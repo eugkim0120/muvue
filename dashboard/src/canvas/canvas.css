@@ -3,11 +3,11 @@
 .canvas-viewport { position: relative; width: 100%; overflow: hidden; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
-.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 2; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 1.5; }
 .canvas-arrows path.flow-arrow.placeholder { stroke-dasharray: 6 5; }
 .canvas-arrows .dag-arrowhead { fill: var(--text-2); }
 .canvas-arrows .arrow-label-bg { fill: var(--surface); stroke: var(--text-2); }
-.canvas-arrows .arrow-label { font-size: 12px; fill: var(--text); }
+.canvas-arrows .arrow-label { font-size: 13px; fill: var(--text); }
 .canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
 .spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; cursor: pointer; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
 .spec-root-card { border-top: 4px solid var(--accent); }
@@ -30,7 +30,7 @@
 .task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .purpose { margin: 2px 0 6px; }
 .subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
-.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
+.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 13px; }
 .more-row { padding-left: 20px; }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
@@ -73,13 +73,15 @@
 .next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
 [data-run-reason] { max-width: 220px; }
-.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--text-2); }
 .agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-pending); }
 .agent-tag.st-ready .agent-dot { background: var(--st-ready); }
-.agent-tag.st-running .agent-dot { background: var(--st-in_progress); }
 .agent-tag.st-waiting_on_you .agent-dot { background: var(--st-review); }
 .agent-tag.st-done .agent-dot { background: var(--st-done); }
 .agent-tag.st-failed .agent-dot { background: var(--st-failed); }
 .agent-tag.st-paused .agent-dot { background: var(--st-blocked); }
 .agent-dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+.agent-tag.st-running .agent-dot { background: var(--st-in_progress-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-in_progress) 35%, var(--surface)); }
+.task-box.st-bar-blocked { background: color-mix(in srgb, var(--st-blocked) 8%, var(--surface)); }
+.task-box.st-bar-failed { background: color-mix(in srgb, var(--st-failed) 10%, var(--surface)); border-color: var(--st-failed); border-left-width: 6px; }

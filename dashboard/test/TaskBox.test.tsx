@@ -42,3 +42,8 @@ test("an authed viewer sees no inline + Subtask or breakdown buttons on the box"
   expect(container.querySelector(".task-box.running")).toBeTruthy();
   authed.value = false;
 });
+
+test("the needs-you dot explains itself", () => {
+  const { container } = render(<TaskBox task={task} needsYou={new Set([5])} projectPhase="executing" />);
+  expect(container.querySelector(".needs-you-dot")).toHaveAttribute("title", "Needs your attention");
+});

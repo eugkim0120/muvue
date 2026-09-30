@@ -1854,7 +1854,7 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
   }, children: [
     /* @__PURE__ */ u$1("div", { class: "row between", style: { flexWrap: "nowrap", alignItems: "flex-start" }, children: [
       /* @__PURE__ */ u$1("span", { class: "title grow clamp-2", children: task.title }),
-      needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+      needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you", title: "Needs your attention" }) : null
     ] }),
     task.body_md ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purposeLine(task.body_md) }) : null,
     shown.length ? /* @__PURE__ */ u$1("div", { class: "subtask-list", children: [
@@ -2144,7 +2144,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
     /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: zoomedIn ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
       /* @__PURE__ */ u$1("svg", { class: "dag canvas-arrows", width: lay.width, height: lay.height, "aria-hidden": "true", children: [
-        /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "8", markerHeight: "8", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
+        /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
         lay.arrows.map((a2) => /* @__PURE__ */ u$1("g", { children: [
           /* @__PURE__ */ u$1("path", { class: "flow-arrow " + a2.kind, d: a2.path, "marker-end": "url(#dag-arrowhead)" }),
           a2.label ? /* @__PURE__ */ u$1("g", { transform: `translate(${a2.label.x},${a2.label.y})`, children: [
@@ -2321,7 +2321,7 @@ function CardRail({ cards, authed: authed2 }) {
         "Needs you · ",
         cards.length
       ] }),
-      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "collapse", onClick: () => setCollapsed(true), children: "—" })
+      /* @__PURE__ */ u$1("button", { type: "button", class: "btn btn-plain", "aria-label": "hide needs-you list", onClick: () => setCollapsed(true), children: "Hide" })
     ] }),
     authed2 ? null : /* @__PURE__ */ u$1("div", { "data-sign-in-to-act": true, children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => {
       signInOpen.value = true;
@@ -3330,6 +3330,7 @@ boot().catch((e2) => {
   --st-pending: #8A8986;
   --st-ready: #5B8DEF;
   --st-in_progress: #D9A33B;
+  --st-in_progress-strong: #9A6A00;
   --st-review: #8C6FD6;
   --st-awaiting_approval: #C46FA8;
   --st-done: #4C9A6A;
@@ -3350,6 +3351,7 @@ boot().catch((e2) => {
     --accent-strong-hover: #EA9D82;
     --on-accent: #1F1E1D;
     --danger: #E06B6B;
+    --st-in_progress-strong: #E3B04B;
     --shadow: 0 1px 2px rgb(0 0 0 / .4);
   }
 }
@@ -3365,8 +3367,8 @@ textarea { min-height: 88px; resize: vertical; }
 pre { font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border-radius: var(--radius); padding: 10px 12px; }
 pre.scroll-x { white-space: pre; overflow-x: auto; }
 .mono { font-family: var(--mono); }
-.muted { color: var(--text-2); font-size: 13px; }
-.caption { color: var(--text-2); font-size: 12px; }
+.muted { color: var(--text-2); font-size: 14px; }
+.caption { color: var(--text-2); font-size: 13px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; box-shadow: var(--shadow); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
@@ -3426,7 +3428,7 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
 .pill.st-blocked, .pill.st-paused { color: color-mix(in srgb, var(--st-blocked) 50%, var(--text)); background: color-mix(in srgb, var(--st-blocked) 14%, var(--surface)); }
 .pill.st-failed { color: color-mix(in srgb, var(--st-failed) 50%, var(--text)); background: color-mix(in srgb, var(--st-failed) 14%, var(--surface)); }
 .pill.st-planning { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
-.tier { font-size: 12px; }
+.tier { font-size: 13px; }
 .segmented { display: inline-flex; background: var(--surface-2); border-radius: var(--radius); padding: 3px; gap: 2px; }
 .segmented button { border: 0; background: transparent; padding: 8px 14px; border-radius: 8px; cursor: pointer; color: var(--text-2); min-height: 44px; transition: background 180ms ease-out; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 500; }
@@ -3481,11 +3483,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .canvas-viewport { position: relative; width: 100%; overflow: hidden; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
-.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 2; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 1.5; }
 .canvas-arrows path.flow-arrow.placeholder { stroke-dasharray: 6 5; }
 .canvas-arrows .dag-arrowhead { fill: var(--text-2); }
 .canvas-arrows .arrow-label-bg { fill: var(--surface); stroke: var(--text-2); }
-.canvas-arrows .arrow-label { font-size: 12px; fill: var(--text); }
+.canvas-arrows .arrow-label { font-size: 13px; fill: var(--text); }
 .canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
 .spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; cursor: pointer; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
 .spec-root-card { border-top: 4px solid var(--accent); }
@@ -3508,7 +3510,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .purpose { margin: 2px 0 6px; }
 .subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
-.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
+.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 13px; }
 .more-row { padding-left: 20px; }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
@@ -3551,16 +3553,18 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
 [data-run-reason] { max-width: 220px; }
-.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--text-2); }
 .agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-pending); }
 .agent-tag.st-ready .agent-dot { background: var(--st-ready); }
-.agent-tag.st-running .agent-dot { background: var(--st-in_progress); }
 .agent-tag.st-waiting_on_you .agent-dot { background: var(--st-review); }
 .agent-tag.st-done .agent-dot { background: var(--st-done); }
 .agent-tag.st-failed .agent-dot { background: var(--st-failed); }
 .agent-tag.st-paused .agent-dot { background: var(--st-blocked); }
 .agent-dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+.agent-tag.st-running .agent-dot { background: var(--st-in_progress-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-in_progress) 35%, var(--surface)); }
+.task-box.st-bar-blocked { background: color-mix(in srgb, var(--st-blocked) 8%, var(--surface)); }
+.task-box.st-bar-failed { background: color-mix(in srgb, var(--st-failed) 10%, var(--surface)); border-color: var(--st-failed); border-left-width: 6px; }
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }

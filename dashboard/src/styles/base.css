@@ -10,8 +10,8 @@ textarea { min-height: 88px; resize: vertical; }
 pre { font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border-radius: var(--radius); padding: 10px 12px; }
 pre.scroll-x { white-space: pre; overflow-x: auto; }
 .mono { font-family: var(--mono); }
-.muted { color: var(--text-2); font-size: 13px; }
-.caption { color: var(--text-2); font-size: 12px; }
+.muted { color: var(--text-2); font-size: 14px; }
+.caption { color: var(--text-2); font-size: 13px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; box-shadow: var(--shadow); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
