@@ -2429,3 +2429,34 @@ reading here. Real `decisions` table entries start once dogfooding begins
     Colour tokens were changed to pass WCAG AA, and a unit test computes
     the ratios from `tokens.css`. Cost if wrong: layout churn for anyone
     used to the old page; no behavior change.
+
+175. **Dashboard review fixes: nine changes, no new request.** A review of
+    the live dashboard found nine flaws; all are fixed in the dashboard
+    alone. Decision #174 still holds: the Next-step bar carries the one
+    filled action, and Run stays an outline button whenever any card needs
+    you or the next step is not "run" (the code applies this at every
+    width, so on phones too). Decision #173 is unchanged: nothing added
+    here makes a request that extends a session.
+    - Signed out, the page is read-only: card actions and Run are hidden
+      or disabled, and a single sign-in prompt replaces them.
+    - Review cards show the agent's summary, a `+N −M` line count that the
+      client computes from `GET /nodes/{id}/diff`, the tier and the owner.
+    - Task-box heights are estimated from their content, and `ui-check`
+      verifies that no box clips its text.
+    - The canvas viewport is capped at `min(72dvh, 760px)` and pans inside
+      itself. Above 12 tasks, finished tasks and the arrows touching them
+      fold away behind a "done" toggle.
+    - Progress is a segmented bar. Spend comes from `GET /kpis`
+      `spend_by_driver`, which lists only drivers with a configured
+      budget, so a project without a budget shows no spend.
+    - The demo-agent notice is a dismissible banner. Dismissal is
+      remembered in `localStorage` under one global key
+      (`muvue.demoNoticeDismissed`), so it covers every project in that
+      browser, not one project.
+    - Type floor is 12px, and `.caption` is 13px; truncated project names
+      in the sidebar and the phone header carry the full goal as a
+      tooltip, and the sidebar scrolls when there are many projects.
+    A horizontal layout for long chains was considered and not built; the
+    folding and the capped, pannable viewport are the whole answer for
+    now. Cost if wrong: a long dependency chain still reads top to bottom
+    and needs panning.

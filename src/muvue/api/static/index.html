@@ -1143,7 +1143,7 @@ function Sidebar() {
         openProject(pr.id);
       }, children: [
         /* @__PURE__ */ u$1("span", { class: "dot", style: { background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" } }),
-        /* @__PURE__ */ u$1("span", { class: "grow", children: pr.goal })
+        /* @__PURE__ */ u$1("span", { class: "grow", title: pr.goal, children: pr.goal })
       ] })),
       /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item", onClick: () => openProject(0), children: [
         /* @__PURE__ */ u$1(Icon, { name: "plan" }),
@@ -1505,7 +1505,7 @@ function TopBar({ onSearch }) {
   const p2 = currentProject.value;
   return /* @__PURE__ */ u$1("header", { class: "topbar", children: [
     /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
-      /* @__PURE__ */ u$1("span", { class: "grow project-goal", children: p2 ? p2.goal : "no project" }),
+      /* @__PURE__ */ u$1("span", { class: "grow project-goal", title: p2 ? p2.goal : void 0, children: p2 ? p2.goal : "no project" }),
       p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
     ] }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "search", onClick: onSearch, children: /* @__PURE__ */ u$1(Icon, { name: "search" }) }),
@@ -3628,7 +3628,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .app { flex-direction: row; }
   .topbar { display: none; }
   main { padding-bottom: 0; }
-  .sidebar { display: flex; flex-direction: column; width: var(--sidebar-w); flex: none; border-right: 1px solid var(--border); background: var(--surface); padding: 12px; gap: 8px; position: sticky; top: 0; height: 100dvh; }
+  .sidebar { display: flex; flex-direction: column; width: var(--sidebar-w); flex: none; border-right: 1px solid var(--border); background: var(--surface); padding: 12px; gap: 8px; position: sticky; top: 0; height: 100dvh; overflow-y: auto; }
   .sidebar nav { display: flex; flex-direction: column; gap: 2px; }
   .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }

@@ -10,7 +10,7 @@ export function TopBar({ onSearch }: { onSearch: () => void }) {
   return (
     <header class="topbar">
       <button type="button" class="project-btn" onClick={() => setMenu(true)}>
-        <span class="grow project-goal">{p ? p.goal : "no project"}</span>
+        <span class="grow project-goal" title={p ? p.goal : undefined}>{p ? p.goal : "no project"}</span>
         {p ? <Pill status={p.phase} /> : null}
       </button>
       <button type="button" class="icon-btn" aria-label="search" onClick={onSearch}><Icon name="search" /></button>

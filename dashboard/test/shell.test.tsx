@@ -1,5 +1,7 @@
 import { render, screen } from "@testing-library/preact";
 import { App } from "../src/app";
+import { Sidebar } from "../src/shell/Sidebar";
+import { TopBar } from "../src/shell/TopBar";
 import { projects, projectId, authed } from "../src/state";
 
 beforeEach(() => {
@@ -28,4 +30,18 @@ test("read-only shows the one-line sign-in strip, not a token form", () => {
   render(<App />);
   expect(document.querySelector('[data-auth-strip="read_only"]')).toBeTruthy();
   expect(screen.queryByLabelText("api token")).toBeNull();
+});
+
+test("project names that get truncated carry a tooltip with the full goal", () => {
+  projects.value = [{ id: 1, goal: "voxscore demo: record voices, transcribe to sheet music", phase: "executing" }];
+  projectId.value = 1;
+  const { container } = render(<Sidebar />);
+  expect(container.querySelector(".nav-item .grow")).toHaveAttribute("title", "voxscore demo: record voices, transcribe to sheet music");
+});
+
+test("the phone header project name has the full goal as a tooltip", () => {
+  projects.value = [{ id: 1, goal: "voxscore demo: record voices, transcribe to sheet music", phase: "executing" }];
+  projectId.value = 1;
+  const { container } = render(<TopBar onSearch={() => {}} />);
+  expect(container.querySelector(".project-goal")).toHaveAttribute("title", "voxscore demo: record voices, transcribe to sheet music");
 });

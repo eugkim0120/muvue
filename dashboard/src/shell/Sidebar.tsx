@@ -10,7 +10,7 @@ export function Sidebar() {
         {projects.value.map((pr) => (
           <button type="button" class={"nav-item" + (pr.id === projectId.value ? " on" : "")} onClick={() => { projectId.value = pr.id; refresh(); openProject(pr.id); }}>
             <span class="dot" style={{ background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" }} />
-            <span class="grow">{pr.goal}</span>
+            <span class="grow" title={pr.goal}>{pr.goal}</span>
           </button>
         ))}
         <button type="button" class="nav-item" onClick={() => openProject(0)}><Icon name="plan" /><span class="grow">+ New project</span></button>

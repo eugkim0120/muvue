@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Changed
+- Dashboard: signed out, the page is read-only. Card actions and Run are hidden or disabled, with one sign-in prompt instead.
+- Dashboard: review cards show the agent's summary, the lines added and removed (`+N −M`, counted from `GET /nodes/{id}/diff`), the tier and the owner.
+- Dashboard: diagram boxes are sized to their content and show subtask status.
+- Dashboard: the diagram scrolls inside a capped viewport (`min(72dvh, 760px)`) and, above 12 tasks, folds finished tasks away behind a "done" toggle.
+- Dashboard: progress is a segmented bar, with spend from `GET /kpis` when a budget is configured. The demo-agent notice is a dismissible banner remembered in the browser.
+- Dashboard phone layout: "Needs you" collapses to a chip, the Next card is compact, and only one button is filled at a time.
+- Dashboard type scale and contrast: nothing is smaller than 12px, captions are 13px, and secondary text and status colours were darkened.
+- Dashboard: truncated project names in the sidebar and phone header show the full goal as a tooltip, and the sidebar scrolls when there are many projects.
 - Dashboard: every launch (planning, run, start, approve, save) shows a spinner and "…ing" label on its button, and a sticky activity bar reports what is running from the server (`GET /projects/{id}/activity`). A failed planning or run stays on screen with its reason and a log link until dismissed.
 - Dashboard: a "Next" bar names the one next step (write the spec, approve it, plan tasks, approve the task list, run, review, close). `▶ Run tasks` is disabled with the reason whenever running would do nothing, and `POST /projects/{id}/run` now refuses with 409 and that reason.
 - Dashboard: the plan is a top-down diagram at every screen width: spec on top, arrows with arrowheads to each task, labelled with what each task hands to the next. The separate phone list view is gone. With no tasks, a placeholder under the spec offers planning with an agent or adding tasks by hand.
