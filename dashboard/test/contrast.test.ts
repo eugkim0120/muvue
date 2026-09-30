@@ -80,6 +80,7 @@ describe.each([["light", light], ["dark", dark]] as const)("%s mode: text contra
     ...[...STATUSES, "executing", "paused", "planning"].map((s): [string, string, string] => { const [fg, bg] = pillColours(pillFor(s), t); return [`${s} pill`, fg, bg]; }),
     ["demo banner text", resolve(decl(canvasCss, ".demo-banner", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
     ["demo banner dismiss button", resolve(decl(canvasCss, ".demo-banner .icon-btn", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
+    ["demo banner Details button", resolve(decl(canvasCss, ".demo-details", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
     ["blocked reason line on the blocked task box", resolve(decl(canvasCss, ".task-box .reason", "color"), t), resolve(decl(canvasCss, ".task-box.st-bar-blocked", "background"), t)],
     ["danger button hover", resolve(decl(uiCss, ".btn-danger", "color"), t), resolve(decl(uiCss, ".btn-danger:hover:not(:disabled)", "background"), t)],
     ["error toast label", resolve(decl(uiCss, ".toast.error", "color"), t), resolve(decl(uiCss, ".toast.error", "background"), t)],

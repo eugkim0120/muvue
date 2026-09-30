@@ -103,7 +103,6 @@ export function ProjectPage() {
     <div class="page-canvas">
       <div class="project-grid">
         <header class="project-head">
-          {hasFakeAgent ? <FakeAgentNotice /> : null}
           <div class="row between nowrap">
             <h1 class="page-title clamp-2">{p.goal}</h1>
             <button type="button" class="icon-btn project-menu-btn" aria-label="project menu" onClick={() => setMenu(true)}><Icon name="more" /></button>
@@ -114,7 +113,7 @@ export function ProjectPage() {
             </button>
             <ProgressBar counts={progressCounts((nodesQ.data ?? []).filter((n) => n.kind === "task"))} spend={spendLabel(kpisQ.data)} />
           </div>
-          {kpisQ.error ? <div class="callout danger">Spend unavailable: {kpisQ.error}</div> : null}
+          {kpisQ.error ? <div class="caption">Spend unavailable: {kpisQ.error}</div> : null}
           <div class="row toolbar">
             {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
               <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
@@ -139,6 +138,7 @@ export function ProjectPage() {
             <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
           )}
         </section>
+        {hasFakeAgent ? <FakeAgentNotice /> : null}
       </div>
       {menu ? <ProjectMenu onClose={() => setMenu(false)} /> : null}
       {agentsSheet ? <AgentsSheet projectId={pid!} onClose={() => setAgentsSheet(false)} /> : null}

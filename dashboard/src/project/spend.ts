@@ -7,5 +7,6 @@ export function spendLabel(kpis: Kpis | null): string | null {
   const drivers = Object.entries(kpis?.spend_by_driver ?? {});
   if (!drivers.length) return null;
   const [name, d] = drivers.reduce((a, b) => (b[1].pct > a[1].pct ? b : a));
-  return d.unit === "usd" ? `${usd(d.spent)} of ${usd(d.limit)} (${name})` : `${d.spent} of ${d.limit} ${d.unit} (${name})`;
+  const base = d.unit === "usd" ? `${usd(d.spent)} of ${usd(d.limit)} (${name})` : `${d.spent} of ${d.limit} ${d.unit} (${name})`;
+  return d.pct >= 1 ? `${base} · over budget` : base;
 }

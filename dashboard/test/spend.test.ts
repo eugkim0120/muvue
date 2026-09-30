@@ -17,3 +17,16 @@ test("names the driver closest to its limit and formats usd", () => {
 test("non-usd units are printed with their unit", () => {
   expect(spendLabel({ spend_by_driver: { c: { unit: "tokens", spent: 1200, limit: 5000, pct: 0.24 } } })).toBe("1200 of 5000 tokens (c)");
 });
+
+test("zero spent with a budget still shows the label", () => {
+  expect(spendLabel({ spend_by_driver: { a: { unit: "usd", spent: 0, limit: 10, pct: 0 } } })).toBe("$0.00 of $10.00 (a)");
+});
+
+test("at or over budget is flagged in text", () => {
+  expect(spendLabel({ spend_by_driver: { a: { unit: "usd", spent: 12, limit: 10, pct: 1.2 } } })).toBe("$12.00 of $10.00 (a) · over budget");
+  expect(spendLabel({ spend_by_driver: { a: { unit: "tokens", spent: 5000, limit: 5000, pct: 1 } } })).toBe("5000 of 5000 tokens (a) · over budget");
+});
+
+test("a zero limit does not divide by zero or throw", () => {
+  expect(spendLabel({ spend_by_driver: { a: { unit: "usd", spent: 0, limit: 0, pct: 0 } } })).toBe("$0.00 of $0.00 (a)");
+});

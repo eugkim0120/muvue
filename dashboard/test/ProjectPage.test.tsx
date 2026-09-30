@@ -3,6 +3,8 @@ import { ProjectPage } from "../src/project/ProjectPage";
 import * as client from "../src/api/client";
 import { authed, projectId, projects } from "../src/state";
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 test("renders Canvas on desktop width using merged /graph and /nodes data", async () => {
   projects.value = [{ id: 1, goal: "Voxscore", phase: "planning" }];
   projectId.value = 1;
@@ -33,7 +35,7 @@ test("shows fake-agent notice when a /graph node has agent === 'fake'", async ()
   await waitFor(() => {
     const notice = document.querySelector("[data-fake-notice]");
     expect(notice).toBeTruthy();
-    expect(notice?.textContent).toContain("demo agent");
+    expect(notice?.textContent).toContain("Demo agent");
   });
 });
 
@@ -127,7 +129,14 @@ test("the demo notice is a banner that can be dismissed and stays dismissed", as
   mockProject("ready", [{ id: 2, status: "pending" }], "planning");
   const { unmount } = render(<ProjectPage />);
   await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
-  expect(document.querySelector("[data-fake-notice]")!.textContent).toContain("Demo agent");
+  const notice = document.querySelector("[data-fake-notice]")!;
+  expect(notice.textContent).toContain("Demo agent: writes no code");
+  expect(notice.textContent).not.toContain("canned results");
+  const details = screen.getByRole("button", { name: "Details" });
+  expect(details.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(details);
+  expect(details.getAttribute("aria-expanded")).toBe("true");
+  expect(notice.textContent).toContain("canned results");
   fireEvent.click(screen.getByLabelText("dismiss demo notice"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
   unmount();
@@ -146,7 +155,6 @@ test("the demo banner still renders and dismisses when storage throws", async ()
   await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
   fireEvent.click(screen.getByLabelText("dismiss demo notice"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
-  vi.restoreAllMocks();
 });
 
 test("the header shows task progress, with spend only when a budget exists", async () => {
@@ -159,9 +167,12 @@ test("the header shows task progress, with spend only when a budget exists", asy
   expect(container.querySelector(".project-head .progress-row")).toBeTruthy();
   await waitFor(() => screen.getByText("$3.20 of $10.00 (claude)"));
   unmount();
-  vi.mocked(client.api).mockImplementation(base);
+  let kpisSettled = false;
+  vi.mocked(client.api).mockImplementation((path: string) => path === "/kpis" ? Promise.resolve({ spend_by_driver: {} }).then((v) => { kpisSettled = true; return v; }) : base(path));
   const r = render(<ProjectPage />);
   await waitFor(() => screen.getByRole("progressbar"));
+  await waitFor(() => expect(kpisSettled).toBe(true));
+  await new Promise((res) => setTimeout(res, 0));
   expect(r.container.querySelector(".progress-spend")).toBeNull();
 });
 
@@ -202,5 +213,7 @@ test("a failing /kpis request is shown, not silently dropped", async () => {
   const base = vi.mocked(client.api).getMockImplementation()!;
   vi.mocked(client.api).mockImplementation((path: string) => path === "/kpis" ? Promise.reject(new Error("kpis down")) : base(path));
   render(<ProjectPage />);
-  await waitFor(() => screen.getByText(/Spend unavailable: kpis down/));
+  const msg = await waitFor(() => screen.getByText(/Spend unavailable: kpis down/));
+  expect(msg.classList.contains("caption")).toBe(true);
+  expect(document.querySelector(".callout.danger")).toBeNull();
 });
