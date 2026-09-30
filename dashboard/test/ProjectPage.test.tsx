@@ -141,6 +141,7 @@ test("the demo notice is a banner that can be dismissed and stays dismissed", as
   expect(more.hidden).toBe(false);
   fireEvent.click(screen.getByLabelText("dismiss demo notice"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
+  expect(screen.queryByText(/Couldn't remember this/)).toBeNull();
   unmount();
   render(<ProjectPage />);
   await waitFor(() => screen.getByText("Voxscore"));
@@ -169,6 +170,7 @@ test("the demo banner still renders and dismisses when storage throws", async ()
   await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
   fireEvent.click(screen.getByLabelText("dismiss demo notice"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
+  expect(screen.getByText(/Couldn't remember this; it will return on reload\./)).toBeTruthy();
 });
 
 test("the header shows task progress, with spend only when a budget exists", async () => {
@@ -216,7 +218,8 @@ test("signed out: Run tasks is disabled with a sign-in reason and no Approve but
     return Promise.resolve({});
   });
   render(<ProjectPage />);
-  await waitFor(() => screen.getByText("Sign in to act"));
+  await waitFor(() => expect(document.querySelector(".notif-card")).toBeTruthy());
+  expect(screen.getAllByText("Sign in to act")).toHaveLength(1);
   expect(screen.queryByText("Approve")).toBeNull();
   expect(screen.getByText("▶ Run tasks")).toBeDisabled();
   expect(document.querySelector("[data-run-reason]")?.textContent).toMatch(/sign in/i);

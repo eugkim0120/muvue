@@ -18,7 +18,7 @@ function ReviewFacts({ card }: { card: CardT }) {
   const stat = diffQ.data && diffQ.data.source !== "none" ? diffStat(diffQ.data.diff) : null;
   return (
     <div class="review-facts caption">
-      {diffQ.error ? <span>diff unavailable</span> : diffQ.data ? (stat ? <span class="mono">{`+${stat.added} \u2212${stat.removed}`}</span> : <span>no changes recorded</span>) : <span>…</span>}
+      {diffQ.error ? <span>{`diff unavailable: ${diffQ.error}`}</span> : diffQ.data ? (stat ? <span class="mono">{`+${stat.added} \u2212${stat.removed}`}</span> : <span>no changes recorded</span>) : <span>…</span>}
       {card.tier ? <span> · {card.tier} risk</span> : null}
       {card.ownerLabel ? <span aria-label="owner"> · {card.ownerLabel}</span> : null}
       <button type="button" class="link-btn" onClick={() => card.nodeId && openNode(card.nodeId)}>Open task</button>

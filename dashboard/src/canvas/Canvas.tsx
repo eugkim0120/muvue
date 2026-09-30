@@ -58,7 +58,7 @@ export function Canvas({ data: fullData, projectId, projectPhase, needsYou, acti
   const setPanClamped = (p: Point) => setPan(clampPan(p, content, view));
   const KEY_STEP = 40;
   function onKeyDown(e: KeyboardEvent) {
-    if (e.target !== e.currentTarget) return;
+    if (e.target !== e.currentTarget || e.altKey || e.ctrlKey || e.metaKey) return;
     const page = view.h * 0.9;
     const by: Record<string, Point> = {
       ArrowUp: { x: 0, y: KEY_STEP }, ArrowDown: { x: 0, y: -KEY_STEP },
@@ -143,7 +143,7 @@ export function Canvas({ data: fullData, projectId, projectPhase, needsYou, acti
   return (
     <div class="canvas-wrap">
       {hiddenDone > 0 ? <button type="button" class="canvas-done-toggle" aria-expanded={false} title="Finished tasks, and the arrows touching them, are folded away" onClick={() => setShowDone(true)}>{hiddenDone} done</button> : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? <button type="button" class="canvas-done-toggle" aria-expanded={true} onClick={() => setShowDone(false)}>Hide finished</button> : null}
-      <div class="canvas-viewport" ref={viewportRef} role="group" aria-label="Task diagram. Arrow keys pan, Page Up and Page Down scroll." tabIndex={0} style={{ height: Math.ceil(lay.height * z) + "px" }} onKeyDown={onKeyDown} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerUp} onWheel={onWheel}>
+      <div class="canvas-viewport" ref={viewportRef} role="group" aria-label={canPan ? "Task diagram. Arrow keys pan, Page Up and Page Down scroll." : "Task diagram"} tabIndex={canPan ? 0 : undefined} style={{ height: Math.ceil(lay.height * z) + "px" }} onKeyDown={onKeyDown} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerUp} onWheel={onWheel}>
         <div class="canvas-frame" style={{ width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z})` }}>
           <svg class="dag canvas-arrows" width={lay.width} height={lay.height} aria-hidden="true">
             <defs><marker id="dag-arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dag-arrowhead" /></marker></defs>

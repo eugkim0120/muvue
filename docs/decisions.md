@@ -2448,14 +2448,17 @@ reading here. Real `decisions` table entries start once dogfooding begins
       fold away behind a "done" toggle.
     - Progress is a segmented bar. Spend comes from `GET /kpis`
       `spend_by_driver`, which lists only drivers with a configured
-      budget, so a project without a budget shows no spend.
+      budget, so a project without a budget shows no spend. The figure is a
+      per-driver budget and is repo-wide, not per project.
     - The demo-agent notice is a dismissible banner. Dismissal is
       remembered in `localStorage` under one global key
       (`muvue.demoNoticeDismissed`), so it covers every project in that
       browser, not one project.
-    - Type floor is 12px, and `.caption` is 13px; truncated project names
-      in the sidebar and the phone header carry the full goal as a
-      tooltip, and the sidebar scrolls when there are many projects.
+    - The type floor is 12px for page text, and `.caption` is 13px. The
+      diagram scales with the viewport width, so its text can render
+      smaller than 12px on narrow screens. Truncated project names in the
+      sidebar and the phone header carry the full goal as a tooltip, and
+      the sidebar scrolls when there are many projects.
     A horizontal layout for long chains was considered and not built; the
     folding and the capped, pannable viewport are the whole answer for
     now. Cost if wrong: a long dependency chain still reads top to bottom

@@ -2146,7 +2146,7 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
   const setPanClamped = (p2) => setPan(clampPan(p2, content, view));
   const KEY_STEP = 40;
   function onKeyDown(e2) {
-    if (e2.target !== e2.currentTarget) return;
+    if (e2.target !== e2.currentTarget || e2.altKey || e2.ctrlKey || e2.metaKey) return;
     const page = view.h * 0.9;
     const by = {
       ArrowUp: { x: 0, y: KEY_STEP },
@@ -2233,7 +2233,7 @@ function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou,
       hiddenDone,
       " done"
     ] }) : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", "aria-expanded": true, onClick: () => setShowDone(false), children: "Hide finished" }) : null,
-    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, role: "group", "aria-label": "Task diagram. Arrow keys pan, Page Up and Page Down scroll.", tabIndex: 0, style: { height: Math.ceil(lay.height * z2) + "px" }, onKeyDown, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
+    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, role: "group", "aria-label": canPan ? "Task diagram. Arrow keys pan, Page Up and Page Down scroll." : "Task diagram", tabIndex: canPan ? 0 : void 0, style: { height: Math.ceil(lay.height * z2) + "px" }, onKeyDown, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
       /* @__PURE__ */ u$1("svg", { class: "dag canvas-arrows", width: lay.width, height: lay.height, "aria-hidden": "true", children: [
         /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
         lay.arrows.map((a2) => /* @__PURE__ */ u$1("g", { children: [
@@ -2336,7 +2336,7 @@ function ReviewFacts({ card }) {
   const diffQ = useApi(() => api(routes.nodeDiff(card.nodeId)), [card.nodeId]);
   const stat = diffQ.data && diffQ.data.source !== "none" ? diffStat(diffQ.data.diff) : null;
   return /* @__PURE__ */ u$1("div", { class: "review-facts caption", children: [
-    diffQ.error ? /* @__PURE__ */ u$1("span", { children: "diff unavailable" }) : diffQ.data ? stat ? /* @__PURE__ */ u$1("span", { class: "mono", children: `+${stat.added} −${stat.removed}` }) : /* @__PURE__ */ u$1("span", { children: "no changes recorded" }) : /* @__PURE__ */ u$1("span", { children: "…" }),
+    diffQ.error ? /* @__PURE__ */ u$1("span", { children: `diff unavailable: ${diffQ.error}` }) : diffQ.data ? stat ? /* @__PURE__ */ u$1("span", { class: "mono", children: `+${stat.added} −${stat.removed}` }) : /* @__PURE__ */ u$1("span", { children: "no changes recorded" }) : /* @__PURE__ */ u$1("span", { children: "…" }),
     card.tier ? /* @__PURE__ */ u$1("span", { children: [
       " · ",
       card.tier,
@@ -2428,9 +2428,6 @@ function CardRail({ cards, authed: authed2 }) {
       ] }),
       /* @__PURE__ */ u$1("button", { type: "button", class: "btn btn-plain", "aria-label": "hide needs-you list", "aria-expanded": "true", "aria-controls": RAIL_ID, onClick: () => toggle(true), children: "Hide" })
     ] }),
-    authed2 ? null : /* @__PURE__ */ u$1("div", { "data-sign-in-to-act": true, children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => {
-      signInOpen.value = true;
-    }, children: "Sign in to act" }) }),
     cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, readOnly: !authed2, onActed: refresh }, c2.id))
   ] });
 }
@@ -2608,11 +2605,13 @@ function wasDismissed() {
 function FakeAgentNotice() {
   const [hidden, setHidden] = d$2(wasDismissed);
   const [open, setOpen] = d$2(false);
-  if (hidden) return null;
+  const [notSaved, setNotSaved] = d$2(false);
+  if (hidden) return notSaved ? /* @__PURE__ */ u$1("p", { class: "caption", "data-notice-not-saved": true, children: "Couldn't remember this; it will return on reload." }) : null;
   function dismiss2() {
     try {
       localStorage.setItem(KEY, "1");
     } catch {
+      setNotSaved(true);
     }
     setHidden(true);
   }

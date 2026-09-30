@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Card as CardT } from "./cardsFromInbox";
 import { Card } from "./Card";
-import { refresh, signInOpen } from "../state";
-import { Button } from "../ui/Button";
+import { refresh } from "../state";
 
 const RAIL_ID = "needs-you-rail";
 
@@ -24,7 +23,6 @@ export function CardRail({ cards, authed }: { cards: CardT[]; authed: boolean })
   return (
     <div id={RAIL_ID} class="card-rail stack tight">
       <div class="row between"><span ref={headingRef} tabIndex={-1} class="caption">Needs you · {cards.length}</span><button type="button" class="btn btn-plain" aria-label="hide needs-you list" aria-expanded="true" aria-controls={RAIL_ID} onClick={() => toggle(true)}>Hide</button></div>
-      {authed ? null : <div data-sign-in-to-act><Button variant="plain" onClick={() => { signInOpen.value = true; }}>Sign in to act</Button></div>}
       {cards.map((c) => <Card key={c.id} card={c} readOnly={!authed} onActed={refresh} />)}
     </div>
   );

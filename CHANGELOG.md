@@ -11,7 +11,7 @@ All notable changes to this project are documented here.
 - Dashboard: the diagram scrolls inside a capped viewport (`min(72dvh, 760px)`) and, above 12 tasks, folds finished tasks away behind a "done" toggle.
 - Dashboard: progress is a segmented bar, with spend from `GET /kpis` when a budget is configured. The demo-agent notice is a dismissible banner remembered in the browser.
 - Dashboard phone layout: "Needs you" collapses to a chip, the Next card is compact, and only one button is filled at a time.
-- Dashboard type scale and contrast: nothing is smaller than 12px, captions are 13px, and secondary text and status colours were darkened.
+- Dashboard type scale and contrast: page text is never smaller than 12px and captions are 13px (the diagram scales with the viewport width, so its text can render smaller on narrow screens), and secondary text and status colours were darkened.
 - Dashboard: truncated project names in the sidebar and phone header show the full goal as a tooltip, and the sidebar scrolls when there are many projects.
 - Dashboard: every launch (planning, run, start, approve, save) shows a spinner and "…ing" label on its button, and a sticky activity bar reports what is running from the server (`GET /projects/{id}/activity`). A failed planning or run stays on screen with its reason and a log link until dismissed.
 - Dashboard: a "Next" bar names the one next step (write the spec, approve it, plan tasks, approve the task list, run, review, close). `▶ Run tasks` is disabled with the reason whenever running would do nothing, and `POST /projects/{id}/run` now refuses with 409 and that reason.

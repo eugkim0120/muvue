@@ -8,14 +8,11 @@ const cards: Card[] = [
   { id: "task_review:6", kind: "task_review", nodeId: 6, projectId: 1, title: "Split voices", context: "in review", agent: "claude", ts: "" },
 ];
 
-test("signed out: no write buttons, exactly one sign-in affordance", () => {
-  signInOpen.value = false;
+test("signed out: the rail is read-only and adds no sign-in button (the Next bar owns it)", () => {
   render(<CardRail cards={cards} authed={false} />);
   expect(screen.queryByText("Approve")).toBeNull();
-  const signIn = screen.getAllByText("Sign in to act");
-  expect(signIn).toHaveLength(1);
-  fireEvent.click(signIn[0]!);
-  expect(signInOpen.value).toBe(true);
+  expect(screen.queryByText("Sign in to act")).toBeNull();
+  expect(screen.getByText("Split voices")).toBeTruthy();
 });
 
 test("signed in: each card keeps its Approve button and there is no sign-in prompt", () => {

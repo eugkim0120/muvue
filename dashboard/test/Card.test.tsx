@@ -55,5 +55,5 @@ test("a review card shows +N \u2212M, the tier and an Open task link", async () 
 test("a review card says when the diff could not be loaded", async () => {
   vi.spyOn(client, "api").mockRejectedValue(new Error("boom"));
   render(<Card card={{ id: "task_review:5", kind: "task_review", nodeId: 5, ...base }} onActed={() => {}} />);
-  await waitFor(() => screen.getByText("diff unavailable"));
+  await waitFor(() => screen.getByText("diff unavailable: boom"));
 });

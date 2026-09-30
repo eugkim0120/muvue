@@ -111,6 +111,26 @@ describe("a diagram taller than its viewport", () => {
     expect(vp.getAttribute("aria-label")).toBeTruthy();
   });
 
+  test("modifier-key combinations are left to the browser, not swallowed as pan keys", () => {
+    const { container } = render(<Canvas data={d} {...props} />);
+    const vp = container.querySelector<HTMLElement>(".canvas-viewport")!;
+    for (const mod of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      const notCancelled = fireEvent.keyDown(vp, { key: "ArrowDown", ...mod });
+      expect(notCancelled).toBe(true);
+      expect(fireEvent.keyDown(vp, { key: "Home", ...mod })).toBe(true);
+    }
+    expect(ty(container)).toBe(0);
+  });
+
+  test("a diagram that fits its view is not a tab stop", () => {
+    const small = chain(1);
+    const { container } = render(<Canvas data={small} {...props} />);
+    const vp = container.querySelector<HTMLElement>(".canvas-viewport")!;
+    expect(computeLayout(small.spec, small.tasks, small.edges, false).height).toBeLessThan(VIEW_H);
+    expect(vp.hasAttribute("tabindex")).toBe(false);
+    expect(vp.getAttribute("aria-label") ?? "").not.toMatch(/arrow keys/i);
+  });
+
   test("arrow keys, Page keys, Home and End pan the diagram within its bounds", () => {
     const { container } = render(<Canvas data={d} {...props} />);
     const vp = container.querySelector<HTMLElement>(".canvas-viewport")!;
