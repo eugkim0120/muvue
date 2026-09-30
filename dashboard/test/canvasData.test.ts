@@ -1,5 +1,5 @@
 // dashboard/test/canvasData.test.ts
-import { buildCanvasData } from "../src/canvas/canvasData";
+import { buildCanvasData, subtaskProgress } from "../src/canvas/canvasData";
 
 const gnode = (id: number, kind: string, parent_id: number | null, extra: Partial<any> = {}) => ({
   id, project_id: 1, parent_id, kind, title: "g" + id, status: "ready" as const, risk_tier: "low" as const, owner: null, agent: "claude", ...extra,
@@ -41,4 +41,8 @@ test("a dep edge whose endpoint was deleted (absent from fullNodes) is dropped, 
   const graph = { nodes: [gnode(2, "task", null)], edges: [{ from: 2, to: 99, kind: "dep" as const, carries: null }] };
   const data = buildCanvasData(graph, [fnode(2, "task", null)]);
   expect(data.edges).toEqual([]);
+});
+
+test("subtaskProgress counts done subtasks", () => {
+  expect(subtaskProgress([{ id: 1, title: "a", status: "done", parent_id: 9, owner: null }, { id: 2, title: "b", status: "ready", parent_id: 9, owner: null }])).toEqual({ done: 1, total: 2 });
 });

@@ -1,5 +1,5 @@
 import type { CanvasTask } from "./canvasData";
-import { purposeLine } from "./canvasData";
+import { purposeLine, subtaskProgress } from "./canvasData";
 import { openNode } from "../router";
 import { AgentChip } from "./AgentChip";
 import { agentStateOf } from "./agentState";
@@ -17,6 +17,8 @@ export function TaskBox({ task, needsYou, projectPhase, style }: { task: CanvasT
         {needsYou.has(task.id) ? <span class="needs-you-dot" aria-label="needs you" title="Needs your attention" /> : null}
       </div>
       {task.body_md ? <div class="caption purpose clamp-1">{purposeLine(task.body_md)}</div> : null}
+      {task.status === "blocked" ? <div class="caption reason">{task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked"}</div> : null}
+      {task.subtasks.length ? <div class="caption progress-line">{subtaskProgress(task.subtasks).done} of {task.subtasks.length} subtasks done</div> : null}
       {shown.length ? (
         <div class="subtask-list">
           {shown.map((s) => <SubtaskRow subtask={s} needsYou={needsYou.has(s.id)} />)}

@@ -186,6 +186,13 @@ async function dagChecks(page, label) {
   check(`${label}: every task box is within the viewport width`, offscreen === 0, `${offscreen} cut off`);
   const overflowing = await page.locator(".task-box, .spec-root-card").evaluateAll((els) => els.filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => `${e.querySelector(".title")?.textContent ?? "?"}: needs ${e.scrollHeight}px, has ${e.clientHeight}px`));
   check(`${label}: every box's content fits (nothing clipped)`, overflowing.length === 0, overflowing.join("; "));
+  const deadSpace = await page.locator(".task-box:not(.dag-empty)").evaluateAll((els) => els.map((e) => {
+    const tag = e.querySelector(".agent-tag");
+    const prev = tag?.previousElementSibling;
+    const gap = tag && prev ? tag.getBoundingClientRect().top - prev.getBoundingClientRect().bottom : 0;
+    return { title: e.querySelector(".title")?.textContent ?? "?", gap: Math.round(gap) };
+  }).filter((b) => b.gap > 20).map((b) => `${b.title}: ${b.gap}px`));
+  check(`${label}: no task box has dead space above its agent tag`, deadSpace.length === 0, deadSpace.join("; "));
 }
 
 console.log(`\nscreenshots: ${outDir}`);

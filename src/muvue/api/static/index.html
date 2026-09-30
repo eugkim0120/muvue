@@ -1686,7 +1686,7 @@ function buildCanvasData(graph, fullNodes) {
   for (const n2 of fullNodes) {
     if (n2.kind !== "subtask" || n2.parent_id === null) continue;
     const list = subtasksByParent.get(n2.parent_id) ?? [];
-    list.push({ id: n2.id, title: n2.title, status: n2.status, parent_id: n2.parent_id });
+    list.push({ id: n2.id, title: n2.title, status: n2.status, parent_id: n2.parent_id, owner: n2.owner });
     subtasksByParent.set(n2.parent_id, list);
   }
   const tasks = fullNodes.filter((n2) => n2.kind === "task").map((n2) => ({
@@ -1705,11 +1705,16 @@ function buildCanvasData(graph, fullNodes) {
   const edges = graph.edges.filter((e2) => e2.kind === "dep" && taskIds.has(e2.from) && taskIds.has(e2.to) && byId.has(e2.from) && byId.has(e2.to)).map((e2) => ({ from: e2.from, to: e2.to, carries: e2.carries ?? null }));
   return { spec, tasks, edges };
 }
-const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 118, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+function subtaskProgress(subtasks) {
+  return { done: subtasks.filter((s2) => s2.status === "done").length, total: subtasks.length };
+}
+const NODE_W = 240, SPEC_H = 112, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+const BOX_CHROME = 22, TITLE_LINE = 21, CAPTION_LINE = 18, FLEX_GAP = 4, PURPOSE_MARGIN = 8, SLACK = 4;
 const PLACEHOLDER_ID = -1;
-function taskHeight(subtaskCount) {
-  const rows = Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
-  return rows ? TASK_H_BASE + SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : TASK_H_BASE;
+function taskHeight(t2) {
+  const titleLines = Math.min(2, Math.max(1, Math.ceil(t2.title.length / 26)));
+  const rows = Math.min(t2.subtaskCount, MAX_SUBTASK_ROWS) + (t2.subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
+  return BOX_CHROME + titleLines * TITLE_LINE + (t2.hasPurpose ? FLEX_GAP + CAPTION_LINE + PURPOSE_MARGIN : 0) + (t2.hasReason ? FLEX_GAP + CAPTION_LINE : 0) + (t2.hasProgress ? FLEX_GAP + CAPTION_LINE : 0) + (rows ? SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : 0) + FLEX_GAP + CAPTION_LINE + SLACK;
 }
 function labelWidth(text) {
   return Math.min(200, Math.round(text.length * 6.8) + 20);
@@ -1753,7 +1758,7 @@ function computeLayout(spec, tasks, edges, placeholder) {
   }
   for (const t2 of tasks) {
     (rows[_a = taskRank[t2.id]] ?? (rows[_a] = [])).push(t2.id);
-    heightOf[t2.id] = taskHeight(t2.subtasks.length);
+    heightOf[t2.id] = taskHeight({ title: t2.title, hasPurpose: !!purposeLine(t2.body_md), hasReason: t2.status === "blocked", subtaskCount: t2.subtasks.length, hasProgress: t2.subtasks.length > 0 });
   }
   if (placeholder) {
     (rows[1] ?? (rows[1] = [])).push(PLACEHOLDER_ID);
@@ -1834,15 +1839,16 @@ function agentStateOf(node, projectPhase, needsYou) {
   if (node.status === "ready") return "ready";
   return "waiting_on_earlier";
 }
-const GLYPH = { done: "✓", in_progress: "●", review: "●", pending: "○", ready: "○", blocked: "⚠", failed: "⚠", awaiting_approval: "●" };
+const GLYPH = { done: "✓", in_progress: "◐", review: "◆", pending: "○", ready: "○", blocked: "■", failed: "✕", awaiting_approval: "◆" };
 function SubtaskRow({ subtask, needsYou }) {
-  return /* @__PURE__ */ u$1("button", { type: "button", class: "subtask-row", onClick: (e2) => {
+  return /* @__PURE__ */ u$1("button", { type: "button", class: "subtask-row", "aria-label": `${subtask.status.replace("_", " ")}: ${subtask.title}`, onClick: (e2) => {
     e2.stopPropagation();
     openNode(subtask.id);
   }, children: [
-    /* @__PURE__ */ u$1("span", { class: "glyph", style: { color: `var(--st-${subtask.status})` }, children: GLYPH[subtask.status] ?? "○" }),
+    /* @__PURE__ */ u$1("span", { class: "glyph", "aria-hidden": "true", style: { color: `var(--st-${subtask.status})` }, children: GLYPH[subtask.status] ?? "○" }),
     /* @__PURE__ */ u$1("span", { class: "grow title", children: subtask.title }),
-    needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+    subtask.owner ? /* @__PURE__ */ u$1("span", { class: "caption subtask-owner", children: subtask.owner.replace(/^runner:/, "") }) : null,
+    needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", title: "Needs your attention", "aria-label": "needs you" }) : null
   ] });
 }
 function TaskBox({ task, needsYou, projectPhase, style }) {
@@ -1857,6 +1863,13 @@ function TaskBox({ task, needsYou, projectPhase, style }) {
       needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you", title: "Needs your attention" }) : null
     ] }),
     task.body_md ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purposeLine(task.body_md) }) : null,
+    task.status === "blocked" ? /* @__PURE__ */ u$1("div", { class: "caption reason", children: task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked" }) : null,
+    task.subtasks.length ? /* @__PURE__ */ u$1("div", { class: "caption progress-line", children: [
+      subtaskProgress(task.subtasks).done,
+      " of ",
+      task.subtasks.length,
+      " subtasks done"
+    ] }) : null,
     shown.length ? /* @__PURE__ */ u$1("div", { class: "subtask-list", children: [
       shown.map((s2) => /* @__PURE__ */ u$1(SubtaskRow, { subtask: s2, needsYou: needsYou.has(s2.id) })),
       more > 0 ? /* @__PURE__ */ u$1("div", { class: "caption more-row", children: [
@@ -3565,6 +3578,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .agent-tag.st-running .agent-dot { background: var(--st-in_progress-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-in_progress) 35%, var(--surface)); }
 .task-box.st-bar-blocked { background: color-mix(in srgb, var(--st-blocked) 8%, var(--surface)); }
 .task-box.st-bar-failed { background: color-mix(in srgb, var(--st-failed) 10%, var(--surface)); border-color: var(--st-failed); border-left-width: 6px; }
+
+.subtask-owner { flex: none; max-width: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-line, .reason { margin: 0; }
+.task-box .reason { color: color-mix(in srgb, var(--st-blocked) 80%, var(--text)); }
+.task-box.st-bar-blocked { border-left-style: dashed; }
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
