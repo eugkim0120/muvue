@@ -12,6 +12,8 @@ import { SubmitSpecForm } from "../canvas/SpecRoot";
 import { StatusLine } from "./StatusLine";
 import { AgentsSheet } from "./AgentsSheet";
 import { NewProject } from "./NewProject";
+import { ProgressBar, progressCounts } from "./ProgressBar";
+import { spendLabel, type Kpis } from "./spend";
 import { FakeAgentNotice } from "./FakeAgentNotice";
 import { ProjectMenu } from "../shell/ProjectMenu";
 import { Icon } from "../ui/Icon";
@@ -39,6 +41,7 @@ export function ProjectPage() {
   const nodesQ = useApi<FullNode[]>(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi<Inbox>(() => api(routes.inbox()), [refreshTick.value]);
   const revisionsQ = useApi<Revision[]>(() => (pid ? api(routes.revisions(pid)) : Promise.resolve([])), [pid, refreshTick.value]);
+  const kpisQ = useApi<Kpis>(() => api(routes.kpis()), [refreshTick.value]);
   const allNodesQ = useApi<FullNode[]>(() => api(routes.nodes(null)), [refreshTick.value]);
 
   const data = useMemo(() => (graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null), [graphQ.data, nodesQ.data]);
@@ -100,6 +103,7 @@ export function ProjectPage() {
     <div class="page-canvas">
       <div class="project-grid">
         <header class="project-head">
+          {hasFakeAgent ? <FakeAgentNotice /> : null}
           <div class="row between nowrap">
             <h1 class="page-title clamp-2">{p.goal}</h1>
             <button type="button" class="icon-btn project-menu-btn" aria-label="project menu" onClick={() => setMenu(true)}><Icon name="more" /></button>
@@ -108,8 +112,9 @@ export function ProjectPage() {
             <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
               <StatusLine phase={p.phase} done={done} total={total} working={working} />
             </button>
-            {hasFakeAgent ? <FakeAgentNotice /> : null}
+            <ProgressBar counts={progressCounts((nodesQ.data ?? []).filter((n) => n.kind === "task"))} spend={spendLabel(kpisQ.data)} />
           </div>
+          {kpisQ.error ? <div class="callout danger">Spend unavailable: {kpisQ.error}</div> : null}
           <div class="row toolbar">
             {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
               <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>

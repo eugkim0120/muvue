@@ -45,10 +45,13 @@
 .toolbar .caption { flex: 1 1 7rem; min-width: 0; line-height: 1.25; }
 .status-line { padding: 0; }
 .status-line-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
-.demo-notice summary { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer; list-style: none; font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
-.demo-notice summary::-webkit-details-marker { display: none; }
-.demo-notice[open] { flex-basis: 100%; }
-.demo-notice p { margin: 8px 0 0; max-width: 60ch; }
+.progress-row { flex: 1 1 18rem; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.progress-seg { display: flex; flex: 1 1 10rem; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); }
+.seg { display: block; height: 100%; }
+.seg-done { background: var(--st-done); } .seg-running { background: var(--st-in_progress-strong); } .seg-review { background: var(--st-review); } .seg-blocked { background: var(--st-blocked); }
+.demo-banner { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 14px; border-radius: var(--radius); font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
+.demo-banner p { margin: 0; flex: 1; }
+.demo-banner .icon-btn { color: var(--text); }
 @media (max-width: 899px) {
   .project-head .page-title, .project-menu-btn { display: none; }
 }

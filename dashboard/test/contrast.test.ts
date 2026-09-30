@@ -78,6 +78,8 @@ describe.each([["light", light], ["dark", dark]] as const)("%s mode: text contra
     ["links and plain buttons on a surface", t["accent-strong"]!, t["surface"]!],
     ["selected sidebar item", resolve(decl(shellCss, ".nav-item.on", "color"), t), resolve(decl(shellCss, ".nav-item.on", "background"), t)],
     ...[...STATUSES, "executing", "paused", "planning"].map((s): [string, string, string] => { const [fg, bg] = pillColours(pillFor(s), t); return [`${s} pill`, fg, bg]; }),
+    ["demo banner text", resolve(decl(canvasCss, ".demo-banner", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
+    ["demo banner dismiss button", resolve(decl(canvasCss, ".demo-banner .icon-btn", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
     ["blocked reason line on the blocked task box", resolve(decl(canvasCss, ".task-box .reason", "color"), t), resolve(decl(canvasCss, ".task-box.st-bar-blocked", "background"), t)],
     ["danger button hover", resolve(decl(uiCss, ".btn-danger", "color"), t), resolve(decl(uiCss, ".btn-danger:hover:not(:disabled)", "background"), t)],
     ["error toast label", resolve(decl(uiCss, ".toast.error", "color"), t), resolve(decl(uiCss, ".toast.error", "background"), t)],
@@ -105,6 +107,7 @@ describe.each([["light", light], ["dark", dark]] as const)("%s mode: graphics co
   test.each([
     ["working-now dot on a surface", t["st-in_progress-strong"]!, t["surface"]!],
     ["arrow line on the canvas", t["text-2"]!, t["surface-2"]!],
+    ...["done", "in_progress-strong", "review", "blocked"].map((s): [string, string, string] => [`progress segment ${s} on its track`, resolve(decl(canvasCss, `.seg-${s === "in_progress-strong" ? "running" : s}`, "background"), t), resolve(decl(canvasCss, ".progress-seg", "background"), t)]),
   ])("%s", (_n, fg, bg) => {
     expect(ratio(fg, bg)).toBeGreaterThanOrEqual(3);
   });

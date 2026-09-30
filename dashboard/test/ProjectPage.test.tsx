@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/preact";
+import { render, screen, waitFor, fireEvent } from "@testing-library/preact";
 import { ProjectPage } from "../src/project/ProjectPage";
 import * as client from "../src/api/client";
 import { authed, projectId, projects } from "../src/state";
@@ -122,14 +122,47 @@ test("when Run is the next step, Run is enabled and the only filled button", asy
   authed.value = false;
 });
 
-test("the fake-agent notice is one tappable line that expands for detail", async () => {
+test("the demo notice is a banner that can be dismissed and stays dismissed", async () => {
+  localStorage.clear();
+  mockProject("ready", [{ id: 2, status: "pending" }], "planning");
+  const { unmount } = render(<ProjectPage />);
+  await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
+  expect(document.querySelector("[data-fake-notice]")!.textContent).toContain("Demo agent");
+  fireEvent.click(screen.getByLabelText("dismiss demo notice"));
+  expect(document.querySelector("[data-fake-notice]")).toBeNull();
+  unmount();
+  render(<ProjectPage />);
+  await waitFor(() => screen.getByText("Voxscore"));
+  expect(document.querySelector("[data-fake-notice]")).toBeNull();
+  localStorage.clear();
+});
+
+test("the demo banner still renders and dismisses when storage throws", async () => {
+  localStorage.clear();
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
   mockProject("ready", [{ id: 2, status: "pending" }], "planning");
   render(<ProjectPage />);
   await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
-  const notice = document.querySelector("[data-fake-notice]")!;
-  expect(notice.tagName).toBe("DETAILS");
-  expect(notice.querySelector("summary")!.textContent).toBe("Demo agent: writes no code");
-  expect(notice.textContent).toContain("demo agent");
+  fireEvent.click(screen.getByLabelText("dismiss demo notice"));
+  expect(document.querySelector("[data-fake-notice]")).toBeNull();
+  vi.restoreAllMocks();
+});
+
+test("the header shows task progress, with spend only when a budget exists", async () => {
+  mockProject("ready", [{ id: 2, status: "done" }, { id: 3, status: "in_progress" }], "executing");
+  const base = vi.mocked(client.api).getMockImplementation()!;
+  vi.mocked(client.api).mockImplementation((path: string) => path === "/kpis" ? Promise.resolve({ spend_by_driver: { claude: { unit: "usd", spent: 3.2, limit: 10, pct: 0.32 } } }) : base(path));
+  const { container, unmount } = render(<ProjectPage />);
+  await waitFor(() => screen.getByRole("progressbar"));
+  expect(screen.getByRole("progressbar")).toHaveAccessibleName("1 done, 1 running, 0 in review, 0 blocked, of 2 tasks");
+  expect(container.querySelector(".project-head .progress-row")).toBeTruthy();
+  await waitFor(() => screen.getByText("$3.20 of $10.00 (claude)"));
+  unmount();
+  vi.mocked(client.api).mockImplementation(base);
+  const r = render(<ProjectPage />);
+  await waitFor(() => screen.getByRole("progressbar"));
+  expect(r.container.querySelector(".progress-spend")).toBeNull();
 });
 
 test("the header, rail and diagram are separate regions, with the Next step in the rail", async () => {
@@ -162,4 +195,12 @@ test("signed out: Run tasks is disabled with a sign-in reason and no Approve but
   expect(screen.queryByText("Approve")).toBeNull();
   expect(screen.getByText("▶ Run tasks")).toBeDisabled();
   expect(document.querySelector("[data-run-reason]")?.textContent).toMatch(/sign in/i);
+});
+
+test("a failing /kpis request is shown, not silently dropped", async () => {
+  mockProject("ready", [{ id: 2, status: "done" }], "executing");
+  const base = vi.mocked(client.api).getMockImplementation()!;
+  vi.mocked(client.api).mockImplementation((path: string) => path === "/kpis" ? Promise.reject(new Error("kpis down")) : base(path));
+  render(<ProjectPage />);
+  await waitFor(() => screen.getByText(/Spend unavailable: kpis down/));
 });

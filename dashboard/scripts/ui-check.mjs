@@ -108,8 +108,14 @@ try {
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(outDir, "03-phone-after-plan.png"), fullPage: true });
   await dagChecks(page, "phone");
+  // The demo banner is dismissible and stays dismissed, so the layout targets
+  // below are measured in that steady state; the banner itself is checked here.
+  check("phone: the demo banner is shown and has a dismiss button", await page.locator("[data-fake-notice] [aria-label='dismiss demo notice']").count() === 1);
+  await page.locator("[aria-label='dismiss demo notice']").click();
+  check("phone: dismissing the demo banner removes it", await page.locator("[data-fake-notice]").count() === 0);
+  check("phone: the progress bar reports task progress", (await page.getByRole("progressbar").getAttribute("aria-label"))?.endsWith("of 3 tasks") === true);
   const dagTopPhone = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
-  // Was 667px before this plan. With a header, the demo notice and the Next
+  // Was 667px before this plan. With a header, the progress bar and the Next
   // card still above it, the top half of the screen is the honest target.
   check("phone: the diagram starts in the top half of the screen", dagTopPhone < 0.5 * 844, `starts at ${Math.round(dagTopPhone)}px`);
   const primaries = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);

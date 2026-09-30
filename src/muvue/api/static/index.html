@@ -2560,10 +2560,53 @@ function NewProject() {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Create" }) })
   ] }) });
 }
+function progressCounts(tasks) {
+  const n2 = (...s2) => tasks.filter((t2) => s2.includes(t2.status)).length;
+  return { done: n2("done"), running: n2("in_progress"), review: n2("review", "awaiting_approval"), blocked: n2("blocked", "failed"), total: tasks.length };
+}
+function ProgressBar({ counts, spend }) {
+  if (!counts.total) return null;
+  const pct = (n2) => n2 / counts.total * 100 + "%";
+  const label = `${counts.done} done, ${counts.running} running, ${counts.review} in review, ${counts.blocked} blocked, of ${counts.total} tasks`;
+  return /* @__PURE__ */ u$1("div", { class: "progress-row", children: [
+    /* @__PURE__ */ u$1("div", { class: "progress-seg", role: "progressbar", "aria-label": label, "aria-valuemin": 0, "aria-valuemax": counts.total, "aria-valuenow": counts.done, children: [
+      /* @__PURE__ */ u$1("span", { class: "seg seg-done", style: { width: pct(counts.done) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-running", style: { width: pct(counts.running) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-review", style: { width: pct(counts.review) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-blocked", style: { width: pct(counts.blocked) } })
+    ] }),
+    /* @__PURE__ */ u$1("span", { class: "caption", children: `${counts.done} done · ${counts.running} running · ${counts.review} in review · ${counts.blocked} blocked` }),
+    spend ? /* @__PURE__ */ u$1("span", { class: "caption progress-spend", children: spend }) : null
+  ] });
+}
+const usd = (n2) => `$${n2.toFixed(2)}`;
+function spendLabel(kpis) {
+  const drivers = Object.entries(kpis?.spend_by_driver ?? {});
+  if (!drivers.length) return null;
+  const [name, d2] = drivers.reduce((a2, b2) => b2[1].pct > a2[1].pct ? b2 : a2);
+  return d2.unit === "usd" ? `${usd(d2.spent)} of ${usd(d2.limit)} (${name})` : `${d2.spent} of ${d2.limit} ${d2.unit} (${name})`;
+}
+const KEY = "muvue.demoNoticeDismissed";
+function wasDismissed() {
+  try {
+    return localStorage.getItem(KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 function FakeAgentNotice() {
-  return /* @__PURE__ */ u$1("details", { class: "demo-notice", "data-fake-notice": true, children: [
-    /* @__PURE__ */ u$1("summary", { children: "Demo agent: writes no code" }),
-    /* @__PURE__ */ u$1("p", { class: "muted", children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' })
+  const [hidden, setHidden] = d$2(wasDismissed);
+  if (hidden) return null;
+  function dismiss2() {
+    try {
+      localStorage.setItem(KEY, "1");
+    } catch {
+    }
+    setHidden(true);
+  }
+  return /* @__PURE__ */ u$1("div", { class: "demo-banner", "data-fake-notice": true, role: "note", children: [
+    /* @__PURE__ */ u$1("p", { children: 'Demo agent: tasks go to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "dismiss demo notice", onClick: dismiss2, children: "✕" })
   ] });
 }
 function ActivityBar({ items, now, onDismiss, onOpenLog }) {
@@ -2722,6 +2765,7 @@ function ProjectPage() {
   const nodesQ = useApi(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi(() => api(routes.inbox()), [refreshTick.value]);
   const revisionsQ = useApi(() => pid ? api(routes.revisions(pid)) : Promise.resolve([]), [pid, refreshTick.value]);
+  const kpisQ = useApi(() => api(routes.kpis()), [refreshTick.value]);
   const allNodesQ = useApi(() => api(routes.nodes(null)), [refreshTick.value]);
   const data = T(() => graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null, [graphQ.data, nodesQ.data]);
   const titles = T(() => Object.fromEntries((nodesQ.data ?? []).map((n2) => [n2.id, n2.title])), [nodesQ.data]);
@@ -2775,14 +2819,19 @@ function ProjectPage() {
   return /* @__PURE__ */ u$1("div", { class: "page-canvas", children: [
     /* @__PURE__ */ u$1("div", { class: "project-grid", children: [
       /* @__PURE__ */ u$1("header", { class: "project-head", children: [
+        hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null,
         /* @__PURE__ */ u$1("div", { class: "row between nowrap", children: [
           /* @__PURE__ */ u$1("h1", { class: "page-title clamp-2", children: p2.goal }),
           /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn project-menu-btn", "aria-label": "project menu", onClick: () => setMenu(true), children: /* @__PURE__ */ u$1(Icon, { name: "more" }) })
         ] }),
         /* @__PURE__ */ u$1("div", { class: "row meta-row", children: [
           /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
-          hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null
+          /* @__PURE__ */ u$1(ProgressBar, { counts: progressCounts((nodesQ.data ?? []).filter((n2) => n2.kind === "task")), spend: spendLabel(kpisQ.data) })
         ] }),
+        kpisQ.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: [
+          "Spend unavailable: ",
+          kpisQ.error
+        ] }) : null,
         /* @__PURE__ */ u$1("div", { class: "row toolbar", children: [
           authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
           /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !authed.value || !!reason, onClick: run, children: "▶ Run tasks" }),
@@ -3620,10 +3669,13 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .toolbar .caption { flex: 1 1 7rem; min-width: 0; line-height: 1.25; }
 .status-line { padding: 0; }
 .status-line-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
-.demo-notice summary { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer; list-style: none; font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
-.demo-notice summary::-webkit-details-marker { display: none; }
-.demo-notice[open] { flex-basis: 100%; }
-.demo-notice p { margin: 8px 0 0; max-width: 60ch; }
+.progress-row { flex: 1 1 18rem; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.progress-seg { display: flex; flex: 1 1 10rem; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); }
+.seg { display: block; height: 100%; }
+.seg-done { background: var(--st-done); } .seg-running { background: var(--st-in_progress-strong); } .seg-review { background: var(--st-review); } .seg-blocked { background: var(--st-blocked); }
+.demo-banner { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 14px; border-radius: var(--radius); font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
+.demo-banner p { margin: 0; flex: 1; }
+.demo-banner .icon-btn { color: var(--text); }
 @media (max-width: 899px) {
   .project-head .page-title, .project-menu-btn { display: none; }
 }
