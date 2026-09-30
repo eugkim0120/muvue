@@ -2403,20 +2403,30 @@ function Card({ card, onActed, readOnly = false }) {
     discussing ? /* @__PURE__ */ u$1(Discuss, { card, onSent: onActed }) : null
   ] });
 }
+const RAIL_ID = "needs-you-rail";
 function CardRail({ cards, authed: authed2 }) {
   const [collapsed, setCollapsed] = d$2(() => typeof matchMedia === "function" && matchMedia("(max-width: 899px)").matches);
+  const chipRef = A(null);
+  const headingRef = A(null);
+  const toggled = A(false);
+  h$2(() => {
+    if (!toggled.current) return;
+    (collapsed ? chipRef.current : headingRef.current)?.focus();
+  }, [collapsed]);
+  function toggle(next) {
+    toggled.current = true;
+    setCollapsed(next);
+  }
   if (!cards.length) return null;
-  if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
-    cards.length,
-    " need you"
-  ] });
-  return /* @__PURE__ */ u$1("div", { class: "card-rail stack tight", children: [
+  const n2 = cards.length;
+  if (collapsed) return /* @__PURE__ */ u$1("button", { ref: chipRef, type: "button", class: "card-rail-pill", "aria-expanded": "false", "aria-controls": RAIL_ID, onClick: () => toggle(false), children: n2 === 1 ? "1 thing needs you" : `${n2} things need you` });
+  return /* @__PURE__ */ u$1("div", { id: RAIL_ID, class: "card-rail stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("span", { class: "caption", children: [
+      /* @__PURE__ */ u$1("span", { ref: headingRef, tabIndex: -1, class: "caption", children: [
         "Needs you · ",
         cards.length
       ] }),
-      /* @__PURE__ */ u$1("button", { type: "button", class: "btn btn-plain", "aria-label": "hide needs-you list", onClick: () => setCollapsed(true), children: "Hide" })
+      /* @__PURE__ */ u$1("button", { type: "button", class: "btn btn-plain", "aria-label": "hide needs-you list", "aria-expanded": "true", "aria-controls": RAIL_ID, onClick: () => toggle(true), children: "Hide" })
     ] }),
     authed2 ? null : /* @__PURE__ */ u$1("div", { "data-sign-in-to-act": true, children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => {
       signInOpen.value = true;

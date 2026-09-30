@@ -97,13 +97,13 @@ try {
   check("phone: Run explains why it is disabled", (await runReason.count()) > 0 && /approve/i.test(await runReason.first().innerText()));
   check("phone: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
 
-  await page.getByText("✨ Plan tasks with agent").first().click().catch(() => {});
+  await page.getByText("✨ Plan tasks with agent").first().click();
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(outDir, "02-phone-300ms-after-plan.png"), fullPage: true });
   const feedback = await page.locator("[data-activity], .task-box:not(.dag-empty)").first().isVisible();
   check("phone: within 300ms of launching, the activity bar or the new tasks are showing", feedback);
 
-  await page.waitForFunction(() => document.querySelectorAll(".task-box").length >= 3, null, { timeout: 20000 }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll(".task-box").length >= 3, null, { timeout: 20000 });
   await page.waitForSelector(".toast", { timeout: 5000 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(outDir, "03-phone-after-plan.png"), fullPage: true });
@@ -167,20 +167,28 @@ try {
   muvue("done", String(firstTask.id), "--owner", "ui-check", "--summary", "Added the tracker.", "--path", repo);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.waitForSelector(".card-rail-pill", { timeout: 10000 }).catch(() => {});
+  await page.waitForSelector(".card-rail-pill", { timeout: 10000 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(outDir, "03c-phone-with-review.png"), fullPage: true });
   const dagTopPhoneReview = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
   check("phone: with a review item waiting, the diagram still starts in the top half of the screen", dagTopPhoneReview < 0.5 * 844, `starts at ${Math.round(dagTopPhoneReview)}px`);
   check("phone: the review card is a one-line chip until tapped", (await page.locator(".card-rail-pill").count()) === 1 && (await page.locator(".notif-card").count()) === 0);
   const chipH = await page.locator(".card-rail-pill").evaluate((e) => e.getBoundingClientRect().height);
-  check("phone: the needs-you chip is a 44px touch target", chipH >= 44, `${Math.round(chipH)}px`);
+  check("phone: the needs-you chip is one line, a 44px touch target (44-56px)", chipH >= 44 && chipH <= 56, `${Math.round(chipH)}px`);
   const primariesReview = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
-  check("phone: with a review item waiting, the toolbar Run is not a second primary", primariesReview <= 1, `${primariesReview} enabled filled buttons`);
+  check("phone: with a review item waiting (chip collapsed), no primary button is showing and the Next step is the review step", primariesReview === 0 && (await page.locator('[data-next-step="review"]').count()) === 1, `${primariesReview} enabled filled buttons`);
   await page.locator(".card-rail-pill").click();
   await page.waitForTimeout(200);
   const primariesOpen = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
   check("phone: with the review card open, exactly one primary action (Approve)", primariesOpen === 1, `${primariesOpen} enabled filled buttons`);
+  // Same state with the first-run demo banner showing again.
+  await page.evaluate(() => localStorage.removeItem("muvue.demoNoticeDismissed"));
+  await page.reload();
+  await page.waitForSelector("[data-fake-notice]", { timeout: 10000 });
+  await page.waitForSelector(".card-rail-pill", { timeout: 10000 });
+  await page.waitForTimeout(500);
+  const dagTopBannerReview = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("phone: banner showing and a review item waiting, the diagram starts in the top 60% of the screen", dagTopBannerReview < 0.6 * 844, `starts at ${Math.round(dagTopBannerReview)}px`);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(800);
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
@@ -192,7 +200,7 @@ try {
   // covered by a TaskBox unit test.)
   muvue("decompose", String(spec.id), "--title", "W".repeat(26), "--body", "Stress the one-line title estimate", "--path", repo);
   await page.reload();
-  await page.waitForFunction(() => document.querySelectorAll(".task-box:not(.dag-empty)").length >= 4, null, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll(".task-box:not(.dag-empty)").length >= 4, null, { timeout: 10000 });
   const stress = await page.locator(".task-box:not(.dag-empty)").evaluateAll((els) => {
     const rects = els.map((e) => e.getBoundingClientRect());
     let overlap = false;
