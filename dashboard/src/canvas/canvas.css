@@ -79,6 +79,13 @@
 .next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
 .next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
+@media (max-width: 899px) {
+  .next-step { padding: 10px 14px; margin-bottom: 8px; }
+  .next-step .caption { display: none; }
+  .next-step h2 { margin: 0 0 2px; font-size: 16px; }
+  .next-step .next-detail { margin: 0 0 6px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+  .project-head { padding-top: 8px; gap: 4px; }
+}
 [data-run-reason] { max-width: 220px; }
 .agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--text-2); }
 .agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

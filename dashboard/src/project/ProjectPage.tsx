@@ -89,6 +89,7 @@ export function ProjectPage() {
     planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false,
   } satisfies NextStepInput;
   const step = nextStep(stepInput);
+  const runIsPrimary = step.id === "run" && cards.length === 0;
   const reason = runBlockReason(stepInput);
 
   async function run() {
@@ -119,7 +120,7 @@ export function ProjectPage() {
             {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
               <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
             ) : null}
-            <Button variant={step.id === "run" ? "filled" : "outline"} busy={runA.busy} busyLabel="Starting…" disabled={!authed.value || !!reason} onClick={run}>▶ Run tasks</Button>
+            <Button variant={runIsPrimary ? "filled" : "outline"} busy={runA.busy} busyLabel="Starting…" disabled={!authed.value || !!reason} onClick={run}>▶ Run tasks</Button>
             {!authed.value ? <span class="caption" data-run-reason>Sign in to run tasks</span> : reason ? <span class="caption" data-run-reason>{reason}</span> : null}
           </div>
           {runA.error ? <div class="callout danger">{runA.error}</div> : null}

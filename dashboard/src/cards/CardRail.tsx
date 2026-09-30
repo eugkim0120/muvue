@@ -5,7 +5,7 @@ import { refresh, signInOpen } from "../state";
 import { Button } from "../ui/Button";
 
 export function CardRail({ cards, authed }: { cards: CardT[]; authed: boolean }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => typeof matchMedia === "function" && matchMedia("(max-width: 899px)").matches);
   if (!cards.length) return null;
   if (collapsed) return <button type="button" class="card-rail-pill" onClick={() => setCollapsed(false)}>{cards.length} need you</button>;
   return (

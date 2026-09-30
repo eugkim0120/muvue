@@ -29,3 +29,8 @@ test("Important #4: while a breakdown launch for this spec is in flight, '+ Add 
   expect(screen.getByText("+ Add task myself").closest("button")).toBeDisabled();
   launches.value = [];
 });
+
+test("the detail paragraph is clampable on phones", () => {
+  const { container } = render(<NextStepBar step={{ id: "run", title: "Run the tasks", detail: "2 tasks are ready." } as never} authed projectId={1} specId={1} activity={null} onAddTask={() => {}} />);
+  expect(container.querySelector("p.next-detail")).toBeTruthy();
+});

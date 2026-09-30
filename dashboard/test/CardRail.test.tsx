@@ -29,3 +29,22 @@ test("the collapse control is labelled 'Hide' and collapses to a count pill", ()
   fireEvent.click(screen.getByLabelText("hide needs-you list"));
   expect(screen.getByText("2 need you")).toBeTruthy();
 });
+
+function phone(matches: boolean) {
+  vi.stubGlobal("matchMedia", (q: string) => ({ matches, media: q, addEventListener() {}, removeEventListener() {} }));
+}
+afterEach(() => vi.unstubAllGlobals());
+
+test("on a phone the rail starts as a one-line chip and expands on tap", () => {
+  phone(true);
+  render(<CardRail cards={cards} authed />);
+  expect(screen.queryByText("Approve")).toBeNull();
+  fireEvent.click(screen.getByText("2 need you"));
+  expect(screen.getAllByText("Approve")).toHaveLength(2);
+});
+
+test("on a desktop the rail starts expanded", () => {
+  phone(false);
+  render(<CardRail cards={cards} authed />);
+  expect(screen.getAllByText("Approve")).toHaveLength(2);
+});

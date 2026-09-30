@@ -2404,7 +2404,7 @@ function Card({ card, onActed, readOnly = false }) {
   ] });
 }
 function CardRail({ cards, authed: authed2 }) {
-  const [collapsed, setCollapsed] = d$2(false);
+  const [collapsed, setCollapsed] = d$2(() => typeof matchMedia === "function" && matchMedia("(max-width: 899px)").matches);
   if (!cards.length) return null;
   if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
     cards.length,
@@ -2677,7 +2677,7 @@ function NextStepBar({
   return /* @__PURE__ */ u$1("section", { class: "next-step card", "data-next-step": step.id, children: [
     /* @__PURE__ */ u$1("span", { class: "caption", children: "Next" }),
     /* @__PURE__ */ u$1("h2", { children: step.title }),
-    /* @__PURE__ */ u$1("p", { class: "muted", children: step.detail }),
+    /* @__PURE__ */ u$1("p", { class: "muted next-detail", children: step.detail }),
     authed2 ? /* @__PURE__ */ u$1(S$1, { children: [
       step.id === "approve_spec" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
         /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: approveSpec, children: "Approve spec" }),
@@ -2810,6 +2810,7 @@ function ProjectPage() {
     planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false
   };
   const step = nextStep(stepInput);
+  const runIsPrimary = step.id === "run" && cards.length === 0;
   const reason = runBlockReason(stepInput);
   async function run() {
     if (!pid) return;
@@ -2838,7 +2839,7 @@ function ProjectPage() {
         hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null,
         /* @__PURE__ */ u$1("div", { class: "row toolbar", children: [
           authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-          /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !authed.value || !!reason, onClick: run, children: "▶ Run tasks" }),
+          /* @__PURE__ */ u$1(Button, { variant: runIsPrimary ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !authed.value || !!reason, onClick: run, children: "▶ Run tasks" }),
           !authed.value ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: "Sign in to run tasks" }) : reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
         ] }),
         runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: runA.error }) : null
@@ -3707,6 +3708,13 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
 .next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
+@media (max-width: 899px) {
+  .next-step { padding: 10px 14px; margin-bottom: 8px; }
+  .next-step .caption { display: none; }
+  .next-step h2 { margin: 0 0 2px; font-size: 16px; }
+  .next-step .next-detail { margin: 0 0 6px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+  .project-head { padding-top: 8px; gap: 4px; }
+}
 [data-run-reason] { max-width: 220px; }
 .agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--text-2); }
 .agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3728,6 +3736,9 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
+@media (max-width: 899px) {
+  .card-rail-pill { position: static; align-self: stretch; margin: 0 16px 12px; text-align: left; }
+}
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
 .notif-title:disabled { cursor: default; }

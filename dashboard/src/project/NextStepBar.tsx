@@ -39,7 +39,7 @@ export function NextStepBar({
     <section class="next-step card" data-next-step={step.id}>
       <span class="caption">Next</span>
       <h2>{step.title}</h2>
-      <p class="muted">{step.detail}</p>
+      <p class="muted next-detail">{step.detail}</p>
       {authed ? (
         <>
           {step.id === "approve_spec" && specId !== null ? (

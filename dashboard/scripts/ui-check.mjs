@@ -156,6 +156,31 @@ try {
   await page.waitForTimeout(800);
   const phoneAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
   check("phone: once the demo banner is dismissed, the diagram starts in the top half of the screen", phoneAfter < 0.5 * 844, `starts at ${Math.round(phoneAfter)}px`);
+  // --- a task waiting for review (banner already dismissed, so this is the
+  // tightest phone state). The CLI path: approve the task list, start and
+  // finish the first task; `done` leaves it in `review` until approved.
+  const planned = await page.evaluate(async () => (await (await fetch("/nodes")).json()));
+  const firstTask = (planned.nodes ?? planned).filter((n) => n.kind === "task").sort((x, y) => x.id - y.id)[0];
+  check("phone: the planned tasks can be read back to seed a review item", !!firstTask);
+  muvue("approve", `gate2:${projectId}`, "--path", repo);
+  muvue("start", String(firstTask.id), "--owner", "ui-check", "--path", repo);
+  muvue("done", String(firstTask.id), "--owner", "ui-check", "--summary", "Added the tracker.", "--path", repo);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.waitForSelector(".card-rail-pill", { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(outDir, "03c-phone-with-review.png"), fullPage: true });
+  const dagTopPhoneReview = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("phone: with a review item waiting, the diagram still starts in the top half of the screen", dagTopPhoneReview < 0.5 * 844, `starts at ${Math.round(dagTopPhoneReview)}px`);
+  check("phone: the review card is a one-line chip until tapped", (await page.locator(".card-rail-pill").count()) === 1 && (await page.locator(".notif-card").count()) === 0);
+  const chipH = await page.locator(".card-rail-pill").evaluate((e) => e.getBoundingClientRect().height);
+  check("phone: the needs-you chip is a 44px touch target", chipH >= 44, `${Math.round(chipH)}px`);
+  const primariesReview = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
+  check("phone: with a review item waiting, the toolbar Run is not a second primary", primariesReview <= 1, `${primariesReview} enabled filled buttons`);
+  await page.locator(".card-rail-pill").click();
+  await page.waitForTimeout(200);
+  const primariesOpen = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
+  check("phone: with the review card open, exactly one primary action (Approve)", primariesOpen === 1, `${primariesOpen} enabled filled buttons`);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(800);
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
