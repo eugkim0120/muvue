@@ -4,3 +4,7 @@
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
 .notif-title:disabled { cursor: default; }
+
+.clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.review-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }

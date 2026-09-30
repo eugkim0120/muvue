@@ -1,4 +1,4 @@
-import type { NodeRow } from "../state";
+import type { NodeRow, RiskTier } from "../state";
 
 type Ev = { id: number; ts: string; node_id: number | null; project_id: number | null; type: string; payload: string };
 type Question = { id: number; node_id: number; text: string; default_answer: string | null; default_ok: boolean };
@@ -10,11 +10,13 @@ export type Revision = { n: number; approved_at: string | null };
 export type NodesById = Record<number, { title: string; project_id: number }>;
 
 export type CardKind = "task_review" | "question" | "blocked" | "revision" | "ack" | "awaiting_approval";
-export type Card = { id: string; kind: CardKind; nodeId: number | null; projectId: number | null; title: string; context: string; agent: string; ts: string; raw?: unknown };
+export type Card = { id: string; kind: CardKind; nodeId: number | null; projectId: number | null; title: string; context: string; summary?: string; tier?: RiskTier; ownerLabel?: string; agent: string; ts: string; raw?: unknown };
 
 export type Ctx = { revisions: Revision[]; nodesById: NodesById; projectId: number };
 
 function payloadOf(ev: Ev): Record<string, unknown> { try { return JSON.parse(ev.payload || "{}"); } catch { return {}; } }
+
+const ownerName = (o: string | null) => (o ?? "").replace(/^runner:/, "");
 
 export function cardsFromInbox(inbox: Inbox, ctx: Ctx): Card[] {
   const cards: Card[] = [];
@@ -22,7 +24,7 @@ export function cardsFromInbox(inbox: Inbox, ctx: Ctx): Card[] {
     const n = ctx.nodesById[q.node_id];
     cards.push({ id: "question:" + q.id, kind: "question", nodeId: q.node_id, projectId: n?.project_id ?? null, title: n?.title ?? `#${q.node_id}`, context: q.text, agent: "", ts: "" });
   }
-  for (const n of inbox.review) cards.push({ id: "task_review:" + n.id, kind: "task_review", nodeId: n.id, projectId: n.project_id, title: n.title, context: "in review", agent: n.owner ?? "", ts: "" });
+  for (const n of inbox.review) cards.push({ id: "task_review:" + n.id, kind: "task_review", nodeId: n.id, projectId: n.project_id, title: n.title, context: n.summary?.trim() || "No summary recorded", tier: n.risk_tier, ownerLabel: ownerName(n.owner), agent: "", ts: "" });
   for (const n of inbox.blocked) cards.push({ id: "blocked:" + n.id, kind: "blocked", nodeId: n.id, projectId: n.project_id, title: n.title, context: n.block_reason ?? "blocked", agent: n.owner ?? "", ts: "" });
   for (const n of inbox.awaiting_approval) cards.push({ id: "awaiting_approval:" + n.id, kind: "awaiting_approval", nodeId: n.id, projectId: n.project_id, title: n.title, context: "criteria changed, awaiting approval", agent: n.owner ?? "", ts: "" });
   for (const r of ctx.revisions.filter((r) => r.approved_at === null)) {

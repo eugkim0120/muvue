@@ -2181,6 +2181,22 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
     ] })
   ] });
 }
+function classifyDiffLine(line) {
+  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
+  if (line.startsWith("@@")) return "d-hunk";
+  if (line.startsWith("+")) return "d-add";
+  if (line.startsWith("-")) return "d-del";
+  return "";
+}
+function diffStat(text) {
+  let added = 0, removed = 0;
+  for (const line of text.split("\n")) {
+    if (/^(\+\+\+|---)/.test(line)) continue;
+    if (line.startsWith("+")) added++;
+    else if (line.startsWith("-")) removed++;
+  }
+  return { added, removed };
+}
 function Discuss({ card, onSent }) {
   const [detail, setDetail] = d$2(null);
   const [reply, setReply] = d$2("");
@@ -2221,6 +2237,23 @@ function Discuss({ card, onSent }) {
 }
 const APPROVE_TARGET = { task_review: "review", awaiting_approval: "node" };
 const CAPTION = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
+function ReviewFacts({ card }) {
+  const diffQ = useApi(() => api(routes.nodeDiff(card.nodeId)), [card.nodeId]);
+  const stat = diffQ.data && diffQ.data.source !== "none" ? diffStat(diffQ.data.diff) : null;
+  return /* @__PURE__ */ u$1("div", { class: "review-facts caption", children: [
+    diffQ.error ? /* @__PURE__ */ u$1("span", { children: "diff unavailable" }) : diffQ.data ? stat ? /* @__PURE__ */ u$1("span", { class: "mono", children: `+${stat.added} −${stat.removed}` }) : /* @__PURE__ */ u$1("span", { children: "no changes recorded" }) : /* @__PURE__ */ u$1("span", { children: "…" }),
+    card.tier ? /* @__PURE__ */ u$1("span", { children: [
+      " · ",
+      card.tier,
+      " risk"
+    ] }) : null,
+    card.ownerLabel ? /* @__PURE__ */ u$1("span", { "aria-label": "owner", children: [
+      " · ",
+      card.ownerLabel
+    ] }) : null,
+    /* @__PURE__ */ u$1("button", { type: "button", class: "link-btn", onClick: () => card.nodeId && openNode(card.nodeId), children: "Open task" })
+  ] });
+}
 function Card({ card, onActed, readOnly = false }) {
   const [rejecting, setRejecting] = d$2(false);
   const [reason, setReason] = d$2("");
@@ -2258,7 +2291,8 @@ function Card({ card, onActed, readOnly = false }) {
       /* @__PURE__ */ u$1("span", { class: "caption", children: card.ts })
     ] }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "notif-title", disabled: !card.nodeId, onClick: () => card.nodeId && openNode(card.nodeId), children: card.title }),
-    /* @__PURE__ */ u$1("div", { children: card.context }),
+    /* @__PURE__ */ u$1("div", { class: "clamp-3", children: card.context }),
+    card.kind === "task_review" && card.nodeId ? /* @__PURE__ */ u$1(ReviewFacts, { card }) : null,
     card.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: card.agent }) : null,
     approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
     readOnly ? null : card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
@@ -2302,13 +2336,14 @@ function payloadOf(ev) {
     return {};
   }
 }
+const ownerName = (o2) => (o2 ?? "").replace(/^runner:/, "");
 function cardsFromInbox(inbox, ctx) {
   const cards = [];
   for (const q2 of inbox.questions) {
     const n2 = ctx.nodesById[q2.node_id];
     cards.push({ id: "question:" + q2.id, kind: "question", nodeId: q2.node_id, projectId: n2?.project_id ?? null, title: n2?.title ?? `#${q2.node_id}`, context: q2.text, agent: "", ts: "" });
   }
-  for (const n2 of inbox.review) cards.push({ id: "task_review:" + n2.id, kind: "task_review", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "in review", agent: n2.owner ?? "", ts: "" });
+  for (const n2 of inbox.review) cards.push({ id: "task_review:" + n2.id, kind: "task_review", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: n2.summary?.trim() || "No summary recorded", tier: n2.risk_tier, ownerLabel: ownerName(n2.owner), agent: "", ts: "" });
   for (const n2 of inbox.blocked) cards.push({ id: "blocked:" + n2.id, kind: "blocked", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: n2.block_reason ?? "blocked", agent: n2.owner ?? "", ts: "" });
   for (const n2 of inbox.awaiting_approval) cards.push({ id: "awaiting_approval:" + n2.id, kind: "awaiting_approval", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "criteria changed, awaiting approval", agent: n2.owner ?? "", ts: "" });
   for (const r2 of ctx.revisions.filter((r22) => r22.approved_at === null)) {
@@ -2998,13 +3033,6 @@ function Discussion({ nodeId, notes }) {
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
-function classifyDiffLine(line) {
-  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
-  if (line.startsWith("@@")) return "d-hunk";
-  if (line.startsWith("+")) return "d-add";
-  if (line.startsWith("-")) return "d-del";
-  return "";
-}
 const LABEL = { commits: "patches of the linked commits", worktree: "worktree against its branch point", none: "nothing committed yet" };
 function DiffView({ nodeId }) {
   const [d2, setD] = d$2(null);
@@ -3538,7 +3566,11 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
-.notif-title:disabled { cursor: default; }</style>
+.notif-title:disabled { cursor: default; }
+
+.clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.review-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }</style>
 </head>
 <body>
 <div id="root"></div>

@@ -1,5 +1,7 @@
 import { useState } from "preact/hooks";
-import { post } from "../api/client";
+import { api, post } from "../api/client";
+import { useApi } from "../hooks";
+import { diffStat } from "../node/diff";
 import { routes } from "../api/routes";
 import { toast } from "../state";
 import { openNode } from "../router";
@@ -10,6 +12,19 @@ import type { Card as CardT } from "./cardsFromInbox";
 
 const APPROVE_TARGET: Record<string, string> = { task_review: "review", awaiting_approval: "node" };
 const CAPTION: Record<CardT["kind"], string> = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
+
+function ReviewFacts({ card }: { card: CardT }) {
+  const diffQ = useApi<{ diff: string; source: string }>(() => api(routes.nodeDiff(card.nodeId!)), [card.nodeId]);
+  const stat = diffQ.data && diffQ.data.source !== "none" ? diffStat(diffQ.data.diff) : null;
+  return (
+    <div class="review-facts caption">
+      {diffQ.error ? <span>diff unavailable</span> : diffQ.data ? (stat ? <span class="mono">{`+${stat.added} \u2212${stat.removed}`}</span> : <span>no changes recorded</span>) : <span>…</span>}
+      {card.tier ? <span> · {card.tier} risk</span> : null}
+      {card.ownerLabel ? <span aria-label="owner"> · {card.ownerLabel}</span> : null}
+      <button type="button" class="link-btn" onClick={() => card.nodeId && openNode(card.nodeId)}>Open task</button>
+    </div>
+  );
+}
 
 export function Card({ card, onActed, readOnly = false }: { card: CardT; onActed: () => void; readOnly?: boolean }) {
   const [rejecting, setRejecting] = useState(false);
@@ -45,7 +60,8 @@ export function Card({ card, onActed, readOnly = false }: { card: CardT; onActed
         <span class="caption">{card.ts}</span>
       </div>
       <button type="button" class="notif-title" disabled={!card.nodeId} onClick={() => card.nodeId && openNode(card.nodeId)}>{card.title}</button>
-      <div>{card.context}</div>
+      <div class="clamp-3">{card.context}</div>
+      {card.kind === "task_review" && card.nodeId ? <ReviewFacts card={card} /> : null}
       {card.agent ? <div class="caption">{card.agent}</div> : null}
       {approveA.error ? <div class="callout danger">{approveA.error}</div> : null}
       {readOnly ? null : card.kind === "ack" ? (
