@@ -11,7 +11,7 @@ import type { Card as CardT } from "./cardsFromInbox";
 const APPROVE_TARGET: Record<string, string> = { task_review: "review", awaiting_approval: "node" };
 const CAPTION: Record<CardT["kind"], string> = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
 
-export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
+export function Card({ card, onActed, readOnly = false }: { card: CardT; onActed: () => void; readOnly?: boolean }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [discussing, setDiscussing] = useState(false);
@@ -48,7 +48,7 @@ export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
       <div>{card.context}</div>
       {card.agent ? <div class="caption">{card.agent}</div> : null}
       {approveA.error ? <div class="callout danger">{approveA.error}</div> : null}
-      {card.kind === "ack" ? (
+      {readOnly ? null : card.kind === "ack" ? (
         !card.id.startsWith("ack:unverified:") ? (
           <div class="actions"><Button variant="filled" busy={approveA.busy} busyLabel="Acknowledging…" onClick={approve}>Acknowledge</Button></div>
         ) : null
@@ -63,7 +63,7 @@ export function Card({ card, onActed }: { card: CardT; onActed: () => void }) {
           {card.kind !== "revision" ? <Button variant="plain" onClick={() => setDiscussing((d) => !d)}>Discuss</Button> : null}
         </div>
       )}
-      {rejecting ? (
+      {!readOnly && rejecting ? (
         <div class="stack tight">
           <input placeholder="why?" value={reason} onInput={(e) => setReason((e.target as HTMLInputElement).value)} />
           {rejectA.error ? <div class="callout danger">{rejectA.error}</div> : null}

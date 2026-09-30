@@ -141,3 +141,25 @@ test("the header, rail and diagram are separate regions, with the Next step in t
   expect(container.querySelector(".project-dag .canvas-wrap")).toBeTruthy();
   expect(screen.queryByText("Nothing waiting on you")).toBeNull();
 });
+
+test("signed out: Run tasks is disabled with a sign-in reason and no Approve button is shown", async () => {
+  authed.value = false;
+  projects.value = [{ id: 1, goal: "Voxscore", phase: "executing" }];
+  projectId.value = 1;
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    const spec = { id: 1, project_id: 1, parent_id: null, kind: "spec", title: "Voxscore", status: "done", risk_tier: "low", owner: null, body_md: "x", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null };
+    const task = { id: 2, project_id: 1, parent_id: 1, kind: "task", title: "Detect pitch", status: "review", risk_tier: "low", owner: "a", body_md: "y", criteria_json: "[]", criteria_hash: null, block_reason: null, deleted_at: null };
+    if (path.startsWith("/graph")) return Promise.resolve({ nodes: [{ ...spec, agent: null }, { ...task, agent: "claude" }], edges: [] });
+    if (path.startsWith("/nodes/2/diff")) return Promise.resolve({ node_id: 2, source: "none", diff: "", truncated: false, commits: [] });
+    if (path.startsWith("/nodes")) return Promise.resolve([spec, task]);
+    if (path === "/inbox") return Promise.resolve({ questions: [], review: [task], unverified_external: [], structure_updates: [], blocked: [], awaiting_approval: [], signals: [], audit_items: [], unattributed_commits: [] });
+    if (path.startsWith("/projects/1/revisions")) return Promise.resolve([]);
+    if (path.startsWith("/projects/1/activity")) return Promise.resolve({ active: [], breakdowns: [], working: [] });
+    return Promise.resolve({});
+  });
+  render(<ProjectPage />);
+  await waitFor(() => screen.getByText("Sign in to act"));
+  expect(screen.queryByText("Approve")).toBeNull();
+  expect(screen.getByText("▶ Run tasks")).toBeDisabled();
+  expect(document.querySelector("[data-run-reason]")?.textContent).toMatch(/sign in/i);
+});

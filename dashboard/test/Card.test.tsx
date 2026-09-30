@@ -27,3 +27,11 @@ test("a question card's Discuss field doubles as the answer box", async () => {
   fireEvent.click(screen.getByText("Send"));
   await waitFor(() => expect(spy).toHaveBeenCalled());
 });
+
+test("a read-only card shows no Approve, Reject or Discuss, but the title still opens the node", () => {
+  render(<Card readOnly card={{ id: "task_review:5", kind: "task_review", nodeId: 5, ...base }} onActed={() => {}} />);
+  expect(screen.queryByText("Approve")).toBeNull();
+  expect(screen.queryByText("Reject")).toBeNull();
+  expect(screen.queryByText("Discuss")).toBeNull();
+  expect(screen.getByText("Detect pitch")).toBeEnabled();
+});

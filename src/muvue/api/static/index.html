@@ -2221,7 +2221,7 @@ function Discuss({ card, onSent }) {
 }
 const APPROVE_TARGET = { task_review: "review", awaiting_approval: "node" };
 const CAPTION = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
-function Card({ card, onActed }) {
+function Card({ card, onActed, readOnly = false }) {
   const [rejecting, setRejecting] = d$2(false);
   const [reason, setReason] = d$2("");
   const [discussing, setDiscussing] = d$2(false);
@@ -2261,12 +2261,12 @@ function Card({ card, onActed }) {
     /* @__PURE__ */ u$1("div", { children: card.context }),
     card.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: card.agent }) : null,
     approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
-    card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
+    readOnly ? null : card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
       /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: approve, children: "Approve" }),
       card.kind === "task_review" ? /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: approveA.busy, onClick: () => setRejecting((r2) => !r2), children: "Reject" }) : null,
       card.kind !== "revision" ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: "Discuss" }) : null
     ] }),
-    rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    !readOnly && rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("input", { placeholder: "why?", value: reason, onInput: (e2) => setReason(e2.target.value) }),
       rejectA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: rejectA.error }) : null,
       /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !reason.trim(), busy: rejectA.busy, busyLabel: "Sending…", onClick: reject, children: "Send" })
@@ -2274,7 +2274,7 @@ function Card({ card, onActed }) {
     discussing ? /* @__PURE__ */ u$1(Discuss, { card, onSent: onActed }) : null
   ] });
 }
-function CardRail({ cards }) {
+function CardRail({ cards, authed: authed2 }) {
   const [collapsed, setCollapsed] = d$2(false);
   if (!cards.length) return null;
   if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
@@ -2289,7 +2289,10 @@ function CardRail({ cards }) {
       ] }),
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "collapse", onClick: () => setCollapsed(true), children: "—" })
     ] }),
-    cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, onActed: refresh }, c2.id))
+    authed2 ? null : /* @__PURE__ */ u$1("div", { "data-sign-in-to-act": true, children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => {
+      signInOpen.value = true;
+    }, children: "Sign in to act" }) }),
+    cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, readOnly: !authed2, onActed: refresh }, c2.id))
   ] });
 }
 function payloadOf(ev) {
@@ -2652,15 +2655,15 @@ function ProjectPage() {
         ] }),
         /* @__PURE__ */ u$1("div", { class: "row toolbar", children: [
           authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-          /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
-          reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
+          /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !authed.value || !!reason, onClick: run, children: "▶ Run tasks" }),
+          !authed.value ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: "Sign in to run tasks" }) : reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
         ] }),
         runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: runA.error }) : null
       ] }),
       /* @__PURE__ */ u$1("aside", { class: "project-rail", children: [
         /* @__PURE__ */ u$1(NextStepBar, { step, authed: authed.value, projectId: pid, specId: data?.spec?.id ?? null, activity, onAddTask: openAddTask }),
         /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
-        /* @__PURE__ */ u$1(CardRail, { cards })
+        /* @__PURE__ */ u$1(CardRail, { cards, authed: authed.value })
       ] }),
       /* @__PURE__ */ u$1("section", { class: "project-dag", children: [
         authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) : null,
