@@ -114,6 +114,7 @@ export function ProjectPage() {
             <ProgressBar counts={progressCounts((nodesQ.data ?? []).filter((n) => n.kind === "task"))} spend={spendLabel(kpisQ.data)} />
           </div>
           {kpisQ.error ? <div class="caption">Spend unavailable: {kpisQ.error}</div> : null}
+          {hasFakeAgent ? <FakeAgentNotice /> : null}
           <div class="row toolbar">
             {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
               <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
@@ -138,7 +139,6 @@ export function ProjectPage() {
             <Canvas data={data} projectId={pid!} projectPhase={p.phase} needsYou={needsYou} activity={activity} />
           )}
         </section>
-        {hasFakeAgent ? <FakeAgentNotice /> : null}
       </div>
       {menu ? <ProjectMenu onClose={() => setMenu(false)} /> : null}
       {agentsSheet ? <AgentsSheet projectId={pid!} onClose={() => setAgentsSheet(false)} /> : null}

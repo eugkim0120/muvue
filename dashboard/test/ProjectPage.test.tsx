@@ -131,12 +131,14 @@ test("the demo notice is a banner that can be dismissed and stays dismissed", as
   await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
   const notice = document.querySelector("[data-fake-notice]")!;
   expect(notice.textContent).toContain("Demo agent: writes no code");
-  expect(notice.textContent).not.toContain("canned results");
   const details = screen.getByRole("button", { name: "Details" });
+  const more = document.getElementById(details.getAttribute("aria-controls")!)!;
+  expect(more.textContent).toContain("canned results");
+  expect(more.hidden).toBe(true);
   expect(details.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(details);
   expect(details.getAttribute("aria-expanded")).toBe("true");
-  expect(notice.textContent).toContain("canned results");
+  expect(more.hidden).toBe(false);
   fireEvent.click(screen.getByLabelText("dismiss demo notice"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
   unmount();
@@ -144,6 +146,18 @@ test("the demo notice is a banner that can be dismissed and stays dismissed", as
   await waitFor(() => screen.getByText("Voxscore"));
   expect(document.querySelector("[data-fake-notice]")).toBeNull();
   localStorage.clear();
+});
+
+test("the demo banner sits in the header between the meta row and the toolbar", async () => {
+  localStorage.clear();
+  mockProject("ready", [{ id: 2, status: "pending" }], "planning");
+  const { container } = render(<ProjectPage />);
+  await waitFor(() => expect(document.querySelector("[data-fake-notice]")).toBeTruthy());
+  const head = container.querySelector(".project-head")!;
+  const kids = [...head.children];
+  const at = (sel: string) => kids.findIndex((k) => k.matches(sel));
+  expect(at("[data-fake-notice]")).toBeGreaterThan(at(".meta-row"));
+  expect(at("[data-fake-notice]")).toBeLessThan(at(".toolbar"));
 });
 
 test("the demo banner still renders and dismisses when storage throws", async () => {
