@@ -9,6 +9,7 @@ export type RiskTier = "low" | "medium" | "high";
 export type NodeRow = {
   id: number; project_id: number; parent_id: number | null; kind: string; title: string;
   status: NodeStatus; risk_tier: RiskTier; owner: string | null; block_reason?: string | null;
+  summary?: string | null;
 };
 
 export const projects = signal<Project[]>([]);

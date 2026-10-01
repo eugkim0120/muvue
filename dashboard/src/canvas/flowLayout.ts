@@ -1,20 +1,27 @@
 import type { CanvasTask, CanvasEdge } from "./canvasData";
+import { purposeLine } from "./canvasData";
 
-// Box heights are fixed by the layout and set as CSS heights on the boxes, so
-// a wrong estimate can only clip a box's content, never overlap two boxes.
-// From the built CSS (15px/1.4 body, 12px/1.4 caption): a task box with a
-// 2-line title, a 1-line purpose and the 1-line agent tag is 114px of content,
-// padding and border; 118 leaves 4px of slack. The subtask list adds its
-// 4px+4px margins and a 4px flex gap once. The placeholder's 4-line caption
-// needs 131px. ui-check's "every box's content fits" check verifies all of
-// this in a real browser: raise a constant if it fails, never lower it below
-// what that check measures.
-export const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 118, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+// Heights come from the content, derived from the built CSS (15px/1.4 title =
+// 21px a line; 13px/1.4 caption = 18px; 10px padding + 1px border a side;
+// 4px flex gap). The title-line count is an estimate from its length (the box
+// fits about 26 characters a line), so ui-check's "content fits" and "no dead
+// space" checks verify it in a real browser: fix the estimate, never hand-tune
+// one box.
+export const NODE_W = 240, SPEC_H = 112, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+const BOX_CHROME = 22, TITLE_LINE = 21, CAPTION_LINE = 18, FLEX_GAP = 4, PURPOSE_MARGIN = 8, SLACK = 4;
 export const PLACEHOLDER_ID = -1;
 
-export function taskHeight(subtaskCount: number): number {
-  const rows = Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
-  return rows ? TASK_H_BASE + SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : TASK_H_BASE;
+export function taskHeight(t: { title: string; hasPurpose: boolean; hasReason: boolean; subtaskCount: number; hasProgress: boolean }): number {
+  const titleLines = Math.min(2, Math.max(1, Math.ceil(t.title.length / 26)));
+  const rows = Math.min(t.subtaskCount, MAX_SUBTASK_ROWS) + (t.subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
+  return (
+    BOX_CHROME + titleLines * TITLE_LINE
+    + (t.hasPurpose ? FLEX_GAP + CAPTION_LINE + PURPOSE_MARGIN : 0)
+    + (t.hasReason ? FLEX_GAP + CAPTION_LINE : 0)
+    + (t.hasProgress ? FLEX_GAP + CAPTION_LINE : 0)
+    + (rows ? SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : 0)
+    + FLEX_GAP + CAPTION_LINE + SLACK
+  );
 }
 
 export function labelWidth(text: string): number {
@@ -61,7 +68,7 @@ export function computeLayout(spec: { id: number } | null, tasks: CanvasTask[], 
   const heightOf: Record<number, number> = {};
   const rows: number[][] = [];
   if (spec) { rows[0] = [spec.id]; heightOf[spec.id] = SPEC_H; }
-  for (const t of tasks) { (rows[taskRank[t.id]!] ??= []).push(t.id); heightOf[t.id] = taskHeight(t.subtasks.length); }
+  for (const t of tasks) { (rows[taskRank[t.id]!] ??= []).push(t.id); heightOf[t.id] = taskHeight({ title: t.title, hasPurpose: !!purposeLine(t.body_md), hasReason: t.status === "blocked", subtaskCount: t.subtasks.length, hasProgress: t.subtasks.length > 0 }); }
   if (placeholder) { (rows[1] ??= []).push(PLACEHOLDER_ID); heightOf[PLACEHOLDER_ID] = PLACEHOLDER_H; }
 
   const preds: Record<number, number[]> = {};

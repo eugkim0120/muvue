@@ -12,6 +12,8 @@ import { SubmitSpecForm } from "../canvas/SpecRoot";
 import { StatusLine } from "./StatusLine";
 import { AgentsSheet } from "./AgentsSheet";
 import { NewProject } from "./NewProject";
+import { ProgressBar, progressCounts } from "./ProgressBar";
+import { spendLabel, type Kpis } from "./spend";
 import { FakeAgentNotice } from "./FakeAgentNotice";
 import { ProjectMenu } from "../shell/ProjectMenu";
 import { Icon } from "../ui/Icon";
@@ -39,6 +41,7 @@ export function ProjectPage() {
   const nodesQ = useApi<FullNode[]>(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi<Inbox>(() => api(routes.inbox()), [refreshTick.value]);
   const revisionsQ = useApi<Revision[]>(() => (pid ? api(routes.revisions(pid)) : Promise.resolve([])), [pid, refreshTick.value]);
+  const kpisQ = useApi<Kpis>(() => api(routes.kpis()), [refreshTick.value]);
   const allNodesQ = useApi<FullNode[]>(() => api(routes.nodes(null)), [refreshTick.value]);
 
   const data = useMemo(() => (graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null), [graphQ.data, nodesQ.data]);
@@ -86,6 +89,7 @@ export function ProjectPage() {
     planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false,
   } satisfies NextStepInput;
   const step = nextStep(stepInput);
+  const runIsPrimary = step.id === "run" && cards.length === 0;
   const reason = runBlockReason(stepInput);
 
   async function run() {
@@ -108,21 +112,23 @@ export function ProjectPage() {
             <button type="button" class="status-line-btn" onClick={() => setAgentsSheet(true)}>
               <StatusLine phase={p.phase} done={done} total={total} working={working} />
             </button>
-            {hasFakeAgent ? <FakeAgentNotice /> : null}
+            <ProgressBar counts={progressCounts((nodesQ.data ?? []).filter((n) => n.kind === "task"))} spend={spendLabel(kpisQ.data)} />
           </div>
+          {kpisQ.error ? <div class="caption">Spend unavailable: {kpisQ.error}</div> : null}
+          {hasFakeAgent ? <FakeAgentNotice /> : null}
           <div class="row toolbar">
             {authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? (
               <Button variant="outline" onClick={() => setAddingTask((a) => !a)}>+ Task</Button>
             ) : null}
-            <Button variant={step.id === "run" ? "filled" : "outline"} busy={runA.busy} busyLabel="Starting…" disabled={!!reason} onClick={run}>▶ Run tasks</Button>
-            {reason ? <span class="caption" data-run-reason>{reason}</span> : null}
+            <Button variant={runIsPrimary ? "filled" : "outline"} busy={runA.busy} busyLabel="Starting…" disabled={!authed.value || !!reason} onClick={run}>▶ Run tasks</Button>
+            {!authed.value ? <span class="caption" data-run-reason>Sign in to run tasks</span> : reason ? <span class="caption" data-run-reason>{reason}</span> : null}
           </div>
           {runA.error ? <div class="callout danger">{runA.error}</div> : null}
         </header>
         <aside class="project-rail">
           <NextStepBar step={step} authed={authed.value} projectId={pid!} specId={data?.spec?.id ?? null} activity={activity} onAddTask={openAddTask} />
           <ActivityBar items={items} now={now} onDismiss={dismiss} onOpenLog={setOpenLog} />
-          <CardRail cards={cards} />
+          <CardRail cards={cards} authed={authed.value} />
         </aside>
         <section class="project-dag">
           {authed.value && addingTask && data?.spec ? (

@@ -1143,7 +1143,7 @@ function Sidebar() {
         openProject(pr.id);
       }, children: [
         /* @__PURE__ */ u$1("span", { class: "dot", style: { background: pr.phase === "closed" ? "var(--st-done)" : "var(--st-ready)" } }),
-        /* @__PURE__ */ u$1("span", { class: "grow", children: pr.goal })
+        /* @__PURE__ */ u$1("span", { class: "grow", title: pr.goal, children: pr.goal })
       ] })),
       /* @__PURE__ */ u$1("button", { type: "button", class: "nav-item", onClick: () => openProject(0), children: [
         /* @__PURE__ */ u$1(Icon, { name: "plan" }),
@@ -1505,7 +1505,7 @@ function TopBar({ onSearch }) {
   const p2 = currentProject.value;
   return /* @__PURE__ */ u$1("header", { class: "topbar", children: [
     /* @__PURE__ */ u$1("button", { type: "button", class: "project-btn", onClick: () => setMenu(true), children: [
-      /* @__PURE__ */ u$1("span", { class: "grow project-goal", children: p2 ? p2.goal : "no project" }),
+      /* @__PURE__ */ u$1("span", { class: "grow project-goal", title: p2 ? p2.goal : void 0, children: p2 ? p2.goal : "no project" }),
       p2 ? /* @__PURE__ */ u$1(Pill, { status: p2.phase }) : null
     ] }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "search", onClick: onSearch, children: /* @__PURE__ */ u$1(Icon, { name: "search" }) }),
@@ -1686,7 +1686,7 @@ function buildCanvasData(graph, fullNodes) {
   for (const n2 of fullNodes) {
     if (n2.kind !== "subtask" || n2.parent_id === null) continue;
     const list = subtasksByParent.get(n2.parent_id) ?? [];
-    list.push({ id: n2.id, title: n2.title, status: n2.status, parent_id: n2.parent_id });
+    list.push({ id: n2.id, title: n2.title, status: n2.status, parent_id: n2.parent_id, owner: n2.owner });
     subtasksByParent.set(n2.parent_id, list);
   }
   const tasks = fullNodes.filter((n2) => n2.kind === "task").map((n2) => ({
@@ -1705,11 +1705,33 @@ function buildCanvasData(graph, fullNodes) {
   const edges = graph.edges.filter((e2) => e2.kind === "dep" && taskIds.has(e2.from) && taskIds.has(e2.to) && byId.has(e2.from) && byId.has(e2.to)).map((e2) => ({ from: e2.from, to: e2.to, carries: e2.carries ?? null }));
   return { spec, tasks, edges };
 }
-const NODE_W = 240, SPEC_H = 112, TASK_H_BASE = 118, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+function subtaskProgress(subtasks) {
+  return { done: subtasks.filter((s2) => s2.status === "done").length, total: subtasks.length };
+}
+const COLLAPSE_DONE_OVER = 12;
+function collapseDone(data, expanded) {
+  if (expanded || data.tasks.length <= COLLAPSE_DONE_OVER) return { data, hiddenDone: 0 };
+  const hidden = new Set(data.tasks.filter((t2) => t2.status === "done").map((t2) => t2.id));
+  if (!hidden.size) return { data, hiddenDone: 0 };
+  return {
+    data: { ...data, tasks: data.tasks.filter((t2) => !hidden.has(t2.id)), edges: data.edges.filter((e2) => !hidden.has(e2.from) && !hidden.has(e2.to)) },
+    hiddenDone: hidden.size
+  };
+}
+const clamp = (v2, lo, hi) => Math.min(hi, Math.max(lo, v2));
+function clampPan(pan, content, view) {
+  return {
+    x: content.w <= view.w ? 0 : clamp(pan.x, view.w - content.w, 0),
+    y: content.h <= view.h ? 0 : clamp(pan.y, view.h - content.h, 0)
+  };
+}
+const NODE_W = 240, SPEC_H = 112, SUBTASK_LIST_EXTRA = 12, SUBTASK_ROW_H = 44, MAX_SUBTASK_ROWS = 3, PLACEHOLDER_H = 140, PAD = 16, GAP_X = 24, GAP_Y = 72;
+const BOX_CHROME = 22, TITLE_LINE = 21, CAPTION_LINE = 18, FLEX_GAP = 4, PURPOSE_MARGIN = 8, SLACK = 4;
 const PLACEHOLDER_ID = -1;
-function taskHeight(subtaskCount) {
-  const rows = Math.min(subtaskCount, MAX_SUBTASK_ROWS) + (subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
-  return rows ? TASK_H_BASE + SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : TASK_H_BASE;
+function taskHeight(t2) {
+  const titleLines = Math.min(2, Math.max(1, Math.ceil(t2.title.length / 26)));
+  const rows = Math.min(t2.subtaskCount, MAX_SUBTASK_ROWS) + (t2.subtaskCount > MAX_SUBTASK_ROWS ? 1 : 0);
+  return BOX_CHROME + titleLines * TITLE_LINE + (t2.hasPurpose ? FLEX_GAP + CAPTION_LINE + PURPOSE_MARGIN : 0) + (t2.hasReason ? FLEX_GAP + CAPTION_LINE : 0) + (t2.hasProgress ? FLEX_GAP + CAPTION_LINE : 0) + (rows ? SUBTASK_LIST_EXTRA + rows * SUBTASK_ROW_H : 0) + FLEX_GAP + CAPTION_LINE + SLACK;
 }
 function labelWidth(text) {
   return Math.min(200, Math.round(text.length * 6.8) + 20);
@@ -1753,7 +1775,7 @@ function computeLayout(spec, tasks, edges, placeholder) {
   }
   for (const t2 of tasks) {
     (rows[_a = taskRank[t2.id]] ?? (rows[_a] = [])).push(t2.id);
-    heightOf[t2.id] = taskHeight(t2.subtasks.length);
+    heightOf[t2.id] = taskHeight({ title: t2.title, hasPurpose: !!purposeLine(t2.body_md), hasReason: t2.status === "blocked", subtaskCount: t2.subtasks.length, hasProgress: t2.subtasks.length > 0 });
   }
   if (placeholder) {
     (rows[1] ?? (rows[1] = [])).push(PLACEHOLDER_ID);
@@ -1834,29 +1856,38 @@ function agentStateOf(node, projectPhase, needsYou) {
   if (node.status === "ready") return "ready";
   return "waiting_on_earlier";
 }
-const GLYPH = { done: "✓", in_progress: "●", review: "●", pending: "○", ready: "○", blocked: "⚠", failed: "⚠", awaiting_approval: "●" };
+const GLYPH = { done: "✓", in_progress: "◐", review: "◆", pending: "○", ready: "○", blocked: "■", failed: "✕", awaiting_approval: "◆" };
 function SubtaskRow({ subtask, needsYou }) {
-  return /* @__PURE__ */ u$1("button", { type: "button", class: "subtask-row", onClick: (e2) => {
+  return /* @__PURE__ */ u$1("button", { type: "button", class: "subtask-row", "aria-label": `${subtask.status.replace("_", " ")}: ${subtask.title}`, onClick: (e2) => {
     e2.stopPropagation();
     openNode(subtask.id);
   }, children: [
-    /* @__PURE__ */ u$1("span", { class: "glyph", style: { color: `var(--st-${subtask.status})` }, children: GLYPH[subtask.status] ?? "○" }),
+    /* @__PURE__ */ u$1("span", { class: "glyph", "aria-hidden": "true", style: { color: `var(--st-${subtask.status})` }, children: GLYPH[subtask.status] ?? "○" }),
     /* @__PURE__ */ u$1("span", { class: "grow title", children: subtask.title }),
-    needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+    subtask.owner ? /* @__PURE__ */ u$1("span", { class: "caption subtask-owner", children: subtask.owner.replace(/^runner:/, "") }) : null,
+    needsYou ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", title: "Needs your attention", "aria-label": "needs you" }) : null
   ] });
 }
 function TaskBox({ task, needsYou, projectPhase, style }) {
   const shown = task.subtasks.slice(0, MAX_SUBTASK_ROWS);
   const more = task.subtasks.length - shown.length;
+  const purpose = purposeLine(task.body_md);
   const state = agentStateOf(task, projectPhase, needsYou.has(task.id));
   return /* @__PURE__ */ u$1("div", { class: "task-box st-bar-" + task.status + (task.status === "in_progress" ? " running" : ""), style, tabIndex: 0, onClick: () => openNode(task.id), onKeyDown: (e2) => {
     if (e2.key === "Enter") openNode(task.id);
   }, children: [
     /* @__PURE__ */ u$1("div", { class: "row between", style: { flexWrap: "nowrap", alignItems: "flex-start" }, children: [
       /* @__PURE__ */ u$1("span", { class: "title grow clamp-2", children: task.title }),
-      needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you" }) : null
+      needsYou.has(task.id) ? /* @__PURE__ */ u$1("span", { class: "needs-you-dot", "aria-label": "needs you", title: "Needs your attention" }) : null
     ] }),
-    task.body_md ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purposeLine(task.body_md) }) : null,
+    purpose ? /* @__PURE__ */ u$1("div", { class: "caption purpose clamp-1", children: purpose }) : null,
+    task.status === "blocked" ? /* @__PURE__ */ u$1("div", { class: "caption reason clamp-1", children: task.block_reason ? `Blocked: ${task.block_reason}` : "Blocked" }) : null,
+    task.subtasks.length ? /* @__PURE__ */ u$1("div", { class: "caption progress-line", children: [
+      subtaskProgress(task.subtasks).done,
+      " of ",
+      task.subtasks.length,
+      " subtasks done"
+    ] }) : null,
     shown.length ? /* @__PURE__ */ u$1("div", { class: "subtask-list", children: [
       shown.map((s2) => /* @__PURE__ */ u$1(SubtaskRow, { subtask: s2, needsYou: needsYou.has(s2.id) })),
       more > 0 ? /* @__PURE__ */ u$1("div", { class: "caption more-row", children: [
@@ -2079,27 +2110,75 @@ function boxStyle(p2) {
   return { position: "absolute", left: p2.x + "px", top: p2.y + "px", width: p2.w + "px", height: p2.h + "px" };
 }
 const distance = (a2, b2) => Math.hypot(a2.x - b2.x, a2.y - b2.y);
-function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity }) {
+function Canvas({ data: fullData, projectId: projectId2, projectPhase, needsYou, activity }) {
+  const [showDone, setShowDone] = d$2(false);
+  const { data, hiddenDone } = collapseDone(fullData, showDone);
   const planning = data.spec ? planningNodeIds(activity, launches.value, projectId2).has(data.spec.id) : false;
-  const lay = computeLayout(data.spec, data.tasks, data.edges, data.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
+  const lay = computeLayout(data.spec, data.tasks, data.edges, fullData.tasks.length === 0 && !!data.spec && data.spec.status !== "pending");
   const viewportRef = A(null);
   const [viewportWidth, setViewportWidth] = d$2(null);
+  const [viewportHeight, setViewportHeight] = d$2(null);
   _$1(() => {
     const el = viewportRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     setViewportWidth(el.clientWidth);
+    setViewportHeight(el.clientHeight);
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) setViewportWidth(entry.contentRect.width);
+      for (const entry of entries) {
+        setViewportWidth(entry.contentRect.width);
+        setViewportHeight(entry.contentRect.height);
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
   const fit = Math.min(1, (viewportWidth ?? lay.width) / lay.width);
   const [zoom, setZoom] = d$2(null);
-  const [pan, setPan] = d$2({ x: 0, y: 0 });
+  const [rawPan, setPan] = d$2({ x: 0, y: 0 });
   const z2 = zoom ?? fit;
   const zoomedIn = z2 > fit + 1e-3;
   const centerX = viewportWidth !== null ? Math.max(0, (viewportWidth - lay.width * z2) / 2) : 0;
+  const content = { w: lay.width * z2, h: lay.height * z2 };
+  const view = { w: viewportWidth ?? content.w, h: viewportHeight ?? content.h };
+  const pan = clampPan(rawPan, content, view);
+  const tallerThanView = content.h > view.h + 1;
+  const canPan = zoomedIn || tallerThanView;
+  const setPanClamped = (p2) => setPan(clampPan(p2, content, view));
+  const KEY_STEP = 40;
+  function onKeyDown(e2) {
+    if (e2.target !== e2.currentTarget || e2.altKey || e2.ctrlKey || e2.metaKey) return;
+    const page = view.h * 0.9;
+    const by = {
+      ArrowUp: { x: 0, y: KEY_STEP },
+      ArrowDown: { x: 0, y: -KEY_STEP },
+      ArrowLeft: { x: KEY_STEP, y: 0 },
+      ArrowRight: { x: -KEY_STEP, y: 0 },
+      PageUp: { x: 0, y: page },
+      PageDown: { x: 0, y: -page }
+    };
+    let next;
+    if (e2.key === "Home") next = { x: pan.x, y: 0 };
+    else if (e2.key === "End") next = { x: pan.x, y: -Infinity };
+    else if (by[e2.key]) next = { x: pan.x + by[e2.key].x, y: pan.y + by[e2.key].y };
+    else return;
+    e2.preventDefault();
+    setPanClamped(next);
+  }
+  function onFocusIn(e2) {
+    const box = e2.target.closest(".task-box, .spec-root-card");
+    if (!box) return;
+    const top = parseFloat(box.style.top) * z2, bottom = top + parseFloat(box.style.height) * z2;
+    const left = parseFloat(box.style.left) * z2, right = left + parseFloat(box.style.width) * z2;
+    const fitAxis = (lo, hi, p2, size) => lo + p2 < 0 ? -lo : hi + p2 > size ? size - hi : p2;
+    setPanClamped({ x: fitAxis(left, right, pan.x, view.w), y: fitAxis(top, bottom, pan.y, view.h) });
+  }
+  _$1(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    el.addEventListener("focusin", onFocusIn);
+    return () => el.removeEventListener("focusin", onFocusIn);
+  });
+  const panByPage = (dir) => setPanClamped({ x: pan.x, y: pan.y - dir * view.h * 0.9 });
   const pointers = A(/* @__PURE__ */ new Map());
   const dragging = A(null);
   const pinch = A(null);
@@ -2111,7 +2190,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       dragging.current = null;
       return;
     }
-    if (!zoomedIn) return;
+    if (!canPan) return;
     if (e2.target.closest(".task-box, .spec-root-card, button")) return;
     dragging.current = { x: e2.clientX - pan.x, y: e2.clientY - pan.y };
     e2.target.setPointerCapture?.(e2.pointerId);
@@ -2124,7 +2203,7 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       return;
     }
     if (!dragging.current) return;
-    setPan({ x: e2.clientX - dragging.current.x, y: e2.clientY - dragging.current.y });
+    setPanClamped({ x: e2.clientX - dragging.current.x, y: e2.clientY - dragging.current.y });
   }
   function onPointerUp(e2) {
     pointers.current.delete(e2.pointerId);
@@ -2135,16 +2214,28 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
     dragging.current = null;
   }
   function onWheel(e2) {
-    if (!e2.ctrlKey) return;
+    if (!e2.ctrlKey) {
+      if (!tallerThanView) return;
+      const next2 = clampPan({ x: pan.x, y: pan.y - e2.deltaY }, content, view);
+      if (next2.y !== pan.y) {
+        e2.preventDefault();
+        setPan(next2);
+      }
+      return;
+    }
     e2.preventDefault();
     const next = clampZoom(z2 - e2.deltaY * 1e-3);
     setZoom(next);
     if (next <= fit + 1e-3) setPan({ x: 0, y: 0 });
   }
   return /* @__PURE__ */ u$1("div", { class: "canvas-wrap", children: [
-    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, style: { height: Math.ceil(lay.height * z2) + "px", touchAction: zoomedIn ? "none" : "pan-y" }, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
+    hiddenDone > 0 ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", "aria-expanded": false, title: "Finished tasks, and the arrows touching them, are folded away", onClick: () => setShowDone(true), children: [
+      hiddenDone,
+      " done"
+    ] }) : showDone && fullData.tasks.length > COLLAPSE_DONE_OVER ? /* @__PURE__ */ u$1("button", { type: "button", class: "canvas-done-toggle", "aria-expanded": true, onClick: () => setShowDone(false), children: "Hide finished" }) : null,
+    /* @__PURE__ */ u$1("div", { class: "canvas-viewport", ref: viewportRef, role: "group", "aria-label": canPan ? "Task diagram. Arrow keys pan, Page Up and Page Down scroll." : "Task diagram", tabIndex: canPan ? 0 : void 0, style: { height: Math.ceil(lay.height * z2) + "px" }, onKeyDown, onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp, onPointerLeave: onPointerUp, onWheel, children: /* @__PURE__ */ u$1("div", { class: "canvas-frame", style: { width: lay.width + "px", height: lay.height + "px", transform: `translate(${pan.x + centerX}px, ${pan.y}px) scale(${z2})` }, children: [
       /* @__PURE__ */ u$1("svg", { class: "dag canvas-arrows", width: lay.width, height: lay.height, "aria-hidden": "true", children: [
-        /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "8", markerHeight: "8", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
+        /* @__PURE__ */ u$1("defs", { children: /* @__PURE__ */ u$1("marker", { id: "dag-arrowhead", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse", children: /* @__PURE__ */ u$1("path", { d: "M0,0 L10,5 L0,10 z", class: "dag-arrowhead" }) }) }),
         lay.arrows.map((a2) => /* @__PURE__ */ u$1("g", { children: [
           /* @__PURE__ */ u$1("path", { class: "flow-arrow " + a2.kind, d: a2.path, "marker-end": "url(#dag-arrowhead)" }),
           a2.label ? /* @__PURE__ */ u$1("g", { transform: `translate(${a2.label.x},${a2.label.y})`, children: [
@@ -2159,6 +2250,10 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       lay.pos[PLACEHOLDER_ID] && data.spec ? /* @__PURE__ */ u$1(DagPlaceholder, { planning, style: boxStyle(lay.pos[PLACEHOLDER_ID]) }) : null
     ] }) }),
     /* @__PURE__ */ u$1("div", { class: "canvas-zoom-controls", children: [
+      tallerThanView ? /* @__PURE__ */ u$1(S$1, { children: [
+        /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "pan up", onClick: () => panByPage(-1), children: "↑" }),
+        /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "pan down", onClick: () => panByPage(1), children: "↓" })
+      ] }) : null,
       /* @__PURE__ */ u$1(
         "button",
         {
@@ -2180,6 +2275,22 @@ function Canvas({ data, projectId: projectId2, projectPhase, needsYou, activity 
       /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "zoom in", onClick: () => setZoom(Math.min(MAX_ZOOM, z2 + 0.15)), children: "+" })
     ] })
   ] });
+}
+function classifyDiffLine(line) {
+  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
+  if (line.startsWith("@@")) return "d-hunk";
+  if (line.startsWith("+")) return "d-add";
+  if (line.startsWith("-")) return "d-del";
+  return "";
+}
+function diffStat(text) {
+  let added = 0, removed = 0;
+  for (const line of text.split("\n")) {
+    if (/^(\+\+\+|---)/.test(line)) continue;
+    if (line.startsWith("+")) added++;
+    else if (line.startsWith("-")) removed++;
+  }
+  return { added, removed };
 }
 function Discuss({ card, onSent }) {
   const [detail, setDetail] = d$2(null);
@@ -2221,7 +2332,24 @@ function Discuss({ card, onSent }) {
 }
 const APPROVE_TARGET = { task_review: "review", awaiting_approval: "node" };
 const CAPTION = { task_review: "Task in review", question: "Agent question", blocked: "Blocked", revision: "Plan revision proposed", ack: "Update", awaiting_approval: "Criteria changed, awaiting approval" };
-function Card({ card, onActed }) {
+function ReviewFacts({ card }) {
+  const diffQ = useApi(() => api(routes.nodeDiff(card.nodeId)), [card.nodeId]);
+  const stat = diffQ.data && diffQ.data.source !== "none" ? diffStat(diffQ.data.diff) : null;
+  return /* @__PURE__ */ u$1("div", { class: "review-facts caption", children: [
+    diffQ.error ? /* @__PURE__ */ u$1("span", { children: `diff unavailable: ${diffQ.error}` }) : diffQ.data ? stat ? /* @__PURE__ */ u$1("span", { class: "mono", children: `+${stat.added} −${stat.removed}` }) : /* @__PURE__ */ u$1("span", { children: "no changes recorded" }) : /* @__PURE__ */ u$1("span", { children: "…" }),
+    card.tier ? /* @__PURE__ */ u$1("span", { children: [
+      " · ",
+      card.tier,
+      " risk"
+    ] }) : null,
+    card.ownerLabel ? /* @__PURE__ */ u$1("span", { "aria-label": "owner", children: [
+      " · ",
+      card.ownerLabel
+    ] }) : null,
+    /* @__PURE__ */ u$1("button", { type: "button", class: "link-btn", onClick: () => card.nodeId && openNode(card.nodeId), children: "Open task" })
+  ] });
+}
+function Card({ card, onActed, readOnly = false }) {
   const [rejecting, setRejecting] = d$2(false);
   const [reason, setReason] = d$2("");
   const [discussing, setDiscussing] = d$2(false);
@@ -2258,15 +2386,16 @@ function Card({ card, onActed }) {
       /* @__PURE__ */ u$1("span", { class: "caption", children: card.ts })
     ] }),
     /* @__PURE__ */ u$1("button", { type: "button", class: "notif-title", disabled: !card.nodeId, onClick: () => card.nodeId && openNode(card.nodeId), children: card.title }),
-    /* @__PURE__ */ u$1("div", { children: card.context }),
+    /* @__PURE__ */ u$1("div", { class: "clamp-3", children: card.context }),
+    card.kind === "task_review" && card.nodeId ? /* @__PURE__ */ u$1(ReviewFacts, { card }) : null,
     card.agent ? /* @__PURE__ */ u$1("div", { class: "caption", children: card.agent }) : null,
     approveA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: approveA.error }) : null,
-    card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
+    readOnly ? null : card.kind === "ack" ? !card.id.startsWith("ack:unverified:") ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Acknowledging…", onClick: approve, children: "Acknowledge" }) }) : null : card.kind === "question" || card.kind === "blocked" ? /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: card.kind === "question" ? "Answer" : "Discuss" }) }) : /* @__PURE__ */ u$1("div", { class: "actions", children: [
       /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveA.busy, busyLabel: "Approving…", onClick: approve, children: "Approve" }),
       card.kind === "task_review" ? /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: approveA.busy, onClick: () => setRejecting((r2) => !r2), children: "Reject" }) : null,
       card.kind !== "revision" ? /* @__PURE__ */ u$1(Button, { variant: "plain", onClick: () => setDiscussing((d2) => !d2), children: "Discuss" }) : null
     ] }),
-    rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
+    !readOnly && rejecting ? /* @__PURE__ */ u$1("div", { class: "stack tight", children: [
       /* @__PURE__ */ u$1("input", { placeholder: "why?", value: reason, onInput: (e2) => setReason(e2.target.value) }),
       rejectA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: rejectA.error }) : null,
       /* @__PURE__ */ u$1(Button, { variant: "danger", disabled: !reason.trim(), busy: rejectA.busy, busyLabel: "Sending…", onClick: reject, children: "Send" })
@@ -2274,22 +2403,32 @@ function Card({ card, onActed }) {
     discussing ? /* @__PURE__ */ u$1(Discuss, { card, onSent: onActed }) : null
   ] });
 }
-function CardRail({ cards }) {
-  const [collapsed, setCollapsed] = d$2(false);
+const RAIL_ID = "needs-you-rail";
+function CardRail({ cards, authed: authed2 }) {
+  const [collapsed, setCollapsed] = d$2(() => typeof matchMedia === "function" && matchMedia("(max-width: 899px)").matches);
+  const chipRef = A(null);
+  const headingRef = A(null);
+  const toggled = A(false);
+  h$2(() => {
+    if (!toggled.current) return;
+    (collapsed ? chipRef.current : headingRef.current)?.focus();
+  }, [collapsed]);
+  function toggle(next) {
+    toggled.current = true;
+    setCollapsed(next);
+  }
   if (!cards.length) return null;
-  if (collapsed) return /* @__PURE__ */ u$1("button", { type: "button", class: "card-rail-pill", onClick: () => setCollapsed(false), children: [
-    cards.length,
-    " need you"
-  ] });
-  return /* @__PURE__ */ u$1("div", { class: "card-rail stack tight", children: [
+  const n2 = cards.length;
+  if (collapsed) return /* @__PURE__ */ u$1("button", { ref: chipRef, type: "button", class: "card-rail-pill", "aria-expanded": "false", "aria-controls": RAIL_ID, onClick: () => toggle(false), children: n2 === 1 ? "1 thing needs you" : `${n2} things need you` });
+  return /* @__PURE__ */ u$1("div", { id: RAIL_ID, class: "card-rail stack tight", children: [
     /* @__PURE__ */ u$1("div", { class: "row between", children: [
-      /* @__PURE__ */ u$1("span", { class: "caption", children: [
+      /* @__PURE__ */ u$1("span", { ref: headingRef, tabIndex: -1, class: "caption", children: [
         "Needs you · ",
         cards.length
       ] }),
-      /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "collapse", onClick: () => setCollapsed(true), children: "—" })
+      /* @__PURE__ */ u$1("button", { type: "button", class: "btn btn-plain", "aria-label": "hide needs-you list", "aria-expanded": "true", "aria-controls": RAIL_ID, onClick: () => toggle(true), children: "Hide" })
     ] }),
-    cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, onActed: refresh }, c2.id))
+    cards.map((c2) => /* @__PURE__ */ u$1(Card, { card: c2, readOnly: !authed2, onActed: refresh }, c2.id))
   ] });
 }
 function payloadOf(ev) {
@@ -2299,13 +2438,14 @@ function payloadOf(ev) {
     return {};
   }
 }
+const ownerName = (o2) => (o2 ?? "").replace(/^runner:/, "");
 function cardsFromInbox(inbox, ctx) {
   const cards = [];
   for (const q2 of inbox.questions) {
     const n2 = ctx.nodesById[q2.node_id];
     cards.push({ id: "question:" + q2.id, kind: "question", nodeId: q2.node_id, projectId: n2?.project_id ?? null, title: n2?.title ?? `#${q2.node_id}`, context: q2.text, agent: "", ts: "" });
   }
-  for (const n2 of inbox.review) cards.push({ id: "task_review:" + n2.id, kind: "task_review", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "in review", agent: n2.owner ?? "", ts: "" });
+  for (const n2 of inbox.review) cards.push({ id: "task_review:" + n2.id, kind: "task_review", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: n2.summary?.trim() || "No summary recorded", tier: n2.risk_tier, ownerLabel: ownerName(n2.owner), agent: "", ts: "" });
   for (const n2 of inbox.blocked) cards.push({ id: "blocked:" + n2.id, kind: "blocked", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: n2.block_reason ?? "blocked", agent: n2.owner ?? "", ts: "" });
   for (const n2 of inbox.awaiting_approval) cards.push({ id: "awaiting_approval:" + n2.id, kind: "awaiting_approval", nodeId: n2.id, projectId: n2.project_id, title: n2.title, context: "criteria changed, awaiting approval", agent: n2.owner ?? "", ts: "" });
   for (const r2 of ctx.revisions.filter((r22) => r22.approved_at === null)) {
@@ -2427,10 +2567,59 @@ function NewProject() {
     /* @__PURE__ */ u$1("div", { class: "actions", children: /* @__PURE__ */ u$1(Button, { type: "submit", variant: "filled", disabled: busy, children: "Create" }) })
   ] }) });
 }
+function progressCounts(tasks) {
+  const n2 = (...s2) => tasks.filter((t2) => s2.includes(t2.status)).length;
+  return { done: n2("done"), running: n2("in_progress"), review: n2("review", "awaiting_approval"), blocked: n2("blocked", "failed"), total: tasks.length };
+}
+function ProgressBar({ counts, spend }) {
+  if (!counts.total) return null;
+  const pct = (n2) => n2 / counts.total * 100 + "%";
+  const label = `${counts.done} done, ${counts.running} running, ${counts.review} in review, ${counts.blocked} blocked, of ${counts.total} tasks`;
+  return /* @__PURE__ */ u$1("div", { class: "progress-row", children: [
+    /* @__PURE__ */ u$1("div", { class: "progress-seg", role: "progressbar", "aria-label": label, "aria-valuemin": 0, "aria-valuemax": counts.total, "aria-valuenow": counts.done, children: [
+      /* @__PURE__ */ u$1("span", { class: "seg seg-done", style: { width: pct(counts.done) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-running", style: { width: pct(counts.running) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-review", style: { width: pct(counts.review) } }),
+      /* @__PURE__ */ u$1("span", { class: "seg seg-blocked", style: { width: pct(counts.blocked) } })
+    ] }),
+    /* @__PURE__ */ u$1("span", { class: "caption", children: `${counts.done} done · ${counts.running} running · ${counts.review} in review · ${counts.blocked} blocked` }),
+    spend ? /* @__PURE__ */ u$1("span", { class: "caption progress-spend", children: spend }) : null
+  ] });
+}
+const usd = (n2) => `$${n2.toFixed(2)}`;
+function spendLabel(kpis) {
+  const drivers = Object.entries(kpis?.spend_by_driver ?? {});
+  if (!drivers.length) return null;
+  const [name, d2] = drivers.reduce((a2, b2) => b2[1].pct > a2[1].pct ? b2 : a2);
+  const base = d2.unit === "usd" ? `${usd(d2.spent)} of ${usd(d2.limit)} (${name})` : `${d2.spent} of ${d2.limit} ${d2.unit} (${name})`;
+  return d2.pct >= 1 ? `${base} · over budget` : base;
+}
+const KEY = "muvue.demoNoticeDismissed";
+function wasDismissed() {
+  try {
+    return localStorage.getItem(KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 function FakeAgentNotice() {
-  return /* @__PURE__ */ u$1("details", { class: "demo-notice", "data-fake-notice": true, children: [
-    /* @__PURE__ */ u$1("summary", { children: "Demo agent: writes no code" }),
-    /* @__PURE__ */ u$1("p", { class: "muted", children: 'Tasks here are routed to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' })
+  const [hidden, setHidden] = d$2(wasDismissed);
+  const [open, setOpen] = d$2(false);
+  const [notSaved, setNotSaved] = d$2(false);
+  if (hidden) return notSaved ? /* @__PURE__ */ u$1("p", { class: "caption", "data-notice-not-saved": true, children: "Couldn't remember this; it will return on reload." }) : null;
+  function dismiss2() {
+    try {
+      localStorage.setItem(KEY, "1");
+    } catch {
+      setNotSaved(true);
+    }
+    setHidden(true);
+  }
+  return /* @__PURE__ */ u$1("div", { class: "demo-banner", "data-fake-notice": true, role: "note", children: [
+    /* @__PURE__ */ u$1("p", { children: "Demo agent: writes no code" }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "demo-details", "aria-expanded": open, "aria-controls": "demo-notice-more", onClick: () => setOpen(!open), children: "Details" }),
+    /* @__PURE__ */ u$1("button", { type: "button", class: "icon-btn", "aria-label": "dismiss demo notice", onClick: dismiss2, children: "✕" }),
+    /* @__PURE__ */ u$1("p", { class: "demo-more", id: "demo-notice-more", hidden: !open, children: 'Tasks go to the built-in "fake" demo agent. It returns canned results and writes no code. To do real work, point [routing] in .muvue/config.toml at a real agent such as claude.' })
   ] });
 }
 function ActivityBar({ items, now, onDismiss, onOpenLog }) {
@@ -2497,7 +2686,7 @@ function NextStepBar({
   return /* @__PURE__ */ u$1("section", { class: "next-step card", "data-next-step": step.id, children: [
     /* @__PURE__ */ u$1("span", { class: "caption", children: "Next" }),
     /* @__PURE__ */ u$1("h2", { children: step.title }),
-    /* @__PURE__ */ u$1("p", { class: "muted", children: step.detail }),
+    /* @__PURE__ */ u$1("p", { class: "muted next-detail", children: step.detail }),
     authed2 ? /* @__PURE__ */ u$1(S$1, { children: [
       step.id === "approve_spec" && specId !== null ? /* @__PURE__ */ u$1("div", { class: "actions", children: [
         /* @__PURE__ */ u$1(Button, { variant: "filled", busy: approveSpecA.busy, busyLabel: "Approving…", onClick: approveSpec, children: "Approve spec" }),
@@ -2589,6 +2778,7 @@ function ProjectPage() {
   const nodesQ = useApi(() => api(routes.nodes(pid)), [pid, refreshTick.value]);
   const inboxQ = useApi(() => api(routes.inbox()), [refreshTick.value]);
   const revisionsQ = useApi(() => pid ? api(routes.revisions(pid)) : Promise.resolve([]), [pid, refreshTick.value]);
+  const kpisQ = useApi(() => api(routes.kpis()), [refreshTick.value]);
   const allNodesQ = useApi(() => api(routes.nodes(null)), [refreshTick.value]);
   const data = T(() => graphQ.data && nodesQ.data ? buildCanvasData(graphQ.data, nodesQ.data) : null, [graphQ.data, nodesQ.data]);
   const titles = T(() => Object.fromEntries((nodesQ.data ?? []).map((n2) => [n2.id, n2.title])), [nodesQ.data]);
@@ -2629,6 +2819,7 @@ function ProjectPage() {
     planning: data?.spec ? planningNodeIds(activity, launches.value, pid).has(data.spec.id) : false
   };
   const step = nextStep(stepInput);
+  const runIsPrimary = step.id === "run" && cards.length === 0;
   const reason = runBlockReason(stepInput);
   async function run() {
     if (!pid) return;
@@ -2648,19 +2839,24 @@ function ProjectPage() {
         ] }),
         /* @__PURE__ */ u$1("div", { class: "row meta-row", children: [
           /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
-          hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null
+          /* @__PURE__ */ u$1(ProgressBar, { counts: progressCounts((nodesQ.data ?? []).filter((n2) => n2.kind === "task")), spend: spendLabel(kpisQ.data) })
         ] }),
+        kpisQ.error ? /* @__PURE__ */ u$1("div", { class: "caption", children: [
+          "Spend unavailable: ",
+          kpisQ.error
+        ] }) : null,
+        hasFakeAgent ? /* @__PURE__ */ u$1(FakeAgentNotice, {}) : null,
         /* @__PURE__ */ u$1("div", { class: "row toolbar", children: [
           authed.value && data?.spec && data.spec.status !== "pending" && step.id !== "plan_tasks" ? /* @__PURE__ */ u$1(Button, { variant: "outline", onClick: () => setAddingTask((a2) => !a2), children: "+ Task" }) : null,
-          /* @__PURE__ */ u$1(Button, { variant: step.id === "run" ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !!reason, onClick: run, children: "▶ Run tasks" }),
-          reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
+          /* @__PURE__ */ u$1(Button, { variant: runIsPrimary ? "filled" : "outline", busy: runA.busy, busyLabel: "Starting…", disabled: !authed.value || !!reason, onClick: run, children: "▶ Run tasks" }),
+          !authed.value ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: "Sign in to run tasks" }) : reason ? /* @__PURE__ */ u$1("span", { class: "caption", "data-run-reason": true, children: reason }) : null
         ] }),
         runA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: runA.error }) : null
       ] }),
       /* @__PURE__ */ u$1("aside", { class: "project-rail", children: [
         /* @__PURE__ */ u$1(NextStepBar, { step, authed: authed.value, projectId: pid, specId: data?.spec?.id ?? null, activity, onAddTask: openAddTask }),
         /* @__PURE__ */ u$1(ActivityBar, { items, now, onDismiss: dismiss, onOpenLog: setOpenLog }),
-        /* @__PURE__ */ u$1(CardRail, { cards })
+        /* @__PURE__ */ u$1(CardRail, { cards, authed: authed.value })
       ] }),
       /* @__PURE__ */ u$1("section", { class: "project-dag", children: [
         authed.value && addingTask && data?.spec ? /* @__PURE__ */ u$1(AddForm, { parentId: data.spec.id, kind: "task", candidates: data.tasks, onClose: () => setAddingTask(false) }) : null,
@@ -2995,13 +3191,6 @@ function Discussion({ nodeId, notes }) {
     a2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: a2.error }) : null
   ] });
 }
-function classifyDiffLine(line) {
-  if (/^(\+\+\+|---|diff |commit |index )/.test(line)) return "d-meta";
-  if (line.startsWith("@@")) return "d-hunk";
-  if (line.startsWith("+")) return "d-add";
-  if (line.startsWith("-")) return "d-del";
-  return "";
-}
 const LABEL = { commits: "patches of the linked commits", worktree: "worktree against its branch point", none: "nothing committed yet" };
 function DiffView({ nodeId }) {
   const [d2, setD] = d$2(null);
@@ -3299,6 +3488,7 @@ boot().catch((e2) => {
   --st-pending: #8A8986;
   --st-ready: #5B8DEF;
   --st-in_progress: #D9A33B;
+  --st-in_progress-strong: #9A6A00;
   --st-review: #8C6FD6;
   --st-awaiting_approval: #C46FA8;
   --st-done: #4C9A6A;
@@ -3319,6 +3509,7 @@ boot().catch((e2) => {
     --accent-strong-hover: #EA9D82;
     --on-accent: #1F1E1D;
     --danger: #E06B6B;
+    --st-in_progress-strong: #E3B04B;
     --shadow: 0 1px 2px rgb(0 0 0 / .4);
   }
 }
@@ -3334,8 +3525,8 @@ textarea { min-height: 88px; resize: vertical; }
 pre { font-family: var(--mono); font-size: 12px; line-height: 1.5; margin: 0; white-space: pre-wrap; word-break: break-word; background: var(--surface-2); border-radius: var(--radius); padding: 10px 12px; }
 pre.scroll-x { white-space: pre; overflow-x: auto; }
 .mono { font-family: var(--mono); }
-.muted { color: var(--text-2); font-size: 13px; }
-.caption { color: var(--text-2); font-size: 12px; }
+.muted { color: var(--text-2); font-size: 14px; }
+.caption { color: var(--text-2); font-size: 13px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; box-shadow: var(--shadow); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
@@ -3395,7 +3586,7 @@ ul.criteria { margin: 4px 0; padding-left: 20px; } pre.logs { max-height: 50dvh;
 .pill.st-blocked, .pill.st-paused { color: color-mix(in srgb, var(--st-blocked) 50%, var(--text)); background: color-mix(in srgb, var(--st-blocked) 14%, var(--surface)); }
 .pill.st-failed { color: color-mix(in srgb, var(--st-failed) 50%, var(--text)); background: color-mix(in srgb, var(--st-failed) 14%, var(--surface)); }
 .pill.st-planning { color: color-mix(in srgb, var(--st-ready) 50%, var(--text)); background: color-mix(in srgb, var(--st-ready) 14%, var(--surface)); }
-.tier { font-size: 12px; }
+.tier { font-size: 13px; }
 .segmented { display: inline-flex; background: var(--surface-2); border-radius: var(--radius); padding: 3px; gap: 2px; }
 .segmented button { border: 0; background: transparent; padding: 8px 14px; border-radius: 8px; cursor: pointer; color: var(--text-2); min-height: 44px; transition: background 180ms ease-out; }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); font-weight: 500; }
@@ -3436,7 +3627,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .app { flex-direction: row; }
   .topbar { display: none; }
   main { padding-bottom: 0; }
-  .sidebar { display: flex; flex-direction: column; width: var(--sidebar-w); flex: none; border-right: 1px solid var(--border); background: var(--surface); padding: 12px; gap: 8px; position: sticky; top: 0; height: 100dvh; }
+  .sidebar { display: flex; flex-direction: column; width: var(--sidebar-w); flex: none; border-right: 1px solid var(--border); background: var(--surface); padding: 12px; gap: 8px; position: sticky; top: 0; height: 100dvh; overflow-y: auto; }
   .sidebar nav { display: flex; flex-direction: column; gap: 2px; }
   .nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: var(--radius); border: 0; background: none; cursor: pointer; text-align: left; color: var(--text); }
   .nav-item:hover { background: var(--surface-2); }
@@ -3447,14 +3638,15 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 }
 /* dashboard/src/canvas/canvas.css */
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
-.canvas-viewport { position: relative; width: 100%; overflow: hidden; }
+.canvas-viewport { position: relative; width: 100%; overflow: hidden; overflow: clip; touch-action: pan-y; max-height: min(72dvh, 760px); }
+.canvas-done-toggle { display: block; margin: 8px; min-height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; font-size: 13px; }
 .canvas-frame { position: relative; transform-origin: 0 0; }
 .canvas-arrows { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
-.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 2; }
+.canvas-arrows path.flow-arrow { fill: none; stroke: var(--text-2); stroke-width: 1.5; }
 .canvas-arrows path.flow-arrow.placeholder { stroke-dasharray: 6 5; }
 .canvas-arrows .dag-arrowhead { fill: var(--text-2); }
 .canvas-arrows .arrow-label-bg { fill: var(--surface); stroke: var(--text-2); }
-.canvas-arrows .arrow-label { font-size: 12px; fill: var(--text); }
+.canvas-arrows .arrow-label { font-size: 13px; fill: var(--text); }
 .canvas-zoom-controls { position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; }
 .spec-root-card, .task-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px 12px; cursor: pointer; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
 .spec-root-card { border-top: 4px solid var(--accent); }
@@ -3477,7 +3669,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .task-box:focus-visible, .spec-root-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .purpose { margin: 2px 0 6px; }
 .subtask-list { display: flex; flex-direction: column; margin: 4px 0; }
-.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 12px; }
+.subtask-row { display: flex; align-items: center; gap: 6px; min-height: 44px; background: none; border: 0; padding: 0; width: 100%; text-align: left; cursor: pointer; font-size: 13px; }
 .more-row { padding-left: 20px; }
 .needs-you-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
@@ -3491,10 +3683,16 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .toolbar .caption { flex: 1 1 7rem; min-width: 0; line-height: 1.25; }
 .status-line { padding: 0; }
 .status-line-btn { display: inline-flex; align-items: center; min-height: 44px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; color: inherit; font: inherit; }
-.demo-notice summary { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; border-radius: 999px; cursor: pointer; list-style: none; font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
-.demo-notice summary::-webkit-details-marker { display: none; }
-.demo-notice[open] { flex-basis: 100%; }
-.demo-notice p { margin: 8px 0 0; max-width: 60ch; }
+.progress-row { flex: 1 1 18rem; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.progress-seg { display: flex; flex: 1 1 10rem; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface); border: 1px solid var(--border); }
+.seg { display: block; height: 100%; }
+.seg-done { background: var(--st-done); } .seg-running { background: var(--st-in_progress-strong); } .seg-review { background: var(--st-review); } .seg-blocked { background: var(--st-blocked); }
+.demo-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; padding: 0 0 0 14px; border-radius: var(--radius); font-size: 13px; color: var(--text); background: color-mix(in srgb, var(--st-in_progress) 16%, var(--surface)); border: 1px solid color-mix(in srgb, var(--st-in_progress) 45%, var(--surface)); }
+.demo-banner p { margin: 0; flex: 1; }
+.demo-banner .icon-btn { color: var(--text); }
+.demo-details { min-height: 44px; padding: 0 10px; background: none; border: 0; cursor: pointer; font: inherit; color: var(--text); text-decoration: underline; }
+.demo-banner .demo-more { flex-basis: 100%; padding: 0 14px 10px 0; }
+.demo-banner [hidden] { display: none; }
 @media (max-width: 899px) {
   .project-head .page-title, .project-menu-btn { display: none; }
 }
@@ -3519,23 +3717,44 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 .next-step { margin: 0 16px 12px; border-left: 4px solid var(--accent); }
 .next-step p { margin: 0 0 8px; }
 .next-step h2 { margin: 2px 0 4px; }
+@media (max-width: 899px) {
+  .next-step { padding: 10px 14px; margin-bottom: 8px; }
+  .next-step .caption { display: none; }
+  .next-step h2 { margin: 0 0 2px; font-size: 16px; }
+  .next-step .next-detail { margin: 0 0 6px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+  .project-head { padding-top: 8px; gap: 4px; }
+}
 [data-run-reason] { max-width: 220px; }
-.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.agent-tag { display: flex; align-items: center; gap: 6px; margin-top: auto; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--text-2); }
 .agent-tag-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-pending); }
 .agent-tag.st-ready .agent-dot { background: var(--st-ready); }
-.agent-tag.st-running .agent-dot { background: var(--st-in_progress); }
 .agent-tag.st-waiting_on_you .agent-dot { background: var(--st-review); }
 .agent-tag.st-done .agent-dot { background: var(--st-done); }
 .agent-tag.st-failed .agent-dot { background: var(--st-failed); }
 .agent-tag.st-paused .agent-dot { background: var(--st-blocked); }
 .agent-dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+.agent-tag.st-running .agent-dot { background: var(--st-in_progress-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-in_progress) 35%, var(--surface)); }
+.task-box.st-bar-blocked { background: color-mix(in srgb, var(--st-blocked) 8%, var(--surface)); }
+.task-box.st-bar-failed { background: color-mix(in srgb, var(--st-failed) 10%, var(--surface)); border-color: var(--st-failed); border-left-width: 6px; }
+
+.subtask-owner { flex: none; max-width: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-line, .reason { margin: 0; }
+.task-box .reason { color: var(--text); }
+.task-box.st-bar-blocked { border-left-style: dashed; }
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
+@media (max-width: 899px) {
+  .card-rail-pill { position: static; align-self: stretch; margin: 0 16px 12px; text-align: left; }
+}
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
-.notif-title:disabled { cursor: default; }</style>
+.notif-title:disabled { cursor: default; }
+
+.clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.review-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }</style>
 </head>
 <body>
 <div id="root"></div>

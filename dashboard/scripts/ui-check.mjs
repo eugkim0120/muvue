@@ -49,6 +49,22 @@ function muvue(...args) {
   return execFileSync("uv", ["run", "muvue", ...args], { cwd: muvueRoot, encoding: "utf8" });
 }
 
+function startServe(dir, servePort) {
+  const proc = spawn("uv", ["run", "muvue", "serve", dir, "--port", String(servePort)], { cwd: muvueRoot, detached: true });
+  const ready = new Promise((res, rej) => {
+    let buf = "";
+    const t = setTimeout(() => rej(new Error("serve printed no link in 30s:\n" + buf)), 30000);
+    const on = (d) => {
+      buf += d;
+      const m = buf.match(/http:\/\/\S+#n=\S+/);
+      const k = buf.match(/api token: (\S+)/);
+      if (m && k) { clearTimeout(t); res({ link: m[0], token: k[1] }); }
+    };
+    proc.stdout.on("data", on); proc.stderr.on("data", on);
+  });
+  return { pid: proc.pid, ready };
+}
+
 // --- seed: project + approved spec, no tasks (the voxscore starting state)
 const repo = mkdtempSync(join(tmpdir(), "muvue-ui-check-repo-"));
 execFileSync("git", ["init", "-q"], { cwd: repo });
@@ -60,20 +76,11 @@ const spec = JSON.parse(muvue("spec", String(projectId), "--title", "voxscore v0
 muvue("approve", `spec:${spec.id}`, "--path", repo);
 
 // --- serve (fake agent in its default behavior: breakdown must still work)
-const serve = spawn("uv", ["run", "muvue", "serve", repo, "--port", String(port)], { cwd: muvueRoot, detached: true });
-const { link, token } = await new Promise((res, rej) => {
-  let buf = "";
-  const t = setTimeout(() => rej(new Error("serve printed no link in 30s:\n" + buf)), 30000);
-  const on = (d) => {
-    buf += d;
-    const m = buf.match(/http:\/\/\S+#n=\S+/);
-    const k = buf.match(/api token: (\S+)/);
-    if (m && k) { clearTimeout(t); res({ link: m[0], token: k[1] }); }
-  };
-  serve.stdout.on("data", on); serve.stderr.on("data", on);
-});
+const serve = startServe(repo, port);
+const { link, token } = await serve.ready;
 const base = link.split("#")[0];
 
+let bigServe = null;
 const browser = await chromium.launch({ executablePath: CHROME_PATH });
 try {
   const ctx = await browser.newContext({ deviceScaleFactor: 2 });
@@ -90,26 +97,44 @@ try {
   check("phone: Run explains why it is disabled", (await runReason.count()) > 0 && /approve/i.test(await runReason.first().innerText()));
   check("phone: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
 
-  await page.getByText("✨ Plan tasks with agent").first().click().catch(() => {});
+  await page.getByText("✨ Plan tasks with agent").first().click();
   await page.waitForTimeout(300);
   await page.screenshot({ path: join(outDir, "02-phone-300ms-after-plan.png"), fullPage: true });
   const feedback = await page.locator("[data-activity], .task-box:not(.dag-empty)").first().isVisible();
   check("phone: within 300ms of launching, the activity bar or the new tasks are showing", feedback);
 
-  await page.waitForFunction(() => document.querySelectorAll(".task-box").length >= 3, null, { timeout: 20000 }).catch(() => {});
+  await page.waitForFunction(() => document.querySelectorAll(".task-box").length >= 3, null, { timeout: 20000 });
   await page.waitForSelector(".toast", { timeout: 5000 });
   await page.waitForTimeout(500);
   await page.screenshot({ path: join(outDir, "03-phone-after-plan.png"), fullPage: true });
   await dagChecks(page, "phone");
+  // First-run (collapsed banner) layout targets, measured with the banner visible.
   const dagTopPhone = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
-  // Was 667px before this plan. With a header, the demo notice and the Next
-  // card still above it, the top half of the screen is the honest target.
-  check("phone: the diagram starts in the top half of the screen", dagTopPhone < 0.5 * 844, `starts at ${Math.round(dagTopPhone)}px`);
+  // Was 667px before this plan. With the "writes no code" banner visible (first
+  // run) the target is 60% of the screen; once dismissed it is the top half.
+  check("phone: with the demo banner showing, the diagram starts in the top 60% of the screen", dagTopPhone < 0.6 * 844, `starts at ${Math.round(dagTopPhone)}px`);
+  const bannerPhoneH = await page.evaluate(() => document.querySelector("[data-fake-notice]").getBoundingClientRect().height);
+  check("phone: the collapsed demo banner is one line (<= 50px)", bannerPhoneH <= 50, `${Math.round(bannerPhoneH)}px`);
+  await page.getByRole("button", { name: "Details" }).click();
+  await page.waitForTimeout(100);
+  const expanded = await page.evaluate(() => {
+    const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+    const b = r("[data-fake-notice]"), meta = r(".meta-row"), tool = r(".toolbar");
+    const more = document.getElementById("demo-notice-more");
+    return { shown: !more.hidden, noHScroll: document.scrollingElement.scrollWidth <= window.innerWidth, stacked: b.top >= meta.bottom - 1 && b.bottom <= tool.top + 1, textFits: more.scrollWidth <= more.clientWidth + 1 };
+  });
+  check("phone: expanding Details shows the text without overlap or horizontal scroll", expanded.shown && expanded.noHScroll && expanded.stacked && expanded.textFits, JSON.stringify(expanded));
+  await page.screenshot({ path: join(outDir, "03b-phone-banner-expanded.png"), fullPage: true });
+  await page.getByRole("button", { name: "Details" }).click();
+  check("phone: the demo banner is shown and has a dismiss button", await page.locator("[data-fake-notice] [aria-label='dismiss demo notice']").count() === 1);
+  check("phone: the progress bar reports task progress", (await page.getByRole("progressbar").getAttribute("aria-label"))?.endsWith("of 3 tasks") === true);
   const primaries = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
   check("phone: at most one enabled primary button", primaries <= 1, `${primaries} found`);
   const phoneToast = await toastOverlap(page);
   check("phone: a toast was on screen to test (the 'Added 3 tasks' one)", phoneToast.seen > 0, `${phoneToast.seen} toasts`);
   check("phone: no toast covers a box or an arrow label", !phoneToast.covers);
+
+  check("phone: the diagram viewport never exceeds 72% of the screen height", await page.evaluate(() => document.querySelector(".canvas-viewport").getBoundingClientRect().height <= 0.72 * window.innerHeight + 1));
 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.waitForTimeout(800);
@@ -120,9 +145,118 @@ try {
     const next = document.querySelector("[data-next-step]").getBoundingClientRect();
     return { dagTop: dag.top + window.scrollY, nextBeside: next.left >= dag.right - 1 };
   });
-  check("desktop: the diagram starts above 200px", desk.dagTop < 200, `starts at ${Math.round(desk.dagTop)}px`);
+  check("desktop: with the demo banner showing, the diagram starts above 260px", desk.dagTop < 260, `starts at ${Math.round(desk.dagTop)}px`);
+  const bannerH = await page.evaluate(() => document.querySelector("[data-fake-notice]").getBoundingClientRect().height);
+  check("desktop: the collapsed demo banner is one line (<= 60px)", bannerH <= 60, `${Math.round(bannerH)}px`);
+  await page.locator("[aria-label='dismiss demo notice']").click();
+  check("desktop: dismissing the demo banner removes it", await page.locator("[data-fake-notice]").count() === 0);
+  const deskAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("desktop: once dismissed, the diagram starts above 200px", deskAfter < 200, `starts at ${Math.round(deskAfter)}px`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(800);
+  const phoneAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("phone: once the demo banner is dismissed, the diagram starts in the top half of the screen", phoneAfter < 0.5 * 844, `starts at ${Math.round(phoneAfter)}px`);
+  // --- a task waiting for review (banner already dismissed, so this is the
+  // tightest phone state). The CLI path: approve the task list, start and
+  // finish the first task; `done` leaves it in `review` until approved.
+  const planned = await page.evaluate(async () => (await (await fetch("/nodes")).json()));
+  const firstTask = (planned.nodes ?? planned).filter((n) => n.kind === "task").sort((x, y) => x.id - y.id)[0];
+  check("phone: the planned tasks can be read back to seed a review item", !!firstTask);
+  muvue("approve", `gate2:${projectId}`, "--path", repo);
+  muvue("start", String(firstTask.id), "--owner", "ui-check", "--path", repo);
+  muvue("done", String(firstTask.id), "--owner", "ui-check", "--summary", "Added the tracker.", "--path", repo);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.waitForSelector(".card-rail-pill", { timeout: 10000 });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: join(outDir, "03c-phone-with-review.png"), fullPage: true });
+  const dagTopPhoneReview = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("phone: with a review item waiting, the diagram still starts in the top half of the screen", dagTopPhoneReview < 0.5 * 844, `starts at ${Math.round(dagTopPhoneReview)}px`);
+  check("phone: the review card is a one-line chip until tapped", (await page.locator(".card-rail-pill").count()) === 1 && (await page.locator(".notif-card").count()) === 0);
+  const chipH = await page.locator(".card-rail-pill").evaluate((e) => e.getBoundingClientRect().height);
+  check("phone: the needs-you chip is one line, a 44px touch target (44-56px)", chipH >= 44 && chipH <= 56, `${Math.round(chipH)}px`);
+  const primariesReview = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
+  check("phone: with a review item waiting (chip collapsed), no primary button is showing and the Next step is the review step", primariesReview === 0 && (await page.locator('[data-next-step="review"]').count()) === 1, `${primariesReview} enabled filled buttons`);
+  await page.locator(".card-rail-pill").click();
+  await page.waitForTimeout(200);
+  const primariesOpen = await page.locator(".btn-filled").evaluateAll((els) => els.filter((b) => !b.disabled && b.offsetParent !== null).length);
+  check("phone: with the review card open, exactly one primary action (Approve)", primariesOpen === 1, `${primariesOpen} enabled filled buttons`);
+  // Same state with the first-run demo banner showing again.
+  await page.evaluate(() => localStorage.removeItem("muvue.demoNoticeDismissed"));
+  await page.reload();
+  await page.waitForSelector("[data-fake-notice]", { timeout: 10000 });
+  await page.waitForSelector(".card-rail-pill", { timeout: 10000 });
+  await page.waitForTimeout(500);
+  const dagTopBannerReview = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
+  check("phone: banner showing and a review item waiting, the diagram starts in the top 60% of the screen", dagTopBannerReview < 0.6 * 844, `starts at ${Math.round(dagTopBannerReview)}px`);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.waitForTimeout(800);
   check("desktop: the Next step sits beside the diagram, not above it", desk.nextBeside);
   check("desktop: no horizontal page scroll", await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
+
+  // A 26-character single word is the widest title the height estimate counts as
+  // one line; if it really wraps, this fails. (A blocked task with a long
+  // reason cannot be seeded: no CLI command blocks a task; the clamp is
+  // covered by a TaskBox unit test.)
+  muvue("decompose", String(spec.id), "--title", "W".repeat(26), "--body", "Stress the one-line title estimate", "--path", repo);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll(".task-box:not(.dag-empty)").length >= 4, null, { timeout: 10000 });
+  const stress = await page.locator(".task-box:not(.dag-empty)").evaluateAll((els) => {
+    const rects = els.map((e) => e.getBoundingClientRect());
+    let overlap = false;
+    for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      if (a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height) overlap = true;
+    }
+    const clipped = els.filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => e.querySelector(".title")?.textContent ?? "?");
+    const dead = els.map((e) => { const tag = e.querySelector(".agent-tag"); const prev = tag?.previousElementSibling; return tag && prev ? Math.round(tag.getBoundingClientRect().top - prev.getBoundingClientRect().bottom) : 0; }).filter((g) => g > 20);
+    return { n: els.length, overlap, clipped, dead };
+  });
+  check("desktop: a 26-character one-word title fits its box, with no overlap or dead space", stress.n >= 4 && !stress.overlap && stress.clipped.length === 0 && stress.dead.length === 0, JSON.stringify(stress));
+
+  // --- a 40-task chain with 13 finished: the page must not grow with the task count
+  const bigRepo = mkdtempSync(join(tmpdir(), "muvue-ui-check-big-"));
+  execFileSync("git", ["init", "-q"], { cwd: bigRepo });
+  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: bigRepo });
+  muvue("init", bigRepo);
+  const bigProject = JSON.parse(muvue("project", "create", "--goal", "forty-task stress project", "--path", bigRepo));
+  const bigSpec = JSON.parse(muvue("spec", String(bigProject.id ?? bigProject.project.id), "--title", "big spec", "--body", "Forty chained tasks", "--path", bigRepo));
+  muvue("approve", `spec:${bigSpec.id}`, "--path", bigRepo);
+  const bigIds = [];
+  for (let i = 1; i <= 40; i++) {
+    const deps = bigIds.length ? ["--depends-on", String(bigIds.at(-1))] : [];
+    bigIds.push(JSON.parse(muvue("decompose", String(bigSpec.id), "--title", `Task ${i}`, "--body", `Step ${i} of the chain`, ...deps, "--path", bigRepo)).id);
+  }
+  muvue("approve", `gate2:${bigProject.id ?? bigProject.project.id}`, "--path", bigRepo);
+  for (const id of bigIds.slice(0, 13)) {
+    muvue("start", String(id), "--owner", "ui-check", "--path", bigRepo);
+    muvue("done", String(id), "--owner", "ui-check", "--path", bigRepo);
+    muvue("approve", `review:${id}`, "--path", bigRepo);
+  }
+  bigServe = startServe(bigRepo, port + 1);
+  const big = await bigServe.ready;
+  const bp = await ctx.newPage();
+  await bp.setViewportSize({ width: 390, height: 844 });
+  await bp.goto(big.link);
+  await bp.waitForSelector(".canvas-done-toggle", { timeout: 10000 });
+  await bp.waitForTimeout(800);
+  await bp.screenshot({ path: join(outDir, "08-phone-40-tasks.png"), fullPage: true });
+  const bigMeasure = () => bp.evaluate(() => ({
+    page: document.scrollingElement.scrollHeight, inner: window.innerHeight,
+    viewport: document.querySelector(".canvas-viewport").getBoundingClientRect().height,
+    frame: document.querySelector(".canvas-frame").getBoundingClientRect().height,
+    boxes: document.querySelectorAll(".task-box").length,
+  }));
+  const folded = await bigMeasure();
+  check("phone, 40 tasks: the page is at most 1.5x the screen height", folded.page <= 1.5 * folded.inner, `page ${folded.page}px, screen ${folded.inner}px, folded diagram frame ${Math.round(folded.frame)}px`);
+  check("phone, 40 tasks: the diagram viewport stays within 72% of the screen", folded.viewport <= 0.72 * folded.inner + 1, `${Math.round(folded.viewport)}px`);
+  const toggle = bp.locator(".canvas-done-toggle", { hasText: "13 done" });
+  check("phone, 40 tasks: a '13 done' toggle folds the finished tasks away", (await toggle.count()) === 1 && folded.boxes === 27, `${folded.boxes} task boxes shown`);
+  await toggle.click();
+  await bp.waitForTimeout(300);
+  const open = await bigMeasure();
+  check("phone, 40 tasks: expanding shows all 40 and the page still does not grow", open.boxes === 40 && open.page <= 1.5 * open.inner, `${open.boxes} boxes, page ${open.page}px`);
+  await bp.close();
 
   // --- sign-in: a visitor without the link
   const guest = await browser.newContext({ deviceScaleFactor: 2 });
@@ -163,7 +297,7 @@ try {
   }
 } finally {
   await browser.close();
-  try { process.kill(-serve.pid, "SIGTERM"); } catch {}
+  for (const s of [serve, bigServe]) if (s) { try { process.kill(-s.pid, "SIGTERM"); } catch {} }
 }
 
 async function dagChecks(page, label) {
@@ -186,6 +320,13 @@ async function dagChecks(page, label) {
   check(`${label}: every task box is within the viewport width`, offscreen === 0, `${offscreen} cut off`);
   const overflowing = await page.locator(".task-box, .spec-root-card").evaluateAll((els) => els.filter((e) => e.scrollHeight > e.clientHeight + 1).map((e) => `${e.querySelector(".title")?.textContent ?? "?"}: needs ${e.scrollHeight}px, has ${e.clientHeight}px`));
   check(`${label}: every box's content fits (nothing clipped)`, overflowing.length === 0, overflowing.join("; "));
+  const deadSpace = await page.locator(".task-box:not(.dag-empty)").evaluateAll((els) => els.map((e) => {
+    const tag = e.querySelector(".agent-tag");
+    const prev = tag?.previousElementSibling;
+    const gap = tag && prev ? tag.getBoundingClientRect().top - prev.getBoundingClientRect().bottom : 0;
+    return { title: e.querySelector(".title")?.textContent ?? "?", gap: Math.round(gap) };
+  }).filter((b) => b.gap > 20).map((b) => `${b.title}: ${b.gap}px`));
+  check(`${label}: no task box has dead space above its agent tag`, deadSpace.length === 0, deadSpace.join("; "));
 }
 
 console.log(`\nscreenshots: ${outDir}`);

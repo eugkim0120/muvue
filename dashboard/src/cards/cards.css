@@ -1,6 +1,13 @@
 /* dashboard/src/cards/cards.css */
 .card-rail { padding: 0 16px 12px; }
 .card-rail-pill { position: sticky; top: 8px; align-self: flex-end; background: var(--accent-strong); color: var(--on-accent); border: 0; border-radius: 999px; padding: 8px 16px; min-height: 44px; cursor: pointer; }
+@media (max-width: 899px) {
+  .card-rail-pill { position: static; align-self: stretch; margin: 0 16px 12px; text-align: left; }
+}
 .notif-card { border-left: 3px solid var(--accent); }
 .notif-title { background: none; border: 0; padding: 0; text-align: left; font-weight: 600; cursor: pointer; color: var(--text); min-height: 44px; }
 .notif-title:disabled { cursor: default; }
+
+.clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.review-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }

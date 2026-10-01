@@ -27,6 +27,8 @@ const read = (...p: string[]) => readFileSync(join(__dirname, "..", "src", ...p)
 const uiCss = read("ui", "ui.css");
 const baseCss = read("styles", "base.css");
 const shellCss = read("shell", "shell.css");
+const canvasCss = read("canvas", "canvas.css");
+
 
 // Resolves `var(--x)` or `color-mix(in srgb, <c> N%, <c>)` against a token map.
 function resolve(expr: string, t: Record<string, string>): string {
@@ -40,11 +42,10 @@ function resolve(expr: string, t: Record<string, string>): string {
 function escapeRe(x: string): string { return x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 // Declaration value of `prop` in the rule whose selector list contains `selector`.
 function decl(css: string, selector: string, prop: string): string {
-  const rule = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].find((m) => m[1]!.split(",").some((s) => s.trim().endsWith(selector)));
-  if (!rule) throw new Error(`no rule for ${selector}`);
-  const d = rule[2]!.match(new RegExp(`(?:^|;|\\s)${prop}:\\s*([^;]+);`));
-  if (!d) throw new Error(`no ${prop} in rule for ${selector}`);
-  return d[1]!;
+  const has = (body: string) => new RegExp(`(?:^|;|\\s)${prop}:\\s*([^;]+);`).exec(body);
+  const rule = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].find((m) => m[1]!.split(",").some((s) => s.trim().endsWith(selector)) && has(m[2]!));
+  if (!rule) throw new Error(`no rule for ${selector} with ${prop}`);
+  return has(rule[2]!)![1]!;
 }
 
 // One entry per .pill rule in ui.css, with the colours it really computes.
@@ -77,6 +78,10 @@ describe.each([["light", light], ["dark", dark]] as const)("%s mode: text contra
     ["links and plain buttons on a surface", t["accent-strong"]!, t["surface"]!],
     ["selected sidebar item", resolve(decl(shellCss, ".nav-item.on", "color"), t), resolve(decl(shellCss, ".nav-item.on", "background"), t)],
     ...[...STATUSES, "executing", "paused", "planning"].map((s): [string, string, string] => { const [fg, bg] = pillColours(pillFor(s), t); return [`${s} pill`, fg, bg]; }),
+    ["demo banner text", resolve(decl(canvasCss, ".demo-banner", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
+    ["demo banner dismiss button", resolve(decl(canvasCss, ".demo-banner .icon-btn", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
+    ["demo banner Details button", resolve(decl(canvasCss, ".demo-details", "color"), t), resolve(decl(canvasCss, ".demo-banner", "background"), t)],
+    ["blocked reason line on the blocked task box", resolve(decl(canvasCss, ".task-box .reason", "color"), t), resolve(decl(canvasCss, ".task-box.st-bar-blocked", "background"), t)],
     ["danger button hover", resolve(decl(uiCss, ".btn-danger", "color"), t), resolve(decl(uiCss, ".btn-danger:hover:not(:disabled)", "background"), t)],
     ["error toast label", resolve(decl(uiCss, ".toast.error", "color"), t), resolve(decl(uiCss, ".toast.error", "background"), t)],
     ...surfaces.flatMap(([name, bg]): [string, string, string][] => [
@@ -97,4 +102,14 @@ test("the disabled button style is not a faded primary", () => {
   const ui = uiCss;
   expect(ui).not.toMatch(/\.btn:disabled\s*\{[^}]*opacity:\s*\.5/);
   expect(ui).toMatch(/\.btn:disabled:not\(\.busy\)\s*\{[^}]*background:\s*var\(--surface-2\)[^}]*color:\s*var\(--text-2\)/);
+});
+
+describe.each([["light", light], ["dark", dark]] as const)("%s mode: graphics contrast is at least 3:1", (_mode, t) => {
+  test.each([
+    ["working-now dot on a surface", t["st-in_progress-strong"]!, t["surface"]!],
+    ["arrow line on the canvas", t["text-2"]!, t["surface-2"]!],
+    ...["done", "in_progress-strong", "review", "blocked"].map((s): [string, string, string] => [`progress segment ${s} on its track`, resolve(decl(canvasCss, `.seg-${s === "in_progress-strong" ? "running" : s}`, "background"), t), resolve(decl(canvasCss, ".progress-seg", "background"), t)]),
+  ])("%s", (_n, fg, bg) => {
+    expect(ratio(fg, bg)).toBeGreaterThanOrEqual(3);
+  });
 });
