@@ -28,6 +28,14 @@ _FAILURE_RETRY_S = 5.0
 _TAILNET_RANGES = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 
 
+def is_tailnet_host(host: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in _TAILNET_RANGES)
+
+
 class TailnetError(Exception):
     """whois could not be answered (socket missing, timeout, bad status)."""
 
@@ -52,24 +60,35 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self._path)
 
 
-def localapi_whois(ip: str, socket_path: str = LOCALAPI_SOCKET) -> dict:
+def _localapi_get(path: str, socket_path: str) -> tuple[int, bytes]:
     conn = _UnixHTTPConnection(socket_path, _TIMEOUT_S)
     try:
-        conn.request("GET", f"/localapi/v0/whois?addr={ip}:0")
+        conn.request("GET", path)
         resp = conn.getresponse()
-        body = resp.read()
+        return resp.status, resp.read()
     except (OSError, http.client.HTTPException) as exc:
         raise TailnetError(f"tailscaled LocalAPI at {socket_path} unreachable: {exc}") from exc
     finally:
         conn.close()
-    if resp.status == 404:
+
+
+def localapi_whois(ip: str, socket_path: str = LOCALAPI_SOCKET) -> dict:
+    status, body = _localapi_get(f"/localapi/v0/whois?addr={ip}:0", socket_path)
+    if status == 404:
         raise NotATailnetPeer(ip)
-    if resp.status != 200:
-        raise TailnetError(f"tailscaled whois returned HTTP {resp.status}")
+    if status != 200:
+        raise TailnetError(f"tailscaled whois returned HTTP {status}")
     try:
         return json.loads(body)
     except ValueError as exc:
         raise TailnetError(f"tailscaled whois returned invalid JSON: {exc}") from exc
+
+
+def localapi_reachable(socket_path: str = LOCALAPI_SOCKET) -> None:
+    """Raise TailnetError unless tailscaled's LocalAPI answers."""
+    status, _ = _localapi_get("/localapi/v0/status", socket_path)
+    if status != 200:
+        raise TailnetError(f"tailscaled status returned HTTP {status}")
 
 
 class TailnetResolver:
@@ -90,11 +109,7 @@ class TailnetResolver:
 
     def peer(self, ip: str) -> TailnetPeer | None:
         """The person behind `ip`, or None when it is not a user-owned tailnet node."""
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return None
-        if not any(addr in net for net in _TAILNET_RANGES):
+        if not is_tailnet_host(ip):
             return None
         now = self._clock()
         hit = self._cache.get(ip)

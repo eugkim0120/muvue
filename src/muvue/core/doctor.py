@@ -22,6 +22,7 @@ from . import gitutil
 from . import hooks as hooks_mod
 from . import migrate as migrate_mod
 from . import runner as runner_mod
+from . import tailnet as tailnet_mod
 from .config import PROTOCOL_VERSION, ConfigError, load_config
 from .repo_init import HOOK_NAMES, _hook_marker, gitignore_missing_entries, init_repo, repair_install, shim_is_current
 from .schema import SCHEMA_VERSION
@@ -432,6 +433,18 @@ def run_doctor(
                     f"cost_model {agent_cfg.cost_model!r} cannot produce (expected "
                     f"{expected_unit!r})"
                 )
+
+    if config is not None and config.daemon.tailnet_logins:
+        logins = ", ".join(config.daemon.tailnet_logins)
+        try:
+            tailnet_mod.localapi_reachable()
+        except tailnet_mod.TailnetError as exc:
+            report.warn(
+                f"tailnet identity is configured for {logins} but {exc}; "
+                "those devices will fall back to token sign-in"
+            )
+        else:
+            report.info.append(f"tailnet identity: tailscaled reachable, signing in {logins}")
 
     db_path = muvue_dir / "muvue.db"
     if not db_path.exists():
