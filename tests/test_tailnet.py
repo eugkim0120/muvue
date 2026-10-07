@@ -120,3 +120,29 @@ def test_addresses_outside_tailnet_ranges_never_reach_transport(outside):
         raise AssertionError("transport must not be called")
 
     assert TailnetResolver(transport).peer(outside) is None
+
+
+def test_ipv6_scope_id_is_not_a_tailnet_host():
+    from muvue.core.tailnet import is_tailnet_host
+
+    assert is_tailnet_host("fd7a:115c:a1e0::1") is True
+    assert is_tailnet_host("fd7a:115c:a1e0::1%&addr=100.64.0.1") is False
+    assert is_tailnet_host("fd7a:115c:a1e0::1%eth0") is False
+
+
+@pytest.mark.parametrize(
+    "ip,expected",
+    [("100.64.0.9", "addr=100.64.0.9%3A0"), ("fd7a:115c:a1e0::1", "addr=%5Bfd7a%3A115c%3Aa1e0%3A%3A1%5D%3A0")],
+)
+def test_whois_query_is_built_from_the_parsed_address(monkeypatch, ip, expected):
+    from muvue.core import tailnet
+
+    seen = []
+
+    def fake_get(path, socket_path):
+        seen.append(path)
+        return 200, b"{}"
+
+    monkeypatch.setattr(tailnet, "_localapi_get", fake_get)
+    tailnet.localapi_whois(ip)
+    assert seen == [f"/localapi/v0/whois?{expected}"]

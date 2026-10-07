@@ -114,3 +114,18 @@ def test_same_origin_json_post_from_allowlisted_peer_is_authed(tmp_path):
     c = _client(tmp_path, logins=[ME], transport=_whois_for())
     r = c.post("/projects/p1/pause", headers={"Content-Type": "application/json"})
     assert r.status_code != 403
+
+
+def test_peer_on_the_daemons_own_bind_address_is_not_a_tailnet_peer(tmp_path):
+    init_repo(tmp_path)
+    config = MuvueConfig(checks=ChecksConfig(test="true", lint="true"), daemon=DaemonConfig(tailnet_logins=[ME]))
+    app = create_app(tmp_path, config=config, session=SessionManager(), tailnet=TailnetResolver(_whois_for()), bind_host=PEER_IP)
+    c = TestClient(app, base_url=f"http://{PEER_IP}", client=(PEER_IP, 50000))
+    assert c.get("/auth/check").status_code == 403
+
+
+def test_tailnet_identity_cannot_mint_a_nonce_or_cookie(tmp_path):
+    c = _client(tmp_path, logins=[ME], transport=_whois_for())
+    hdr = {"Content-Type": "application/json"}
+    assert c.post("/auth/nonce", headers=hdr).status_code == 403
+    assert c.post("/auth/session", headers=hdr).status_code == 403

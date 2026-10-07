@@ -217,12 +217,16 @@ def create_app(
         or None. Only `request.client` is consulted, never a header."""
         if not tailnet_logins or request.client is None:
             return None
+        # A process on this host reaching its own tailnet address resolves to
+        # the host's owner; it is not a remote device.
+        if bind_host and request.client.host == bind_host.strip():
+            return None
         peer = tailnet.peer(request.client.host)
         if peer is None or peer.login.lower() not in tailnet_logins:
             return None
         return peer.login
 
-    def _require_session(request: Request) -> None:
+    def _require_session(request: Request, *, allow_tailnet: bool = True) -> None:
         """Control 4 (token half): a valid token via `Authorization:
         Bearer <token>` (non-browser clients: CLI, VS Code extension) or
         the `muvue_session` HttpOnly cookie (the dashboard, after the
@@ -234,7 +238,7 @@ def create_app(
         either: its identity is re-verified every cache window, so the idle
         clock does not apply. The Origin and JSON-only checks in
         `security_gate` still run first and become its only CSRF defence."""
-        if _tailnet_login(request) is not None:
+        if allow_tailnet and _tailnet_login(request) is not None:
             return
         authorization = request.headers.get("authorization")
         token = None
@@ -327,8 +331,9 @@ def create_app(
     def cookie_from_token(request: Request) -> JSONResponse:
         """A pasted api token (sent as the Authorization header) becomes
         the same HttpOnly cookie the nonce exchange sets, so a phone that
-        signed in by pasting stays signed in across reloads."""
-        _require_session(request)
+        signed in by pasting stays signed in across reloads. Tailnet
+        identity does not count here: a cookie would outlive the allowlist."""
+        _require_session(request, allow_tailnet=False)
         resp = JSONResponse({"ok": True})
         _set_session_cookie(resp)
         return resp
@@ -336,8 +341,9 @@ def create_app(
     @app.post("/auth/nonce")
     def mint_nonce(request: Request) -> dict:
         """A fresh one-time dashboard nonce for a caller that already
-        holds the token (the VS Code extension opening its webview)."""
-        _require_session(request)
+        holds the token (the VS Code extension opening its webview). Tailnet
+        identity does not count: the nonce can be exchanged for the token."""
+        _require_session(request, allow_tailnet=False)
         return {"nonce": session.mint_nonce()}
 
     @app.get("/auth/check")

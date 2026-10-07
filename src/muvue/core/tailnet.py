@@ -13,10 +13,12 @@ import ipaddress
 import json
 import logging
 import socket
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable
+from urllib.parse import urlencode
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +34,8 @@ def is_tailnet_host(host: str) -> bool:
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
+        return False
+    if getattr(addr, "scope_id", None):
         return False
     return any(addr in net for net in _TAILNET_RANGES)
 
@@ -73,7 +77,9 @@ def _localapi_get(path: str, socket_path: str) -> tuple[int, bytes]:
 
 
 def localapi_whois(ip: str, socket_path: str = LOCALAPI_SOCKET) -> dict:
-    status, body = _localapi_get(f"/localapi/v0/whois?addr={ip}:0", socket_path)
+    addr = ipaddress.ip_address(ip)
+    hostport = f"[{addr}]:0" if addr.version == 6 else f"{addr}:0"
+    status, body = _localapi_get(f"/localapi/v0/whois?{urlencode({'addr': hostport})}", socket_path)
     if status == 404:
         raise NotATailnetPeer(ip)
     if status != 200:
@@ -106,20 +112,23 @@ class TailnetResolver:
         self._clock = clock
         self._cache: OrderedDict[str, tuple[float, TailnetPeer | None]] = OrderedDict()
         self._logged: set[str] = set()
+        self._lock = threading.Lock()
 
     def peer(self, ip: str) -> TailnetPeer | None:
         """The person behind `ip`, or None when it is not a user-owned tailnet node."""
         if not is_tailnet_host(ip):
             return None
         now = self._clock()
-        hit = self._cache.get(ip)
+        with self._lock:
+            hit = self._cache.get(ip)
         if hit is not None and hit[0] > now:
             return hit[1]
         peer, ttl = self._lookup(ip)
-        self._cache[ip] = (now + ttl, peer)
-        self._cache.move_to_end(ip)
-        while len(self._cache) > self._max_entries:
-            self._cache.popitem(last=False)
+        with self._lock:
+            self._cache.pop(ip, None)
+            self._cache[ip] = (now + ttl, peer)
+            while len(self._cache) > self._max_entries:
+                self._cache.popitem(last=False)
         return peer
 
     def _lookup(self, ip: str) -> tuple[TailnetPeer | None, float]:

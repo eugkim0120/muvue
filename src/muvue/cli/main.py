@@ -422,7 +422,10 @@ def serve(
         )
         typer.echo(f"lost the link later? run `muvue link {repo_root}` on this machine for a fresh one")
         typer.echo(f"muvue daemon listening on http://{host}:{port}")
-        uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
+        # proxy_headers=False: uvicorn would otherwise rewrite the peer address
+        # from X-Forwarded-For for a loopback client, and the tailnet identity
+        # check (decision #176) trusts the peer address alone.
+        uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning", proxy_headers=False)
     except KeyboardInterrupt:
         pass
     finally:

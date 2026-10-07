@@ -124,8 +124,11 @@ web-page-originated**, not local:
    allowlisted device, and anyone holding a Tailscale-authenticated
    session on it, can act on the dashboard. Identity comes only from the
    socket peer, resolved through tailscaled's LocalAPI `whois`; no header
-   is read, tagged nodes and shared-in nodes are rejected, and a failed
-   lookup means "not signed in". With no cookie, `SameSite` no longer
+   is read (the daemon runs uvicorn with `proxy_headers` off, and a peer
+   equal to its own bind address is excluded), tagged nodes are rejected,
+   a shared-in node counts only if its own login is on the allowlist, and
+   a failed lookup means "not signed in". Tailnet identity cannot mint a
+   nonce or a session cookie. With no cookie, `SameSite` no longer
    protects those requests, so the Host check, the Origin check and the
    JSON-only rule are the whole CSRF defence for them. The residual risk
    is a tailnet ACL that lets a device you do not control reach the
