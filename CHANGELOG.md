@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+- Tailscale identity sign-in (opt-in): list your login under `[daemon] tailnet_logins` and the plain dashboard URL signs in any of your tailnet devices with no one-time link or token. `muvue link` prints the permanent URL, `muvue doctor` checks tailscaled, and `GET /auth/whoami` reports the login. See decision #176 and the threat model.
+
 ### Changed
 - Dashboard: signed out, the page is read-only. Card actions and Run are hidden or disabled, with one sign-in prompt instead.
 - Dashboard: review cards show the agent's summary, the lines added and removed (`+N −M`, counted from `GET /nodes/{id}/diff`), the tier and the owner.

@@ -1041,6 +1041,7 @@ function q(path, params) {
 const routes = {
   healthz: () => "/healthz",
   authCheck: () => "/auth/check",
+  authWhoami: () => "/auth/whoami",
   authExchange: () => "/auth/exchange",
   authSession: () => "/auth/session",
   eventsStream: () => "/events/stream",
@@ -1082,6 +1083,7 @@ const projectId = y(null);
 const currentProject = g(() => projects.value.find((p2) => p2.id === projectId.value) ?? null);
 const authed = y(false);
 const signedOutReason = y("read_only");
+const tailnetLogin = y(null);
 const signInOpen = y(false);
 function setSignedIn() {
   authed.value = true;
@@ -1518,7 +1520,15 @@ const COPY = {
   expired: { text: "Signed out after sitting idle too long.", action: "Sign in again" }
 };
 function AuthStrip() {
-  if (authed.value) return null;
+  if (authed.value) {
+    const login = tailnetLogin.value;
+    if (login === null) return null;
+    return /* @__PURE__ */ u$1("div", { class: "auth-strip", "data-auth-strip": "tailnet", role: "status", children: /* @__PURE__ */ u$1("span", { class: "grow", children: [
+      "Signed in via Tailscale (",
+      login,
+      ")."
+    ] }) });
+  }
   const reason = signedOutReason.value;
   const c2 = COPY[reason];
   return /* @__PURE__ */ u$1("div", { class: "auth-strip" + (reason === "read_only" ? "" : " warn"), "data-auth-strip": reason, role: "status", children: [
@@ -1572,6 +1582,10 @@ async function signInWithToken(pasted) {
     throw e2;
   }
   return "ok";
+}
+async function loadWhoami() {
+  const r2 = await api(routes.authWhoami());
+  tailnetLogin.value = r2.login;
 }
 function applyAuthResult(r2) {
   if (r2 === "ok") setSignedIn();
@@ -3454,6 +3468,7 @@ window.addEventListener("hashchange", () => {
 });
 async function boot() {
   applyAuthResult(await exchangeFragmentNonce());
+  if (authed.value) await loadWhoami();
   resetRouteFromLocation();
   const h2 = await api(routes.healthz());
   protocolVersion.value = h2.protocol_version;

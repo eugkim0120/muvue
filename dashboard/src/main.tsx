@@ -6,7 +6,7 @@ import "./canvas/canvas.css";
 import "./cards/cards.css";
 import { render } from "preact";
 import { App } from "./app";
-import { exchangeFragmentNonce, applyAuthResult, handleLinkHashChange } from "./api/auth";
+import { exchangeFragmentNonce, applyAuthResult, handleLinkHashChange, loadWhoami } from "./api/auth";
 import { onForbidden, api } from "./api/client";
 import { routes } from "./api/routes";
 import { connectStream } from "./api/stream";
@@ -26,6 +26,7 @@ window.addEventListener("hashchange", () => { handleLinkHashChange().catch(toast
 
 async function boot() {
   applyAuthResult(await exchangeFragmentNonce());
+  if (authed.value) await loadWhoami();
   resetRouteFromLocation();
   const h = await api<{ protocol_version: number }>(routes.healthz());
   protocolVersion.value = h.protocol_version;

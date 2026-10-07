@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/preact";
 import { AuthStrip } from "../src/shell/AuthStrip";
 import { SignInSheet } from "../src/shell/SignInSheet";
-import { authed, signedOutReason, signInOpen } from "../src/state";
+import { authed, signedOutReason, signInOpen, tailnetLogin } from "../src/state";
 import { setToken } from "../src/api/client";
 
 function stubAuth(check: { status: number; auth?: string }) {
@@ -12,7 +12,7 @@ function stubAuth(check: { status: number; auth?: string }) {
   vi.stubGlobal("fetch", fn);
   return fn;
 }
-afterEach(() => { vi.unstubAllGlobals(); setToken(""); authed.value = false; signedOutReason.value = "read_only"; signInOpen.value = false; });
+afterEach(() => { vi.unstubAllGlobals(); setToken(""); authed.value = false; signedOutReason.value = "read_only"; signInOpen.value = false; tailnetLogin.value = null; });
 
 test("the strip says why the page is read-only, and hides when signed in", () => {
   const { rerender } = render(<AuthStrip />);
@@ -87,4 +87,13 @@ test("a refusal is announced and tied to the token field", async () => {
   expect(callout.getAttribute("role")).toBe("alert");
   expect(input.getAttribute("aria-describedby")).toBe(callout.id);
   expect(callout.id).not.toBe("");
+});
+
+test("a tailnet-signed-in page says so, with no sign-in button", () => {
+  authed.value = true;
+  tailnetLogin.value = "me@example.com";
+  render(<AuthStrip />);
+  expect(screen.getByText("Signed in via Tailscale (me@example.com).")).toBeTruthy();
+  expect(document.querySelector('[data-auth-strip="tailnet"]')).toBeTruthy();
+  expect(screen.queryByText("Sign in")).toBeNull();
 });
