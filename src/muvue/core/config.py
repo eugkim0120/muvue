@@ -50,6 +50,9 @@ class DaemonConfig(StrictModel):
 
     bind: str = "127.0.0.1"
     allowed_origins: list[str] = Field(default_factory=list)
+    # Tailscale logins (e.g. "you@example.com") whose devices are signed in
+    # without a token (decision #176). Empty = feature off.
+    tailnet_logins: list[str] = Field(default_factory=list)
 
 
 class NotifyConfig(StrictModel):
@@ -194,6 +197,7 @@ require_auto_criterion_above_tier = "low"
 [daemon]
 bind = "127.0.0.1"
 allowed_origins = []
+tailnet_logins = []
 
 [notify]
 url = ""
