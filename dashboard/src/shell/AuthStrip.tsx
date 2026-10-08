@@ -1,4 +1,4 @@
-import { authed, signedOutReason, signInOpen } from "../state";
+import { authed, signedOutReason, signInOpen, tailnetLogin } from "../state";
 import { Button } from "../ui/Button";
 
 const COPY = {
@@ -9,7 +9,11 @@ const COPY = {
 
 // One line, not a form: the form lives in SignInSheet, one tap away.
 export function AuthStrip() {
-  if (authed.value) return null;
+  if (authed.value) {
+    const login = tailnetLogin.value;
+    if (login === null) return null;
+    return <div class="auth-strip" data-auth-strip="tailnet" role="status"><span class="grow">Signed in via Tailscale ({login}).</span></div>;
+  }
   const reason = signedOutReason.value;
   const c = COPY[reason];
   return (

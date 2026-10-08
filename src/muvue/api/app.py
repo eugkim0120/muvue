@@ -40,6 +40,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from muvue import core
 from muvue.core.config import MuvueConfig
 from muvue.core.daemon import SessionManager
+from muvue.core.tailnet import TailnetResolver
 
 STATIC_DIR = Path(__file__).parent / "static"
 SESSION_COOKIE_NAME = "muvue_session"
@@ -62,6 +63,7 @@ def create_app(
     config: MuvueConfig | None = None,
     *,
     session: SessionManager | None = None,
+    tailnet: TailnetResolver | None = None,
     port: int | None = None,
     bind_host: str | None = None,
     drain_interval_s: float = 0.5,
@@ -70,6 +72,8 @@ def create_app(
     db_path = repo_root / ".muvue" / "muvue.db"
     config = config or core.load_config(repo_root / ".muvue" / "config.toml")
     session = session or SessionManager()
+    tailnet = tailnet or TailnetResolver()
+    tailnet_logins = {login.strip().lower() for login in config.daemon.tailnet_logins}
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -208,13 +212,34 @@ def create_app(
         }[status]
         return HTTPException(status_code=401 if status == "expired" else 403, detail=detail, headers={AUTH_HEADER: status})
 
-    def _require_session(request: Request) -> None:
+    def _tailnet_login(request: Request) -> str | None:
+        """Decision #176: the allowlisted tailnet login behind the TCP peer,
+        or None. Only `request.client` is consulted, never a header."""
+        if not tailnet_logins or request.client is None:
+            return None
+        # A process on this host reaching its own tailnet address resolves to
+        # the host's owner; it is not a remote device.
+        if bind_host and request.client.host == bind_host.strip():
+            return None
+        peer = tailnet.peer(request.client.host)
+        if peer is None or peer.login.lower() not in tailnet_logins:
+            return None
+        return peer.login
+
+    def _require_session(request: Request, *, allow_tailnet: bool = True) -> None:
         """Control 4 (token half): a valid token via `Authorization:
         Bearer <token>` (non-browser clients: CLI, VS Code extension) or
         the `muvue_session` HttpOnly cookie (the dashboard, after the
         one-time fragment exchange -- control 5). Never a query string:
         no endpoint here ever reads one, and a query-string `token=`
-        param is simply ignored, not accepted."""
+        param is simply ignored, not accepted.
+
+        An allowlisted tailnet peer (decision #176) is signed in without
+        either: its identity is re-verified every cache window, so the idle
+        clock does not apply. The Origin and JSON-only checks in
+        `security_gate` still run first and become its only CSRF defence."""
+        if allow_tailnet and _tailnet_login(request) is not None:
+            return
         authorization = request.headers.get("authorization")
         token = None
         if authorization and authorization.lower().startswith("bearer "):
@@ -306,8 +331,9 @@ def create_app(
     def cookie_from_token(request: Request) -> JSONResponse:
         """A pasted api token (sent as the Authorization header) becomes
         the same HttpOnly cookie the nonce exchange sets, so a phone that
-        signed in by pasting stays signed in across reloads."""
-        _require_session(request)
+        signed in by pasting stays signed in across reloads. Tailnet
+        identity does not count here: a cookie would outlive the allowlist."""
+        _require_session(request, allow_tailnet=False)
         resp = JSONResponse({"ok": True})
         _set_session_cookie(resp)
         return resp
@@ -315,8 +341,9 @@ def create_app(
     @app.post("/auth/nonce")
     def mint_nonce(request: Request) -> dict:
         """A fresh one-time dashboard nonce for a caller that already
-        holds the token (the VS Code extension opening its webview)."""
-        _require_session(request)
+        holds the token (the VS Code extension opening its webview). Tailnet
+        identity does not count: the nonce can be exchanged for the token."""
+        _require_session(request, allow_tailnet=False)
         return {"nonce": session.mint_nonce()}
 
     @app.get("/auth/check")
@@ -325,6 +352,12 @@ def create_app(
         dashboard uses it to tell whether its cookie is being sent."""
         _require_session(request)
         return {"ok": True}
+
+    @app.get("/auth/whoami")
+    def auth_whoami(request: Request) -> dict:
+        """The tailnet login this request is signed in as, else null. Not
+        gated: it only reports the caller's own identity."""
+        return {"login": _tailnet_login(request)}
 
     # ------------------------------------------------------------------
     # Ops / dashboard

@@ -1,6 +1,6 @@
-import { checkAuth, signInWithToken, applyAuthResult, handleLinkHashChange } from "../src/api/auth";
+import { checkAuth, signInWithToken, applyAuthResult, handleLinkHashChange, loadWhoami } from "../src/api/auth";
 import { setToken } from "../src/api/client";
-import { authed, signedOutReason, refreshTick } from "../src/state";
+import { authed, signedOutReason, refreshTick, tailnetLogin } from "../src/state";
 
 type Reply = { status: number; auth?: string };
 function stub(replies: Record<string, Reply>) {
@@ -16,7 +16,7 @@ function stub(replies: Record<string, Reply>) {
   vi.stubGlobal("fetch", fn);
   return fn;
 }
-afterEach(() => { vi.unstubAllGlobals(); setToken(""); authed.value = false; signedOutReason.value = "read_only"; });
+afterEach(() => { vi.unstubAllGlobals(); setToken(""); authed.value = false; signedOutReason.value = "read_only"; tailnetLogin.value = null; });
 
 test("checkAuth maps 200/403 missing/403 invalid/401 expired", async () => {
   stub({ "/auth/check": { status: 200 } });
@@ -90,4 +90,19 @@ test("a hash change that is not a link does nothing", async () => {
   await handleLinkHashChange();
   expect(fetchMock).not.toHaveBeenCalled();
   window.location.hash = "";
+});
+
+test("loadWhoami records the tailnet login, or null for a token session", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true, status: 200, statusText: "OK", headers: new Headers({ "content-type": "application/json" }),
+    json: async () => ({ login: "me@example.com" }), text: async () => "",
+  })));
+  await loadWhoami();
+  expect(tailnetLogin.value).toBe("me@example.com");
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true, status: 200, statusText: "OK", headers: new Headers({ "content-type": "application/json" }),
+    json: async () => ({ login: null }), text: async () => "",
+  })));
+  await loadWhoami();
+  expect(tailnetLogin.value).toBeNull();
 });

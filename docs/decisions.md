@@ -2463,3 +2463,42 @@ reading here. Real `decisions` table entries start once dogfooding begins
     folding and the capped, pannable viewport are the whole answer for
     now. Cost if wrong: a long dependency chain still reads top to bottom
     and needs panning.
+
+176. **Tailscale identity signs in allowlisted devices (opt-in).** The
+    one-time `#n=` link dies on first use, so a second browser, a phone or
+    a chat preview that fetched it first leaves the user locked out.
+    `[daemon] tailnet_logins = ["you@example.com"]` makes the daemon treat
+    a request as authenticated when its TCP peer is a user-owned tailnet
+    node whose `whois` login is on the list, so the plain URL works as a
+    permanent bookmark on every device on the tailnet.
+    - Identity is the socket peer only (`request.client.host`), never a
+      header. The lookup uses tailscaled's LocalAPI over its Unix socket
+      with the standard library, cached for 60 seconds and bounded to 256
+      peers. Failures are retried after 5 seconds and logged once per
+      reason.
+    - Uvicorn's `proxy_headers` is disabled in `serve`: its default would
+      rewrite the peer from `X-Forwarded-For` for a loopback client, which
+      would let a local process claim any tailnet identity. A peer equal
+      to the daemon's own bind address is excluded, because a local
+      process reaching the host's tailnet IP resolves to the owner.
+    - Tagged nodes are rejected. A node shared in from another tailnet
+      resolves to its own login, which is not on the list unless added.
+      Another tailnet login gets the read-only view, not an error page. A failed lookup means "not signed in" and
+      the token and nonce flow still works.
+    - Idle expiry (#173) does not apply to these requests, since identity
+      is re-checked every cache window. It is unchanged for everyone else.
+      The Origin check, Host check and JSON-only rule still run on every
+      mutating request and are now the only CSRF defence for them.
+    - Tailnet identity never converts into a credential: `POST
+      /auth/nonce` and `POST /auth/session` still require a real session,
+      so it cannot mint a one-time link or a long-lived cookie.
+    - An empty list (the default) leaves behaviour exactly as before.
+      `muvue link` prints the permanent URL when the list is non-empty and
+      the daemon is bound to a tailnet address. `muvue doctor` warns when
+      the list is set and tailscaled cannot be reached. `GET /auth/whoami`
+      reports the matched login and drives the dashboard's "Signed in via
+      Tailscale" strip.
+    Supersedes the "token only" assumption in threat-model control 5 for
+    allowlisted peers. Cost if wrong: a device you do not control that
+    reaches the port under your own login gets full control, so the tailnet
+    ACLs must keep the daemon's port limited to your own devices.

@@ -117,6 +117,23 @@ web-page-originated**, not local:
    page is built from `dashboard/` and committed;
    `tests/test_dashboard_static.py` checks the built file, not the
    source.
+   **Opt-in exception: Tailscale identity (decision #176).** When
+   `[daemon] tailnet_logins` lists a login, a request whose TCP peer is
+   a user-owned tailnet node of that login is signed in with no nonce,
+   cookie or token. This adds a trust assumption: any process on an
+   allowlisted device, and anyone holding a Tailscale-authenticated
+   session on it, can act on the dashboard. Identity comes only from the
+   socket peer, resolved through tailscaled's LocalAPI `whois`; no header
+   is read (the daemon runs uvicorn with `proxy_headers` off, and a peer
+   equal to its own bind address is excluded), tagged nodes are rejected,
+   a shared-in node counts only if its own login is on the allowlist, and
+   a failed lookup means "not signed in". Tailnet identity cannot mint a
+   nonce or a session cookie. With no cookie, `SameSite` no longer
+   protects those requests, so the Host check, the Origin check and the
+   JSON-only rule are the whole CSRF defence for them. The residual risk
+   is a tailnet ACL that lets a device you do not control reach the
+   daemon's port under your own login: that device gets full control.
+   The mitigation is the allowlist plus tailnet ACLs, not code.
 6. **Token rotates every `serve` restart; 8h idle expiry.** Bounds the
    blast radius of a token that *does* leak (over-the-shoulder, a
    screen share, a copy-pasted log) to, at most, one `serve` session's

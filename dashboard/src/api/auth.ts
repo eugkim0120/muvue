@@ -1,6 +1,6 @@
 import { routes } from "./routes";
 import { api, post, ApiError, setToken, authProblemOf, type AuthProblem } from "./client";
-import { setSignedIn, setSignedOut, refresh } from "../state";
+import { setSignedIn, setSignedOut, refresh, tailnetLogin } from "../state";
 
 export type AuthResult = "ok" | AuthProblem;
 
@@ -56,6 +56,11 @@ export async function signInWithToken(pasted: string): Promise<AuthResult> {
     throw e;
   }
   return "ok";
+}
+
+export async function loadWhoami(): Promise<void> {
+  const r = await api<{ login: string | null }>(routes.authWhoami());
+  tailnetLogin.value = r.login;
 }
 
 export function applyAuthResult(r: AuthResult): void {

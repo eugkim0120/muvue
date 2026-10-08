@@ -10,6 +10,7 @@ function q(path: string, params: Record<string, string | number | null | undefin
 export const routes = {
   healthz: () => "/healthz",
   authCheck: () => "/auth/check",
+  authWhoami: () => "/auth/whoami",
   authExchange: () => "/auth/exchange",
   authSession: () => "/auth/session",
   eventsStream: () => "/events/stream",

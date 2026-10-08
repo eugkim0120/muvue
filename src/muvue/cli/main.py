@@ -422,7 +422,10 @@ def serve(
         )
         typer.echo(f"lost the link later? run `muvue link {repo_root}` on this machine for a fresh one")
         typer.echo(f"muvue daemon listening on http://{host}:{port}")
-        uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning")
+        # proxy_headers=False: uvicorn would otherwise rewrite the peer address
+        # from X-Forwarded-For for a loopback client, and the tailnet identity
+        # check (decision #176) trusts the peer address alone.
+        uvicorn.run(app_instance, fd=sock.fileno(), log_level="warning", proxy_headers=False)
     except KeyboardInterrupt:
         pass
     finally:
@@ -437,9 +440,11 @@ def link(path: Path = typer.Argument(Path("."), help="Repo root the daemon serve
     session idled out (8h), the daemon first starts a new one with a new
     token (decision #173)."""
     import json as json_mod
+    from urllib.parse import urlsplit
 
     from muvue.core import control as control_mod
     from muvue.core import daemon as daemon_mod
+    from muvue.core import tailnet as tailnet_mod
 
     repo_root = _find_repo_root(path)
     sock = control_mod.socket_path(repo_root)
@@ -471,6 +476,10 @@ def link(path: Path = typer.Argument(Path("."), help="Repo root the daemon serve
         raise typer.Exit(1) from exc
     typer.echo(f"dashboard (one-time link, works once): {reply['url']}")
     typer.echo(f"api token: {reply['token']}")
+    logins = _load_config(repo_root).daemon.tailnet_logins
+    plain_url, _, _ = reply["url"].partition("#")
+    if logins and tailnet_mod.is_tailnet_host(urlsplit(plain_url).hostname or ""):
+        typer.echo(f"dashboard (permanent, signed in by Tailscale identity {', '.join(logins)}): {plain_url}")
     if reply["renewed"]:
         typer.echo("(the old session had expired: this is a new token; earlier links, cookies and tokens no longer work)")
 

@@ -19,6 +19,8 @@ export const authed = signal(false);
 // Why the page is read-only, so the sign-in strip can say it plainly.
 export type SignedOutReason = "read_only" | "stale" | "expired";
 export const signedOutReason = signal<SignedOutReason>("read_only");
+// Set when the daemon signed this page in by Tailscale identity rather than a token.
+export const tailnetLogin = signal<string | null>(null);
 export const signInOpen = signal(false);
 export function setSignedIn(): void { authed.value = true; }
 export function setSignedOut(reason: SignedOutReason): void { authed.value = false; signedOutReason.value = reason; }
