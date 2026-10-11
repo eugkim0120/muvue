@@ -41,6 +41,7 @@ from . import db as db_mod
 from . import drift as drift_mod
 from . import events as events_mod
 from . import nodes as nodes_mod
+from . import sessions as sessions_mod
 from . import trailers
 
 
@@ -244,6 +245,12 @@ def _process_queue_event(conn: sqlite3.Connection, repo_root: Path, event: dict)
             handle_post_commit_from_git_sha(conn, repo_root, sha)
         return
 
+    if etype in sessions_mod.UNAUDITED_EVENTS:
+        # Mission control phase 1: one line per tool call or heartbeat
+        # updates the session only; see `core.sessions.UNAUDITED_EVENTS`.
+        sessions_mod.apply_line(conn, event)
+        return
+
     node_id = event.get("node_id")
     project_id = None
     if node_id is not None:
@@ -269,6 +276,9 @@ def _process_queue_event(conn: sqlite3.Connection, repo_root: Path, event: dict)
             type_=f"hook.{etype}",
             payload=event,
         )
+        # Same transaction as the audit event: a session line and its
+        # `hook.*` event land together or not at all.
+        sessions_mod.apply_line(conn, event)
 
 
 def drain_queue(
