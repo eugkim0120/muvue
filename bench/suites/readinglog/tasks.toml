@@ -1,0 +1,69 @@
+[suite]
+goal = "readinglog: a command-line reading log with progress and streaks"
+spec_title = "readinglog CLI"
+
+[[task]]
+key = "models"
+title = "Book and reading-session models"
+criteria = "src/readinglog/models.py defines Book(title, pages) and Session(title, day, pages) dataclasses that round-trip to and from dicts, with tests"
+predicted_touches = ["src/readinglog/models.py", "tests/test_models.py"]
+depends_on = []
+carries = []
+files = ["src/readinglog/models.py", "tests/test_models.py"]
+requires = []
+usage = { input_tokens = 10, cache_creation_input_tokens = 43878, cache_read_input_tokens = 227926, output_tokens = 1383, total_cost_usd = 0.2121546, num_turns = 9 }
+
+[[task]]
+key = "store"
+title = "JSON storage with atomic save"
+criteria = "src/readinglog/store.py loads and saves the log at READINGLOG_FILE or ~/.readinglog.json, writing via a temp file and os.replace, with tests"
+predicted_touches = ["src/readinglog/store.py", "tests/test_store.py"]
+depends_on = ["models"]
+carries = ["Book, Session"]
+files = ["src/readinglog/store.py", "tests/test_store.py"]
+requires = ["src/readinglog/models.py"]
+usage = { input_tokens = 14, cache_creation_input_tokens = 42297, cache_read_input_tokens = 331472, output_tokens = 4846, total_cost_usd = 0.2508232, num_turns = 11 }
+
+[[task]]
+key = "addlog"
+title = "add and log commands"
+criteria = "readinglog add TITLE --pages N and readinglog log TITLE PAGES update the store; logging an unknown title exits 1 with a message; tested"
+predicted_touches = ["src/readinglog/cli.py", "src/readinglog/commands/*.py", "tests/test_cli.py"]
+depends_on = ["store"]
+carries = ["load, save"]
+files = ["src/readinglog/cli.py", "src/readinglog/commands/__init__.py", "src/readinglog/commands/add.py", "src/readinglog/commands/log.py", "tests/test_cli.py"]
+requires = ["src/readinglog/models.py", "src/readinglog/store.py"]
+usage = { input_tokens = 14, cache_creation_input_tokens = 40046, cache_read_input_tokens = 326162, output_tokens = 1758, total_cost_usd = 0.2104082, num_turns = 7 }
+
+[[task]]
+key = "streak"
+title = "Daily streak calculation"
+criteria = "src/readinglog/streak.py computes the current daily streak and pages this week from sessions and a given today date, with tests for gaps and week boundaries"
+predicted_touches = ["src/readinglog/streak.py", "tests/test_streak.py"]
+depends_on = ["models"]
+carries = ["Session"]
+files = ["src/readinglog/streak.py", "tests/test_streak.py"]
+requires = ["src/readinglog/models.py"]
+usage = { input_tokens = 10, cache_creation_input_tokens = 39833, cache_read_input_tokens = 220854, output_tokens = 2632, total_cost_usd = 0.2077574, num_turns = 5 }
+
+[[task]]
+key = "progress"
+title = "progress report"
+criteria = "readinglog progress prints one line per book: title, pages read / total and percent, sorted by percent; tested"
+predicted_touches = ["src/readinglog/commands/progress.py", "tests/test_progress.py"]
+depends_on = ["addlog"]
+carries = ["CLI entry point"]
+files = ["src/readinglog/commands/progress.py", "tests/test_progress.py"]
+requires = ["src/readinglog/cli.py", "src/readinglog/store.py"]
+usage = { input_tokens = 16, cache_creation_input_tokens = 43592, cache_read_input_tokens = 391693, output_tokens = 4661, total_cost_usd = 0.2601793, num_turns = 9 }
+
+[[task]]
+key = "stats"
+title = "stats command"
+criteria = "readinglog stats prints pages this week and the current streak in days; tested"
+predicted_touches = ["src/readinglog/commands/stats.py", "tests/test_stats.py"]
+depends_on = ["addlog", "streak"]
+carries = ["CLI entry point", "streak, week_pages"]
+files = ["src/readinglog/commands/stats.py", "tests/test_stats.py"]
+requires = ["src/readinglog/cli.py", "src/readinglog/store.py", "src/readinglog/streak.py"]
+usage = { input_tokens = 14, cache_creation_input_tokens = 44127, cache_read_input_tokens = 338162, output_tokens = 3761, total_cost_usd = 0.2479622, num_turns = 9 }

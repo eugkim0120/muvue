@@ -1,0 +1,9 @@
+[project]
+name = "readinglog"
+version = "0.1.0"
+description = "A command-line reading log"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
