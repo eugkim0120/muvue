@@ -25,6 +25,7 @@ import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from muvue import _hook
 
@@ -367,3 +368,66 @@ def end_launched(conn: sqlite3.Connection, session_id: str) -> None:
             "last_action = 'run ended' WHERE id = ? AND ended_at IS NULL",
             (now, now, session_id),
         )
+
+
+class SessionError(Exception):
+    """A session request muvue refuses; the message says why."""
+
+
+def _with_launched(line: dict) -> dict:
+    launched = os.environ.get(LAUNCHED_SESSION_ENV)
+    if launched:
+        line["launched_session"] = launched
+    return line
+
+
+def _checked_id(session_id) -> str:
+    if not _valid_id(session_id):
+        raise SessionError(f"not a session id: {session_id!r}")
+    return session_id
+
+
+def spool_start(repo_root: Path, *, agent: str, cwd: str, node_id: int | None = None) -> dict:
+    """MCP `session_start`, for agent CLIs without Claude Code hooks: the
+    same queue line a SessionStart hook writes. Returns the new session's
+    id (`mcp-<uuid>`), which later heartbeat and end calls name. An MCP
+    server started by a launched agent inherits `MUVUE_SESSION`, so its
+    session folds into the run like a hook's would."""
+    if not isinstance(agent, str) or not agent.strip():
+        raise SessionError("agent must be a non-empty string")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        raise SessionError(f"cwd must be an absolute path, got {cwd!r}")
+    if node_id is not None and type(node_id) is not int:
+        raise SessionError(f"node_id must be an integer, got {node_id!r}")
+    session_id = f"mcp-{uuid.uuid4()}"
+    line = {"event": "session-start", "ts": _hook._now_iso(), "session_id": session_id, "agent": agent.strip(), "cwd": cwd}
+    if node_id is not None:
+        line["bind_node_id"] = node_id
+    _hook._append_queue(str(repo_root), _with_launched(line))
+    return {"session_id": session_id}
+
+
+def spool_heartbeat(
+    repo_root: Path, session_id: str, *, action: str | None = None, touched_paths: list[str] | None = None,
+) -> dict:
+    """MCP `session_heartbeat`: the session is working; `action` becomes
+    its last action and `touched_paths` (absolute, or relative to its
+    directory) its touched files."""
+    line = {"event": "heartbeat", "ts": _hook._now_iso(), "session_id": _checked_id(session_id)}
+    if action is not None:
+        if not isinstance(action, str):
+            raise SessionError("action must be a string")
+        line["action"] = action
+    if touched_paths is not None:
+        if not isinstance(touched_paths, list) or not all(isinstance(p, str) for p in touched_paths):
+            raise SessionError("touched_paths must be a list of strings")
+        line["touched_paths"] = touched_paths
+    _hook._append_queue(str(repo_root), _with_launched(line))
+    return {"session_id": session_id}
+
+
+def spool_end(repo_root: Path, session_id: str) -> dict:
+    """MCP `session_end`."""
+    line = {"event": "session-end", "ts": _hook._now_iso(), "session_id": _checked_id(session_id)}
+    _hook._append_queue(str(repo_root), _with_launched(line))
+    return {"session_id": session_id}
