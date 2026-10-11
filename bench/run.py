@@ -13,15 +13,20 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
-from bench.score import node_ids_with_status, score_muvue
+from bench.score import first_event_actor, node_ids_with_status, node_was_flagged, score_muvue
 from bench.suite import SUITES_DIR, Suite, load_suite, run_acceptance, task_order
 
 BENCH_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BENCH_DIR.parent
 SHIM = BENCH_DIR / "shim_agent.py"
 HUMAN_VERBS = {"approve", "reject", "merge", "close", "answer", "ack"}
+# Verbs whose CLI command always prints a JSON result via `_echo_json`
+# (src/muvue/cli/main.py); anything else on their stdout is a bug, not a
+# human-readable message to fall back to silently.
+JSON_VERBS = {"project", "spec", "decompose", "run", "merge"}
 
 
 class ArmError(RuntimeError):
@@ -44,13 +49,22 @@ class Muvue:
         if len(self.steps) >= self.cap:
             raise Stalled(f"step cap {self.cap} reached")
         argv = [*args, "--path", str(self.repo)] if path_flag else list(args)
-        out = subprocess.run([sys.executable, "-m", "muvue", *argv], env=self.env, capture_output=True, text=True)
-        self.steps.append([*args, out.returncode])
+        out = subprocess.run(
+            [sys.executable, "-m", "muvue", *argv], env=self.env, capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        redacted = [str(a).replace(str(self.repo), "<repo>") for a in args]
+        self.steps.append([*redacted, out.returncode])
         if out.returncode != 0:
             raise ArmError(f"muvue {' '.join(args)} exited {out.returncode}: {out.stderr.strip()[-2000:]}")
         try:
             return json.loads(out.stdout)
         except json.JSONDecodeError:
+            if args[0] in JSON_VERBS and out.stdout.strip():
+                raise ArmError(
+                    f"muvue {' '.join(args)} printed non-JSON stdout, so the run loop can't read its "
+                    f"result: {out.stdout.strip()[:500]!r}"
+                )
             return out.stdout
 
     def flexibility(self) -> dict:
@@ -61,9 +75,11 @@ class Muvue:
 def _env(work: Path, suite: Suite) -> dict:
     home = work / "home"
     home.mkdir(parents=True, exist_ok=True)
-    return {**os.environ, "HOME": str(home),
+    base = {k: v for k, v in os.environ.items() if not k.startswith("MUVUE_") and k != "CLAUDE_PROJECT_DIR"}
+    return {**base, "HOME": str(home),
             "GIT_AUTHOR_NAME": "bench", "GIT_AUTHOR_EMAIL": "bench@example.com",
             "GIT_COMMITTER_NAME": "bench", "GIT_COMMITTER_EMAIL": "bench@example.com",
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
             "BENCH_SUITE_DIR": str(suite.root), "BENCH_TASK_MAP": str(work / "task_map.json"),
             "BENCH_SHIM_LOG": str(work / "shim.jsonl")}
 
@@ -104,9 +120,18 @@ def run_muvue_arm(suite: Suite, work: Path, cap: int) -> dict:
     m = Muvue(repo, env, cap)
     started = time.monotonic()
     status, error = "ok", None
+    run_merges: list[dict] = []
+    final_merge: object = None
+    approved_after_flag = 0
     try:
         m("init", str(repo), path_flag=False)
         _configure(repo)
+        # muvue's `init` appends to the tracked .gitignore; commit that now,
+        # as a user would, so the checkout is clean before any node work --
+        # otherwise every per_node merge defers on `dirty_checkout` forever
+        # (core.merge._merge_into_checkout) and nothing ever merges.
+        subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "muvue init"], cwd=repo, env=env, check=True, capture_output=True)
         pid = m("project", "create", "--goal", suite.goal)["id"]
         sid = m("spec", str(pid), "--title", suite.spec_title, "--body", suite.spec_body)["id"]
         m("approve", f"spec:{sid}")
@@ -122,20 +147,37 @@ def run_muvue_arm(suite: Suite, work: Path, cap: int) -> dict:
         m("approve", f"gate2:{pid}")
         while True:
             out = m("run")
+            if isinstance(out, dict) and out.get("merged"):
+                run_merges.extend(out["merged"])
             in_review = node_ids_with_status(repo, "review")
             for node_id in in_review:
+                if node_was_flagged(repo, node_id):
+                    approved_after_flag += 1
                 m("approve", f"review:{node_id}")
             if not (isinstance(out, dict) and out.get("processed")) and not in_review:
                 break
-        m("merge")
+        final_merge = m("merge")
     except Stalled as exc:
         status, error = "stalled", str(exc)
     except ArmError as exc:
         status, error = "errored", str(exc)
+    except Exception as exc:  # noqa: BLE001 -- recorded, not swallowed; see item 6b
+        tb = "\n".join(traceback.format_exc().splitlines()[-20:])
+        status, error = "errored", f"{type(exc).__name__}: {exc}\n{tb}"
     wall = round(time.monotonic() - started, 2)
     passed, total = run_acceptance(suite, repo)
     scored = score_muvue(repo, work / "shim.jsonl") if (repo / ".muvue" / "muvue.db").exists() else {}
+    if scored:
+        scored.setdefault("truth", {})["approved_after_failed_check_or_flag"] = approved_after_flag
+        unmerged_ids = scored.get("outcome", {}).get("done_unmerged_node_ids", [])
+        if unmerged_ids and status == "ok":
+            status = "errored"
+            error = f"muvue called done nodes {unmerged_ids} unmerged on main: nothing actually merged"
+    invoker = first_event_actor(repo, "gate2.approved") if (repo / ".muvue" / "muvue.db").exists() else None
+    bench_approvals = sum(1 for s in m.steps if s[0] == "approve")
     return {"status": status, "error": error, "wall_s": wall,
+            "reviewer": "approve-all", "invoker": invoker, "bench_approvals": bench_approvals,
+            "merges": {"runs": run_merges, "final": final_merge},
             "acceptance": {"passed": passed, "total": total, "label": "measured"},
             "flexibility": m.flexibility(), **scored}
 
@@ -152,7 +194,8 @@ def run_plain_arm(suite: Suite, work: Path) -> dict:
     return {"status": status, "error": None if status == "ok" else out.stderr.strip()[-2000:], "wall_s": wall,
             "acceptance": {"passed": passed, "total": total, "label": "measured"},
             "flexibility": {"commands": 0, "human_verbs": 0, "label": "measured", "steps": []},
-            "tokens": {"sessions": 1, "sessions_label": "measured", "usage_label": "not measured (shim)"}}
+            "tokens": {"sessions": 1, "sessions_label": "fixed (one shim session)",
+                       "usage_label": "not measured (shim)"}}
 
 
 def _muvue_sha() -> tuple[str, bool]:
@@ -199,7 +242,10 @@ def render_markdown(result: dict) -> str:
         ("truth score", lambda a: cell(a, "truth", "truth_score")),
         ("done with commit / done", lambda a: f"{cell(a, 'truth', 'done_with_commit')}/{cell(a, 'truth', 'done')}"),
         ("done claiming blocked", lambda a: cell(a, "truth", "done_claiming_blocked")),
-        ("check runs with output", lambda a: f"{cell(a, 'truth', 'check_runs_with_output')}/{cell(a, 'truth', 'check_runs')}"),
+        ("done unmerged", lambda a: cell(a, "outcome", "done_unmerged")),
+        ("check runs with output (heuristic)",
+         lambda a: f"{cell(a, 'truth', 'check_runs_with_output')}/{cell(a, 'truth', 'check_runs')}"),
+        ("approved after failed check or flag", lambda a: cell(a, "truth", "approved_after_failed_check_or_flag")),
         ("agent sessions", lambda a: cell(a, "tokens", "sessions")),
         ("tokens in / out (replayed)", lambda a: f"{cell(a, 'tokens', 'in_tokens')} / {cell(a, 'tokens', 'out_tokens')}"),
         ("cost USD (replayed)", lambda a: cell(a, "tokens", "cost_usd")),
