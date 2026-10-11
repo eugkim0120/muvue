@@ -993,6 +993,19 @@ const LEGACY_PAGES = /* @__PURE__ */ new Set(["plan", "inbox", "activity", "spen
 function isLegacyRoute(r2) {
   return LEGACY_PAGES.has(r2.page) || r2.page === "spec";
 }
+const PROJECT_TABS = ["map", "plan", "agents", "repo"];
+function projectTabOf(r2) {
+  const tab = r2.query.get("tab");
+  return PROJECT_TABS.includes(tab) ? tab : "map";
+}
+function setProjectTab(tab) {
+  const r2 = parseHash(window.location.hash);
+  const q2 = new URLSearchParams(r2.query);
+  if (tab === "map") q2.delete("tab");
+  else q2.set("tab", tab);
+  const qs = q2.toString();
+  navigate("#/" + [r2.page, ...r2.params].join("/") + (qs ? "?" + qs : ""));
+}
 class ApiError extends Error {
   constructor(message, status, auth = null) {
     super(message);
@@ -1076,7 +1089,10 @@ const routes = {
   agentsStatus: (projectId2) => q("/agents/status", { project_id: projectId2 }),
   nodeRuns: (id) => `/nodes/${id}/runs`,
   projectActivity: (id) => `/projects/${id}/activity`,
-  projectLogs: (id, lines = 200) => q(`/projects/${id}/logs`, { lines })
+  projectLogs: (id, lines = 200) => q(`/projects/${id}/logs`, { lines }),
+  sessions: (projectId2, includeEnded = false) => q("/sessions", { project_id: projectId2, include_ended: includeEnded ? 1 : null }),
+  worktrees: () => "/worktrees",
+  sessionStop: (id) => `/sessions/${encodeURIComponent(id)}/stop`
 };
 const projects = y([]);
 const projectId = y(null);
@@ -2882,6 +2898,25 @@ function ProjectPage() {
     openLog ? /* @__PURE__ */ u$1(LogSheet, { log: openLog, onClose: () => setOpenLog(null) }) : null
   ] });
 }
+function Segmented({ options, value, onChange }) {
+  return /* @__PURE__ */ u$1("div", { class: "segmented", role: "tablist", children: options.map((o2) => /* @__PURE__ */ u$1("button", { type: "button", role: "tab", "aria-selected": o2.value === value, class: o2.value === value ? "on" : "", onClick: () => onChange(o2.value), children: o2.label })) });
+}
+const TABS = [
+  { value: "map", label: "Map" },
+  { value: "plan", label: "Plan" },
+  { value: "agents", label: "Agents" },
+  { value: "repo", label: "Repo" }
+];
+const PLACEHOLDER_TEXT = {
+  plan: "Plan view is not built yet. The Map tab shows the plan.",
+  repo: "Repo view is not built yet. The Agents tab lists branches and worktrees."
+};
+function ProjectTabs({ tab }) {
+  return /* @__PURE__ */ u$1("nav", { class: "project-tabs", "aria-label": "project views", children: /* @__PURE__ */ u$1(Segmented, { options: TABS, value: tab, onChange: (v2) => setProjectTab(v2) }) });
+}
+function TabPlaceholder({ text }) {
+  return /* @__PURE__ */ u$1("div", { class: "page", children: /* @__PURE__ */ u$1(Empty, { text }) });
+}
 function AgentRow({ nodeId, projectId: projectId2, agent, onStarted }) {
   const a2 = useAction();
   async function start() {
@@ -3441,12 +3476,17 @@ function App() {
     }
   }, [route.value.page, projectId.value]);
   const nodeId = route.value.query.get("node");
+  const tab = projectTabOf(route.value);
+  const hasProject = currentProject.value !== null;
   return /* @__PURE__ */ u$1("div", { class: "app", children: [
     /* @__PURE__ */ u$1(Sidebar, {}),
     /* @__PURE__ */ u$1("div", { class: "stack", style: { flex: 1, minWidth: 0, gap: 0 }, children: [
       /* @__PURE__ */ u$1(TopBar, { onSearch: () => setPalette(true) }),
       /* @__PURE__ */ u$1(AuthStrip, {}),
-      /* @__PURE__ */ u$1("main", { children: /* @__PURE__ */ u$1(ProjectPage, {}) })
+      /* @__PURE__ */ u$1("main", { children: [
+        hasProject ? /* @__PURE__ */ u$1(ProjectTabs, { tab }) : null,
+        !hasProject || tab === "map" ? /* @__PURE__ */ u$1(ProjectPage, {}) : tab === "agents" ? /* @__PURE__ */ u$1(TabPlaceholder, { text: "Agents view is loading." }) : /* @__PURE__ */ u$1(TabPlaceholder, { text: PLACEHOLDER_TEXT[tab] })
+      ] })
     ] }),
     nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}, nodeId) : null,
     palette ? /* @__PURE__ */ u$1(CommandPalette, { onClose: () => setPalette(false) }) : null,
@@ -3651,6 +3691,7 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
   .sidebar-foot { margin-top: auto; padding: 8px 12px; }
   .list-row.on { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
 }
+.project-tabs { padding: 8px 16px 0; overflow-x: auto; }
 /* dashboard/src/canvas/canvas.css */
 .canvas-wrap { position: relative; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); padding-bottom: 60px; }
 .canvas-viewport { position: relative; width: 100%; overflow: hidden; overflow: clip; touch-action: pan-y; max-height: min(72dvh, 760px); }

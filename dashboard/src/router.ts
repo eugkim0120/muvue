@@ -41,3 +41,22 @@ export function closeNode(): void {
 // node rather than a project — the caller resolves its project first.
 const LEGACY_PAGES = new Set(["plan", "inbox", "activity", "spend"]);
 export function isLegacyRoute(r: Route): boolean { return LEGACY_PAGES.has(r.page) || r.page === "spec"; }
+
+// Mission control: a project has four views. The view is a query
+// parameter, not a path, because "#/plan" is a legacy route above.
+export type ProjectTab = "map" | "plan" | "agents" | "repo";
+const PROJECT_TABS: ProjectTab[] = ["map", "plan", "agents", "repo"];
+
+export function projectTabOf(r: Route): ProjectTab {
+  const tab = r.query.get("tab");
+  return PROJECT_TABS.includes(tab as ProjectTab) ? (tab as ProjectTab) : "map";
+}
+
+export function setProjectTab(tab: ProjectTab): void {
+  const r = parseHash(window.location.hash);
+  const q = new URLSearchParams(r.query);
+  if (tab === "map") q.delete("tab");
+  else q.set("tab", tab);
+  const qs = q.toString();
+  navigate("#/" + [r.page, ...r.params].join("/") + (qs ? "?" + qs : ""));
+}

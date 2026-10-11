@@ -23,7 +23,7 @@ test("API path literals live only in routes.ts", () => {
     if (/api\/routes\.ts$/.test(f)) continue;
     const text = readFileSync(f, "utf8");
     // A string or template starting with "/" followed by a word is an API path.
-    if (/["`]\/(nodes|projects|events|questions|inbox|kpis|graph|auth|healthz|agents|status|brief)\b/.test(text)) offenders.push(f);
+    if (/["`]\/(nodes|projects|events|questions|inbox|kpis|graph|auth|healthz|agents|status|brief|sessions|worktrees)\b/.test(text)) offenders.push(f);
   }
   expect(offenders).toEqual([]);
 });

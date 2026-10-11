@@ -9,3 +9,11 @@ test("new canvas-backend routes are spelled correctly", () => {
   expect(routes.agentsStatus(3)).toBe("/agents/status?project_id=3");
   expect(routes.nodeRuns(7)).toBe("/nodes/7/runs");
 });
+
+test("session and worktree routes are spelled correctly", () => {
+  expect(routes.sessions(3)).toBe("/sessions?project_id=3");
+  expect(routes.sessions(null, true)).toBe("/sessions?include_ended=1");
+  expect(routes.worktrees()).toBe("/worktrees");
+  expect(routes.sessionStop("run-1")).toBe("/sessions/run-1/stop");
+  expect(routes.sessionStop("a/b")).toBe("/sessions/a%2Fb/stop");
+});

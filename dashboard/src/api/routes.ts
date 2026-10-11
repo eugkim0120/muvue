@@ -46,4 +46,7 @@ export const routes = {
   nodeRuns: (id: number) => `/nodes/${id}/runs`,
   projectActivity: (id: number) => `/projects/${id}/activity`,
   projectLogs: (id: number, lines = 200) => q(`/projects/${id}/logs`, { lines }),
+  sessions: (projectId: number | null, includeEnded = false) => q("/sessions", { project_id: projectId, include_ended: includeEnded ? 1 : null }),
+  worktrees: () => "/worktrees",
+  sessionStop: (id: string) => `/sessions/${encodeURIComponent(id)}/stop`,
 };

@@ -1,12 +1,13 @@
 import { useEffect, useState } from "preact/hooks";
-import { route, navigate, isLegacyRoute } from "./router";
-import { projectId, signInOpen } from "./state";
+import { route, navigate, isLegacyRoute, projectTabOf } from "./router";
+import { currentProject, projectId, signInOpen } from "./state";
 import { Sidebar } from "./shell/Sidebar";
 import { TopBar } from "./shell/TopBar";
 import { AuthStrip } from "./shell/AuthStrip";
 import { SignInSheet } from "./shell/SignInSheet";
 import { Toasts } from "./ui/Toasts";
 import { ProjectPage } from "./project/ProjectPage";
+import { ProjectTabs, TabPlaceholder, PLACEHOLDER_TEXT } from "./project/ProjectTabs";
 import { NodeSheet } from "./node/NodeSheet";
 import { CommandPalette } from "./shell/CommandPalette";
 
@@ -27,13 +28,22 @@ export function App() {
     }
   }, [route.value.page, projectId.value]);
   const nodeId = route.value.query.get("node");
+  const tab = projectTabOf(route.value);
+  const hasProject = currentProject.value !== null;
   return (
     <div class="app">
       <Sidebar />
       <div class="stack" style={{ flex: 1, minWidth: 0, gap: 0 }}>
         <TopBar onSearch={() => setPalette(true)} />
         <AuthStrip />
-        <main><ProjectPage /></main>
+        <main>
+          {hasProject ? <ProjectTabs tab={tab} /> : null}
+          {!hasProject || tab === "map" ? <ProjectPage /> : tab === "agents" ? (
+            <TabPlaceholder text="Agents view is loading." />
+          ) : (
+            <TabPlaceholder text={PLACEHOLDER_TEXT[tab]} />
+          )}
+        </main>
       </div>
       {nodeId ? <NodeSheet key={nodeId} /> : null}
       {palette ? <CommandPalette onClose={() => setPalette(false)} /> : null}
