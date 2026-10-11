@@ -443,3 +443,16 @@ def spool_end(repo_root: Path, session_id: str) -> dict:
     line = {"event": "session-end", "ts": _hook._now_iso(), "session_id": _checked_id(session_id)}
     _hook._append_queue(str(repo_root), _with_launched(line))
     return {"session_id": session_id}
+
+
+def launched_run_finished(conn: sqlite3.Connection, node_id: int) -> bool:
+    """Whether the node's latest launched session has ended. While the
+    node is still `in_progress`, that means the runner is past the agent
+    and inside `done`, running the checks: the "checks" stage."""
+    row = db_mod.query_one(
+        conn,
+        "SELECT ended_at FROM sessions WHERE node_id = ? AND origin = 'launched' AND alias_of IS NULL "
+        "ORDER BY started_at DESC LIMIT 1",
+        (node_id,),
+    )
+    return row is not None and row["ended_at"] is not None

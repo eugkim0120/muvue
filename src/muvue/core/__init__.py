@@ -43,6 +43,7 @@ from . import (
     state_machine,
     strict,
     trailers,
+    worktrees,
 )
 from .config import ConfigError, MuvueConfig, load_config
 
@@ -85,6 +86,7 @@ __all__ = [
     "state_machine",
     "strict",
     "trailers",
+    "worktrees",
     "ConfigError",
     "MuvueConfig",
     "load_config",
