@@ -108,3 +108,28 @@ def test_bad_arguments_are_json_rpc_errors(repo, name, arguments, code, text):
     assert response["error"]["code"] == code
     assert text in response["error"]["message"]
     assert not (repo / ".muvue" / "queue.jsonl").exists()
+
+
+@pytest.mark.parametrize("name, arguments, text", [
+    ("session_start", {"agent": "co\0dex", "cwd": "/x"}, "agent"),
+    ("session_start", {"agent": "codex", "cwd": "/x\0y"}, "cwd"),
+    ("session_start", {"agent": "codex", "cwd": "/x\ud800"}, "cwd"),
+    ("session_start", {"agent": "codex", "cwd": "/x", "node_id": 2**63}, "node_id"),
+    ("session_heartbeat", {"session_id": "s", "action": "a\0b"}, "action"),
+    ("session_heartbeat", {"session_id": "s", "action": "a\ud800"}, "action"),
+    ("session_heartbeat", {"session_id": "s", "touched_paths": ["ok", "a\0b"]}, "touched_paths"),
+    ("session_heartbeat", {"session_id": "s", "touched_paths": ["\ud800"]}, "touched_paths"),
+    ("session_heartbeat", {"session_id": "s", "touched_paths": [f"f{i}" for i in range(101)]}, "touched_paths"),
+])
+def test_input_apply_line_would_drop_is_refused_and_not_queued(repo, name, arguments, text):
+    response = _call(repo, name, arguments)
+    assert response["error"]["code"] == -32000
+    assert text in response["error"]["message"]
+    assert not (repo / ".muvue" / "queue.jsonl").exists()
+
+
+def test_a_full_touched_paths_list_is_accepted_by_apply_line(repo, conn):
+    session_id = _result(_call(repo, "session_start", {"agent": "codex", "cwd": str(repo)}))["session_id"]
+    _call(repo, "session_heartbeat", {"session_id": session_id, "touched_paths": [f"f{i}" for i in range(100)]})
+    _drain(conn, repo)
+    assert conn.execute("SELECT COUNT(*) FROM session_touches").fetchone()[0] == 100

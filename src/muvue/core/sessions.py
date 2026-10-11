@@ -381,6 +381,16 @@ def _with_launched(line: dict) -> dict:
     return line
 
 
+def _checked_text(name: str, value) -> str:
+    """The same text rule `apply_line` enforces (`_clean_text`), raised
+    here so the tool fails instead of queueing a line the drain drops."""
+    if not isinstance(value, str):
+        raise SessionError(f"{name} must be a string")
+    if not _clean_text(value):
+        raise SessionError(f"{name} contains a NUL byte or a lone surrogate")
+    return value
+
+
 def _checked_id(session_id) -> str:
     if not _valid_id(session_id):
         raise SessionError(f"not a session id: {session_id!r}")
@@ -393,12 +403,12 @@ def spool_start(repo_root: Path, *, agent: str, cwd: str, node_id: int | None = 
     id (`mcp-<uuid>`), which later heartbeat and end calls name. An MCP
     server started by a launched agent inherits `MUVUE_SESSION`, so its
     session folds into the run like a hook's would."""
-    if not isinstance(agent, str) or not agent.strip():
+    if not _checked_text("agent", agent).strip():
         raise SessionError("agent must be a non-empty string")
-    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+    if not os.path.isabs(_checked_text("cwd", cwd)):
         raise SessionError(f"cwd must be an absolute path, got {cwd!r}")
-    if node_id is not None and type(node_id) is not int:
-        raise SessionError(f"node_id must be an integer, got {node_id!r}")
+    if node_id is not None and not (type(node_id) is int and _MIN_INT64 <= node_id <= _MAX_INT64):
+        raise SessionError(f"node_id must be a 64-bit integer, got {node_id!r}")
     session_id = f"mcp-{uuid.uuid4()}"
     line = {"event": "session-start", "ts": _hook._now_iso(), "session_id": session_id, "agent": agent.strip(), "cwd": cwd}
     if node_id is not None:
@@ -415,12 +425,14 @@ def spool_heartbeat(
     directory) its touched files."""
     line = {"event": "heartbeat", "ts": _hook._now_iso(), "session_id": _checked_id(session_id)}
     if action is not None:
-        if not isinstance(action, str):
-            raise SessionError("action must be a string")
-        line["action"] = action
+        line["action"] = _checked_text("action", action)
     if touched_paths is not None:
         if not isinstance(touched_paths, list) or not all(isinstance(p, str) for p in touched_paths):
             raise SessionError("touched_paths must be a list of strings")
+        if len(touched_paths) > _MAX_TOUCHED_PER_LINE:
+            raise SessionError(f"touched_paths holds at most {_MAX_TOUCHED_PER_LINE} paths, got {len(touched_paths)}")
+        for path in touched_paths:
+            _checked_text("touched_paths entry", path)
         line["touched_paths"] = touched_paths
     _hook._append_queue(str(repo_root), _with_launched(line))
     return {"session_id": session_id}

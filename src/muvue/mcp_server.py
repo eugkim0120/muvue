@@ -135,8 +135,8 @@ TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}, "predicted_touches": {"type": "array", "items": {"type": "string"}}, "request_id": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
     "status": (_status, {"type": "object", "properties": {"project_id": {"type": "integer"}}}, "Node counts by status."),
     "session_start": (_session_start, {"type": "object", "properties": {"agent": {"type": "string"}, "cwd": {"type": "string"}, "node_id": {"type": "integer"}}, "required": ["agent", "cwd"]}, "Tell muvue an agent session started in `cwd` (absolute path); returns its session_id. For agent CLIs without Claude Code hooks."),
-    "session_heartbeat": (_session_heartbeat, {"type": "object", "properties": {"session_id": {"type": "string"}, "action": {"type": "string"}, "touched_paths": {"type": "array", "items": {"type": "string"}}}, "required": ["session_id"]}, "Report that a session is working: what it is doing and which files it touched."),
-    "session_end": (_session_end, {"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}, "Tell muvue a session ended."),
+    "session_heartbeat": (_session_heartbeat, {"type": "object", "properties": {"session_id": {"type": "string"}, "action": {"type": "string"}, "touched_paths": {"type": "array", "items": {"type": "string"}}}, "required": ["session_id"]}, "Report that a session is working: what it is doing and which files it touched (at most 100 paths). The session_id must come from session_start; a heartbeat for a session that was never started is ignored."),
+    "session_end": (_session_end, {"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}, "Tell muvue a session ended. The session_id must come from session_start; an end for a session that was never started is ignored."),
 }
 
 
