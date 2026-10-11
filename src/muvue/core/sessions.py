@@ -48,6 +48,7 @@ _ACTIONS = {
     "session-end": "session ended",
 }
 _MAX_TOUCHED_PER_LINE = 100
+_MIN_INT64, _MAX_INT64 = -(2**63), 2**63 - 1
 
 
 def parse_ts(ts: str) -> datetime | None:
@@ -59,6 +60,36 @@ def parse_ts(ts: str) -> datetime | None:
 
 def _valid_id(value) -> bool:
     return isinstance(value, str) and SESSION_ID_RE.match(value) is not None
+
+
+def _clean_text(value) -> bool:
+    """True unless `value` is a string SQLite or the filesystem layer
+    would choke on: a lone surrogate (valid JSON, not encodable as UTF-8)
+    or a NUL byte."""
+    if not isinstance(value, str):
+        return True
+    if "\0" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _well_formed(event: dict) -> bool:
+    """Boundary check for the free-text and id fields of a queue line.
+    Rejecting the whole line (rather than one field) keeps a garbled line
+    from half-updating a session, and stops it raising out of the drain,
+    which would leave `queue.draining` in place and replay it forever."""
+    texts = [event.get(k) for k in ("cwd", "agent", "transcript_path", "tool_name", "file_path", "action")]
+    touched = event.get("touched_paths")
+    if isinstance(touched, list):
+        texts.extend(touched[:_MAX_TOUCHED_PER_LINE])
+    if not all(_clean_text(t) for t in texts):
+        return False
+    bind = event.get("bind_node_id")
+    return bind is None or (type(bind) is int and _MIN_INT64 <= bind <= _MAX_INT64)
 
 
 def _canonical_id(conn: sqlite3.Connection, session_id: str, launched) -> str:
@@ -176,6 +207,8 @@ def apply_line(conn: sqlite3.Connection, event: dict) -> str | None:
     if event.get("event") not in SESSION_EVENTS or not _valid_id(session_id):
         return None
     if not isinstance(ts, str) or parse_ts(ts) is None:
+        return None
+    if not _well_formed(event):
         return None
     raw_cwd = event.get("cwd")
     cwd = os.path.realpath(raw_cwd) if isinstance(raw_cwd, str) and os.path.isabs(raw_cwd) else None

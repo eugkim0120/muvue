@@ -15,6 +15,7 @@ from conftest import git_init_with_commit
 from muvue import _hook
 from muvue.core import db as core_db, hooks, nodes, projects
 from muvue.core.repo_init import init_repo
+from muvue.core.sessions import apply_line
 
 OLD = "2000-01-01T00:00:00.000Z"
 
@@ -162,14 +163,38 @@ def test_a_path_outside_any_git_worktree_is_not_recorded(repo, conn, tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM session_touches").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("line", [
+MALFORMED = [
     {"event": "session-start", "session_id": "has space", "cwd": "/x", "agent": "claude"},
     {"event": "session-start", "session_id": "s-6", "cwd": "relative/dir", "agent": "claude"},
     {"event": "session-start", "session_id": "s-6", "cwd": "/x", "agent": 7},
     {"event": "session-start", "session_id": "s-6", "cwd": "/x", "agent": "claude", "ts": "yesterday"},
     {"event": "post-merge", "session_id": "s-6", "cwd": "/x", "agent": "claude"},
-])
+    {"event": "session-start", "session_id": "s-6", "cwd": "/a\u0000b", "agent": "claude"},
+    {"event": "session-start", "session_id": "s-6", "cwd": "/a/\ud800", "agent": "claude"},
+    {"event": "session-start", "session_id": "s-6", "cwd": "/x", "agent": "claude", "transcript_path": "/t/\ud800"},
+    {"event": "pre-tool-use", "session_id": "s-6", "cwd": "/x", "agent": "claude", "tool_name": "Edit",
+     "file_path": "/x/\ud800"},
+    {"event": "pre-tool-use", "session_id": "s-6", "cwd": "/x", "agent": "claude", "tool_name": "Edit",
+     "file_path": "/x/a\u0000b"},
+    {"event": "session-start", "session_id": "s-6", "cwd": "/x", "agent": "claude", "bind_node_id": 2**63},
+]
+
+
+@pytest.mark.parametrize("line", MALFORMED)
 def test_malformed_session_lines_make_no_session(repo, conn, line):
     _spool(repo, **line)
     _drain(conn, repo)
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert apply_line(conn, {"ts": _hook._now_iso(), **line}) is None
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("line", MALFORMED)
+def test_a_bad_line_does_not_poison_the_queue_for_the_good_line_after_it(repo, conn, line):
+    _spool(repo, **line)
+    _spool(repo, **_line(repo, "session-start", "s-good"))
+    _drain(conn, repo)
+    assert [r["id"] for r in conn.execute("SELECT id FROM sessions")] == ["s-good"]
+    assert not (repo / ".muvue" / "queue.draining").exists()
+    queue = repo / ".muvue" / "queue.jsonl"
+    assert not queue.exists() or not queue.read_text().strip()

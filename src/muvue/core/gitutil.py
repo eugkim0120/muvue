@@ -74,7 +74,7 @@ def branch_at(start: str) -> str | None:
         try:
             with open(git_dir) as f:
                 first = f.readline().strip()
-        except OSError:
+        except (OSError, ValueError):  # ValueError: NUL in the path
             return None
         if not first.startswith("gitdir:"):
             return None
@@ -84,7 +84,7 @@ def branch_at(start: str) -> str | None:
     try:
         with open(os.path.join(git_dir, "HEAD")) as f:
             head = f.read().strip()
-    except OSError:
+    except (OSError, ValueError):  # ValueError: NUL in the gitdir path
         return None
     prefix = "ref: refs/heads/"
     return head[len(prefix):] if head.startswith(prefix) else None
