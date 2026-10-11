@@ -29,6 +29,7 @@ from muvue import _hook
 
 from . import db as db_mod
 from . import gitutil
+from .config import SessionsConfig
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -239,3 +240,86 @@ def apply_line(conn: sqlite3.Connection, event: dict) -> str | None:
                 (canonical, path, ts),
             )
     return canonical
+
+
+STATES = ("working", "waiting", "quiet", "idle", "ended")
+
+
+def session_state(row, now: datetime, cfg: SessionsConfig) -> str:
+    """Liveness, computed on read. Ended (ended_at set, or silent past
+    `ended_s`) wins, then waiting on you (`waiting` after Stop), then
+    working (an event within `working_s`), then idle (silent past
+    `idle_s`). Between `working_s` and `idle_s` a session that is not
+    waiting is "quiet": it may be in a long tool call, or gone."""
+    if row["ended_at"] is not None:
+        return "ended"
+    last = parse_ts(row["last_event_at"])
+    age = (now - last).total_seconds() if last is not None else float("inf")
+    if age > cfg.ended_s:
+        return "ended"
+    if row["waiting"]:
+        return "waiting"
+    if age <= cfg.working_s:
+        return "working"
+    if age > cfg.idle_s:
+        return "idle"
+    return "quiet"
+
+
+def _launched_spend(conn: sqlite3.Connection, node_id: int, agent: str) -> dict:
+    """`node_usage` has no session column, so a launched session shows
+    what its agent has used on its node, across every run of that node."""
+    row = db_mod.query_one(
+        conn,
+        "SELECT COALESCE(SUM(in_tokens), 0) AS i, COALESCE(SUM(out_tokens), 0) AS o, "
+        "COALESCE(SUM(cost), 0) AS c FROM node_usage WHERE node_id = ? AND agent = ?",
+        (node_id, agent),
+    )
+    return {"in_tokens": row["i"], "out_tokens": row["o"], "cost": row["c"]}
+
+
+def _view(conn: sqlite3.Connection, row: sqlite3.Row, state: str) -> dict:
+    view = {key: row[key] for key in row.keys() if key != "node_worktree"}
+    view["waiting"] = bool(row["waiting"])
+    view["state"] = state
+    view["worktree"] = row["node_worktree"] or gitutil.worktree_top(row["cwd"])
+    view["touches"] = [
+        r["path"] for r in db_mod.query_all(
+            conn, "SELECT path FROM session_touches WHERE session_id = ? ORDER BY at DESC, path", (row["id"],),
+        )
+    ]
+    view["spend"] = (
+        _launched_spend(conn, row["node_id"], row["agent"])
+        if row["origin"] == "launched" and row["node_id"] is not None else None
+    )
+    return view
+
+
+def list_sessions(
+    conn: sqlite3.Connection,
+    cfg: SessionsConfig,
+    *,
+    project_id: int | None = None,
+    include_ended: bool = False,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Every session, newest event first, with its computed state. Alias
+    rows (a launched agent's own id) are folded into their run. With
+    `project_id`, off-plan sessions (no project) are kept: they belong to
+    the repository, not to one project."""
+    now = now or datetime.now(timezone.utc)
+    sql = (
+        "SELECT s.*, n.title AS node_title, n.status AS node_status, n.worktree AS node_worktree "
+        "FROM sessions s LEFT JOIN nodes n ON n.id = s.node_id WHERE s.alias_of IS NULL"
+    )
+    params: list = []
+    if project_id is not None:
+        sql += " AND (s.project_id = ? OR s.project_id IS NULL)"
+        params.append(project_id)
+    out = []
+    for row in db_mod.query_all(conn, sql + " ORDER BY s.last_event_at DESC, s.id", params):
+        state = session_state(row, now, cfg)
+        if state == "ended" and not include_ended:
+            continue
+        out.append(_view(conn, row, state))
+    return out
