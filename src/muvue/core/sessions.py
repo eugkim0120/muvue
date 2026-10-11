@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from pathlib import Path
 from muvue import _hook
 
 from . import db as db_mod
+from . import events as events_mod
 from . import gitutil
 from .config import SessionsConfig
 
@@ -456,3 +458,66 @@ def launched_run_finished(conn: sqlite3.Connection, node_id: int) -> bool:
         (node_id,),
     )
     return row is not None and row["ended_at"] is not None
+
+
+def get_session(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    """One session's row; an alias (a launched agent's own id) resolves
+    to its run. Raises LookupError for an unknown id."""
+    row = db_mod.query_one(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,))
+    if row is not None and row["alias_of"] is not None:
+        row = db_mod.query_one(conn, "SELECT * FROM sessions WHERE id = ?", (row["alias_of"],))
+    if row is None:
+        raise LookupError(f"no such session: {session_id}")
+    return row
+
+
+def _is_group_leader(pid: int) -> bool:
+    try:
+        return os.getpgid(pid) == pid
+    except ProcessLookupError:
+        return False
+
+
+def stop_launched(
+    conn: sqlite3.Connection,
+    session_id: str,
+    cfg: SessionsConfig,
+    *,
+    actor_evidence: str,
+    now: datetime | None = None,
+    kill=os.killpg,
+) -> dict:
+    """SIGTERM a launched session's process group (the driver runs in its
+    own session, so its pid is the group id -- as `drivers.stop_all`
+    does). The runner then sees the driver exit and ends the row itself.
+    A hand-started session is refused: muvue only watches those.
+
+    The pid is a number in the database, and the driver may have exited
+    and the number been recycled. A driver always leads its own group, so
+    a pid that leads no group is not ours: it is never signalled and the
+    run is marked ended."""
+    row = get_session(conn, session_id)
+    if row["origin"] != "launched":
+        raise SessionError("started by hand; stop it where it runs")
+    if session_state(row, now or datetime.now(timezone.utc), cfg) == "ended":
+        raise SessionError(f"session {row['id']} has already ended")
+    if row["pid"] is None:
+        raise SessionError(f"session {row['id']} has no process yet")
+    gone = f"session {row['id']}'s process {row['pid']} is no longer running; marked it ended"
+    if not _is_group_leader(row["pid"]):
+        end_launched(conn, row["id"])
+        raise SessionError(gone)
+    try:
+        kill(row["pid"], signal.SIGTERM)
+    except ProcessLookupError:
+        end_launched(conn, row["id"])
+        raise SessionError(gone) from None
+    except PermissionError:
+        raise SessionError(f"not permitted to signal session {row['id']}'s process {row['pid']}") from None
+    with db_mod.write_txn(conn):
+        events_mod.record_event(
+            conn, project_id=row["project_id"], node_id=row["node_id"], actor="human",
+            actor_evidence=actor_evidence, type_="session.stopped",
+            payload={"session_id": row["id"], "pid": row["pid"]},
+        )
+    return {"session_id": row["id"], "signalled": row["pid"]}
