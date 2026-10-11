@@ -581,7 +581,7 @@ def hook(
         exit_code = core.strict.handle_pre_receive_cli(Path.cwd())
         raise typer.Exit(exit_code)
 
-    if name not in _hook_mod.DECISION_HOOKS:
+    if name not in _hook_mod.SESSION_HOOKS:
         return
 
     # Same decision code the installed fast-path shims run
