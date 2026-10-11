@@ -80,13 +80,14 @@ def run_acceptance(suite: Suite, repo: Path) -> tuple[int, int]:
     """Run the suite's hidden tests against `repo`; return (passed, total)."""
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.xml"
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={report}",
              str(suite.root / "acceptance")],
             env={**os.environ, "BENCH_REPO": str(repo)}, capture_output=True, text=True, cwd=tmp,
         )
         if not report.exists():
-            raise RuntimeError(f"acceptance run for {suite.name} wrote no report")
+            tail = (result.stdout[-2000:] + "\n" + result.stderr[-2000:]).strip()
+            raise RuntimeError(f"acceptance run for {suite.name} wrote no report (exit {result.returncode}):\n{tail}")
         node = ET.parse(report).getroot()
         node = node if node.tag == "testsuite" else node.find("testsuite")
         total = int(node.get("tests"))
