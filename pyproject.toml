@@ -54,3 +54,4 @@ fail_under = 85
 # The benchmark harness lives at the repo root (`bench/`), outside the
 # package; its tests import it directly.
 pythonpath = ["."]
+testpaths = ["tests"]
