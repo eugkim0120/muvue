@@ -554,14 +554,16 @@ installed`, and warns when the repository's own install lacks an event
 **Drain.** `drain_queue` folds each session line into `sessions` in the
 transaction that writes its `hook.<event>` audit event. `pre-tool-use`
 and MCP `heartbeat` lines update the session without an audit event. The
-queue is untrusted: a line can create only a `hand` row, never sets
-`pid`, and is validated field by field; a line that names no valid
+queue is untrusted: a line never sets `pid` and is validated field by
+field. It creates a `hand` row, or, when it names a live launched run
+(`MUVUE_SESSION`), a `launched` alias row for the agent's own id that
+points at that run and has no `pid`; a line that names no valid
 session (or a heartbeat or end for a session that was never started) is
 ignored. A session's node is the node whose `worktree` contains `cwd`;
 else, for a launched agent, the runner's node (the agent's own id is
 stored as `alias_of` the run, so one run is one session); else an MCP
-`bind_node_id`; else none (off-plan). `last_action` is `session
-started`, `prompt sent`, `<Tool> <path>`, `turn ended`, `compacting`,
+`bind_node_id`; else none (off-plan). `last_action` is `launched` (a run
+that has not reported yet), `session started`, `prompt sent`, `<Tool> <path>`, `turn ended`, `compacting`,
 `session ended`, `run ended`, or a heartbeat's `action`. `waiting` is 1
 after `stop` and 0 after any other line. Sessions are observations of
 outside processes, so `rebuild` does not replay them.
@@ -586,7 +588,10 @@ hooks). `session_start(agent, cwd, node_id?)` returns
 **Runner.** `run_node` inserts the `launched` row before the driver
 starts, passes `MUVUE_SESSION=<run id>` in the driver's environment,
 records the driver's pid (its process group) once it has spawned, drains
-the agent's lines, and then ends the row.
+the agent's lines, and then ends the row. If the driver exited because
+of a Stop (a `session.stopped` event for this run), the node is released
+back to `ready` as after a `pause`: it is not failed, `attempts` is not
+increased, no lesson is written, and the run does not start it again.
 
 **Endpoints** (session-gated; the POST is JSON-only):
 
@@ -609,9 +614,22 @@ the agent's lines, and then ends the row.
   base moved past the branch or its node is `done`. `checks` is inferred
   (the node is `in_progress` and its launched session has ended).
 - `POST /sessions/{id}/stop`: SIGTERM to a launched session's process
-  group; 200 `{"session_id", "signalled"}`, records `session.stopped`.
-  409 `started by hand; stop it where it runs` for a hand session; 409
-  for an ended session or one with no process; 404 for an unknown id.
+  group; 200 `{"session_id", "signalled"}`. The `session.stopped` event
+  is the stop request: it commits in the same transaction as the signal
+  (and is rolled back if the signal fails), before the runner can end
+  the row, so the runner treats the driver's exit as a stop rather than
+  a failure and does not retry the node (see **Runner** above). An
+  alias id stops its run. 404 for an unknown id. 409 in every other
+  refusal, with the reason as the detail:
+  - `started by hand; stop it where it runs` for a hand session;
+  - the session has already ended, or has no process yet;
+  - the recorded pid is muvue's own process or process group (never
+    signalled);
+  - the pid does not lead a process group, so it is not the driver's
+    (never signalled; the run is marked ended);
+  - the process is gone when signalled (`ProcessLookupError`; the run
+    is marked ended);
+  - muvue is not permitted to signal it (`PermissionError`).
 
 ## Leases and optimistic version (P3, ships v0.1)
 

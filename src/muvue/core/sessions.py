@@ -489,7 +489,9 @@ def stop_launched(
 ) -> dict:
     """SIGTERM a launched session's process group (the driver runs in its
     own session, so its pid is the group id -- as `drivers.stop_all`
-    does). The runner then sees the driver exit and ends the row itself.
+    does). The runner then sees the driver exit, ends the row itself, and
+    finds the stop request: it releases the node, as for `stop_all`,
+    instead of failing and retrying it.
     A hand-started session is refused: muvue only watches those.
 
     The pid is a number in the database, and the driver may have exited
@@ -512,16 +514,32 @@ def stop_launched(
             f"session {row['id']}'s pid {row['pid']} does not lead a process group; marked it ended"
         )
     try:
-        kill(row["pid"], signal.SIGTERM)
+        # The `session.stopped` event is the stop request `run_node` reads
+        # (`stop_requested`). It commits before the runner can see the run
+        # end: the runner's `end_launched` waits for this write lock. A
+        # failed signal rolls it back.
+        with db_mod.write_txn(conn):
+            events_mod.record_event(
+                conn, project_id=row["project_id"], node_id=row["node_id"], actor="human",
+                actor_evidence=actor_evidence, type_="session.stopped",
+                payload={"session_id": row["id"], "pid": row["pid"]},
+            )
+            kill(row["pid"], signal.SIGTERM)
     except ProcessLookupError:
         end_launched(conn, row["id"])
         raise SessionError(gone) from None
     except PermissionError:
         raise SessionError(f"not permitted to signal session {row['id']}'s process {row['pid']}") from None
-    with db_mod.write_txn(conn):
-        events_mod.record_event(
-            conn, project_id=row["project_id"], node_id=row["node_id"], actor="human",
-            actor_evidence=actor_evidence, type_="session.stopped",
-            payload={"session_id": row["id"], "pid": row["pid"]},
-        )
     return {"session_id": row["id"], "signalled": row["pid"]}
+
+
+def stop_requested(conn: sqlite3.Connection, session_id: str, node_id: int) -> bool:
+    """Whether `stop_launched` signalled this launched run. The runner
+    asks after the driver exits, so a stop is not mistaken for a driver
+    failure and retried."""
+    return db_mod.query_one(
+        conn,
+        "SELECT 1 FROM events WHERE node_id = ? AND type = 'session.stopped' "
+        "AND json_extract(payload, '$.session_id') = ? LIMIT 1",
+        (node_id, session_id),
+    ) is not None

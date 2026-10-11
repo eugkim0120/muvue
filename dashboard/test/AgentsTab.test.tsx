@@ -116,3 +116,23 @@ test("switching project drops the previous project's sessions while the new fetc
   expect(screen.queryByText("node-12")).toBeNull();
   expect(screen.getByText("loading…")).toBeTruthy();
 });
+
+test("a branch where another project's agent is live shows that agent, not \"no agent\"", async () => {
+  // Worktree rows are repository-wide; project 1's session list does not
+  // hold project 2's run, the whole repository's list does.
+  const other = session({ id: "run-7", origin: "launched", node_id: 7, node_title: "Other project", cwd: "/w/node-7", state: "working" });
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    if (path.startsWith("/sessions?project_id=1")) return Promise.resolve({ sessions: [] });
+    if (path.startsWith("/sessions")) return Promise.resolve({ sessions: [other] });
+    return Promise.resolve({ errors: [], worktrees: [
+      wt({ path: "/repo", branch: "main", is_base: true, stage: null }),
+      wt({ path: "/w/node-7", branch: "node-7", fork_time: 100, tip_time: 200, stage: "commits", node_id: 7, node_title: "Other project", session_ids: ["run-7"] }),
+    ] });
+  });
+  render(<AgentsTab projectId={1} />);
+  await waitFor(() => screen.getByText("node-7"));
+  expect(document.querySelector('[data-branch="node-7"]')?.classList.contains("idle-row")).toBe(false);
+  expect(screen.getByText("working")).toBeTruthy();
+  fireEvent.click(document.querySelector('[data-branch="node-7"]')!);
+  expect(screen.getByRole("button", { name: "Stop agent" })).toBeTruthy();
+});

@@ -27,7 +27,7 @@ export function BranchPanel({ row, onClose }: { row: BranchRow; onClose: () => v
     return (
       <Confirm
         title="Stop this agent?"
-        body="muvue sends SIGTERM to the agent's process group. The run records this attempt as failed."
+        body="muvue sends SIGTERM to the agent's process group. The run stops and the task goes back to ready; this run does not retry it."
         confirmLabel="Stop agent"
         danger
         onConfirm={stop}

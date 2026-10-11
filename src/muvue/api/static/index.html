@@ -3418,7 +3418,7 @@ function BranchPanel({ row, onClose }) {
       Confirm,
       {
         title: "Stop this agent?",
-        body: "muvue sends SIGTERM to the agent's process group. The run records this attempt as failed.",
+        body: "muvue sends SIGTERM to the agent's process group. The run stops and the task goes back to ready; this run does not retry it.",
         confirmLabel: "Stop agent",
         danger: true,
         onConfirm: stop,
@@ -3524,9 +3524,9 @@ function BranchLine({ row, first, last, onOpen }) {
   ] });
 }
 function AgentsTab({ projectId: projectId2 }) {
-  return /* @__PURE__ */ u$1(AgentsTabBody, { projectId: projectId2 }, projectId2);
+  return /* @__PURE__ */ u$1(AgentsTabBody, {}, projectId2);
 }
-function AgentsTabBody({ projectId: projectId2 }) {
+function AgentsTabBody() {
   const [tick, setTick] = d$2(0);
   const [selected, setSelected] = d$2(null);
   h$2(() => {
@@ -3535,8 +3535,8 @@ function AgentsTabBody({ projectId: projectId2 }) {
   }, []);
   const signedIn = authed.value;
   const sessionsQ = useApi(
-    () => signedIn ? api(routes.sessions(projectId2), { background: true }) : Promise.resolve({ sessions: [] }),
-    [signedIn, projectId2, refreshTick.value, tick]
+    () => signedIn ? api(routes.sessions(null), { background: true }) : Promise.resolve({ sessions: [] }),
+    [signedIn, refreshTick.value, tick]
   );
   const worktreesQ = useApi(
     () => signedIn ? api(routes.worktrees(), { background: true }) : Promise.resolve({ worktrees: [], errors: [] }),

@@ -3,7 +3,8 @@
 
 Claude Code gets a real hook config (`.claude/settings.json`) wired to
 `muvue._hook` decision hooks (see src/muvue/_hook.py) -- SessionStart,
-PreToolUse, PreCompact, Stop. Codex/Gemini/Cursor are config writers only
+PreToolUse, PreCompact, Stop -- plus the record-only session events
+UserPromptSubmit and SessionEnd. Codex/Gemini/Cursor are config writers only
 (plan section 7: "Codex, Gemini, Cursor: config writers"): each gets a
 small instructions/config file pointing at `muvue brief`/`muvue mcp`,
 written in this tool's best-effort guess at that vendor's config format.

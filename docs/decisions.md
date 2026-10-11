@@ -2511,8 +2511,9 @@ reading here. Real `decisions` table entries start once dogfooding begins
     repository's worktrees.
     - The hooks still never touch the DB to record: a session line is
       one `O_APPEND` write, folded in by the drain. The queue is
-      untrusted: a line can create only a `hand` row and never sets
-      `pid`, the one field Stop signals.
+      untrusted: a line never sets `pid`, the one field Stop signals.
+      It can create a `hand` row, or a `launched` alias row (no `pid`)
+      for an agent's own id when it names a live run.
     - A session's node comes from its worktree, then from the run that
       launched it (`MUVUE_SESSION`; the agent's own id is an alias of
       the run), then from an MCP `node_id`, never from

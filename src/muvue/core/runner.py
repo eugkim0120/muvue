@@ -497,7 +497,9 @@ def run_node(
         hooks_mod.drain_queue(conn, Path(repo_root))
     finally:
         sessions_mod.end_launched(conn, session_id)
-    if _stop_requested.is_set():
+    # A Stop from the dashboard (`sessions.stop_launched`) signals only this
+    # driver; like a `pause`, it is not the agent failing.
+    if _stop_requested.is_set() or sessions_mod.stop_requested(conn, session_id, node["id"]):
         return _stopped(conn, node_row, owner, agent_name)
 
     if result.status == "unavailable":

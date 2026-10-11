@@ -5,7 +5,10 @@ MUVUE_SESSION, and the agent's own hook lines fold into that row."""
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -152,4 +155,70 @@ def test_run_node_ends_the_session_when_the_drain_raises(tmp_path, monkeypatch):
         runner_mod.run_node(conn, nodes.get_node(conn, task["id"]), "stub", config.agents["stub"], config, tmp_path, invoke=agent)
     row = conn.execute("SELECT ended_at FROM sessions WHERE origin = 'launched'").fetchone()
     assert row["ended_at"] is not None
+    conn.close()
+
+
+def test_stop_from_the_api_stops_the_node_instead_of_retrying_it(tmp_path, monkeypatch):
+    """A Stop pressed on the dashboard (`stop_launched`) takes the same
+    path as `drivers.stop_all`: the node is released, not failed, and the
+    run does not launch it again."""
+    monkeypatch.delenv("MUVUE_SESSION", raising=False)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, env=GIT_ENV)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"], cwd=tmp_path, check=True, env=GIT_ENV)
+    init_repo(tmp_path)
+    db_path = tmp_path / ".muvue" / "muvue.db"
+    conn = core_db.connect(db_path)
+    config = MuvueConfig(
+        checks=ChecksConfig(test="true", lint="true"),
+        agents={"sleeper": AgentConfig(command="sleep 30", cost_model="tokens")},
+        routing=RoutingConfig(spec="sleeper", task="sleeper", subtask="sleeper"),
+    )
+    project = projects.create_project(conn, goal="g")
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t", criteria=["c"],
+        criteria_mode="auto", predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project["id"], config=config)
+
+    outcome: dict = {}
+    run_thread = threading.Thread(
+        target=lambda: outcome.update(runner_mod.run(db_path, config, tmp_path, project_id=project["id"])),
+    )
+    run_thread.start()
+    pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while pid is None and time.monotonic() < deadline:
+            row = conn.execute("SELECT id, pid FROM sessions WHERE origin = 'launched' AND pid IS NOT NULL").fetchone()
+            if row is None:
+                time.sleep(0.05)
+                continue
+            pid = row["pid"]
+            run_id = row["id"]
+        assert pid is not None, "the runner never recorded the driver's pid"
+        stopped = sessions.stop_launched(conn, run_id, SessionsConfig(), actor_evidence="dashboard_token")
+        assert stopped == {"session_id": run_id, "signalled": pid}
+        run_thread.join(timeout=10)
+    finally:
+        # If the run is still going, it is inside a driver it spawned (the
+        # first, or a relaunch): kill each of this run's live driver groups.
+        while run_thread.is_alive():
+            for row in conn.execute(
+                "SELECT pid FROM sessions WHERE origin = 'launched' AND pid IS NOT NULL AND ended_at IS NULL"
+            ).fetchall():
+                try:
+                    os.killpg(row["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # exited between the query and the kill
+            run_thread.join(timeout=1)
+
+    assert [r["outcome"] for r in outcome["processed"]] == ["stopped"]
+    launched = conn.execute("SELECT id, ended_at FROM sessions WHERE origin = 'launched' AND alias_of IS NULL").fetchall()
+    assert [r["id"] for r in launched] == [run_id]
+    assert launched[0]["ended_at"] is not None
+    node = nodes.get_node(conn, task["id"])
+    assert node["status"] == "ready"
+    assert node["attempts"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM notes WHERE node_id = ? AND kind = 'lesson'", (task["id"],)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type = 'node.failed'").fetchone()[0] == 0
     conn.close()

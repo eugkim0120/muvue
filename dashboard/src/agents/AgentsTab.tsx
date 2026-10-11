@@ -70,13 +70,13 @@ function BranchLine({ row, first, last, onOpen }: { row: BranchRow; first: boole
   );
 }
 
-// Keyed by project so the previous project's sessions are never shown as
-// the new one's while its fetch is in flight (useApi keeps stale data).
+// Keyed by project so a switch starts afresh: no previous selection and no
+// stale data shown while the new fetch is in flight (useApi keeps it).
 export function AgentsTab({ projectId }: { projectId: number | null }) {
-  return <AgentsTabBody key={projectId} projectId={projectId} />;
+  return <AgentsTabBody key={projectId} />;
 }
 
-function AgentsTabBody({ projectId }: { projectId: number | null }) {
+function AgentsTabBody() {
   const [tick, setTick] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   useEffect(() => {
@@ -84,9 +84,12 @@ function AgentsTabBody({ projectId }: { projectId: number | null }) {
     return () => clearInterval(t);
   }, []);
   const signedIn = authed.value;
+  // Worktree rows are repository-wide, so their session ids are resolved
+  // against every project's sessions: a branch where another project's
+  // agent is live must not read "no agent".
   const sessionsQ = useApi<{ sessions: Session[] }>(
-    () => (signedIn ? api(routes.sessions(projectId), { background: true }) : Promise.resolve({ sessions: [] })),
-    [signedIn, projectId, refreshTick.value, tick],
+    () => (signedIn ? api(routes.sessions(null), { background: true }) : Promise.resolve({ sessions: [] })),
+    [signedIn, refreshTick.value, tick],
   );
   const worktreesQ = useApi<WorktreeList>(
     () => (signedIn ? api(routes.worktrees(), { background: true }) : Promise.resolve({ worktrees: [], errors: [] })),

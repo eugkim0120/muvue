@@ -158,6 +158,8 @@ def test_stop_of_a_process_gone_before_the_signal_marks_the_run_ended(conn, repo
         sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=gone)
     assert calls == [4242]
     assert conn.execute("SELECT ended_at FROM sessions WHERE id = ?", (run_id,)).fetchone()["ended_at"] is not None
+    # The stop request is rolled back with the failed signal.
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type = 'session.stopped'").fetchone()[0] == 0
 
 
 def test_stop_of_a_pid_that_leads_no_group_is_never_signalled(conn, repo):
@@ -218,6 +220,7 @@ def test_stop_reports_a_process_it_may_not_signal(conn, repo):
 
         with pytest.raises(sessions.SessionError, match="not permitted"):
             sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=denied)
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE type = 'session.stopped'").fetchone()[0] == 0
     finally:
         proc.kill()
         proc.wait()
