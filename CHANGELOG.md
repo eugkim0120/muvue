@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.1] - 2026-10-11
+
+### Changed
+- The README, and so the PyPI page, shows screenshots of a real run: the map mid-run, a task in review, the Agents tab, the phone layout and dark mode. Its dashboard section now describes the current layout (Map, Next, Needs you, the activity bar and the `⌘K` palette).
+
 ## [0.3.0] - 2026-10-11
 
 ### Added

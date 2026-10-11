@@ -13,6 +13,12 @@ dashboard shows the plan as a diagram of tasks and dependencies, colored
 by status, and each task's diff, logs and notes. Anything that needs you
 waits in one inbox.
 
+![The muvue dashboard: a six-task plan as a diagram, with Claude working on one task and the next step in the right-hand rail](https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/dashboard-map.png)
+
+*A real run, mid-way: a small Python CLI planned as six tasks. Three are
+done and `claude` is working on the fourth. The whole run, through
+`muvue run`, cost $1.39.*
+
 - **You approve before the agent starts.** First the spec, then the
   task list. Approving the task list freezes each task's acceptance
   criteria, so the agent can't quietly change what "done" means.
@@ -198,16 +204,22 @@ muvue serve        # loopback only, port 8765
   and changes on every restart.
 
 The dashboard is organised around what you do next:
-- **Plan**: the spec with its approve button, then the tasks as a
-  diagram (parent and dependency edges, coloured by status) or a list
-  grouped by status. Tap a task for its sheet: actions first, then
-  overview, diff and live logs.
-- **Inbox**: everything waiting on you, with the answer, approve and
-  acknowledge buttons inline.
-- **Activity**: the timeline grouped by day, and plan revisions.
-- **Spend**: KPIs and each agent's spend against its budget.
-- The project menu (top left) switches projects and holds pause,
-  resume and close. `⌘K` opens a jump-to palette.
+- **Map**: the spec on top, then the tasks as a top-down diagram,
+  coloured by status, with each arrow labelled with what one task hands
+  to the next. Tap a task for its sheet: actions first, then criteria,
+  the agent's summary, predicted files, diff and live logs.
+- **Next**: one card names the one next step (approve the spec, approve
+  the task list, run, review, close) and carries its button.
+- **Needs you**: everything waiting on you. A task in review shows the
+  agent's summary, the lines added and removed, the risk tier, and
+  approve, reject and discuss.
+- **Activity**: while agents work, a bar says what is running, with a
+  link to its log. Progress and spend against each agent's budget sit
+  under the title.
+- `⌘K` opens a palette that jumps between projects and holds pause,
+  resume and close.
+
+![A task in review: the agent's summary, +99 −0, high risk, with Approve, Reject and Discuss](https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/dashboard-review.png)
 
 A project has four tabs: **Map** (the plan diagram), **Plan** and
 **Repo** (placeholders for now), and **Agents**: every branch with a git
@@ -217,8 +229,17 @@ stage bar (worktree, commits, checks, review, merged); worktrees with no
 agent below. Tap a branch for its session, its task's planned files and,
 for agents muvue started, Stop.
 
+![The Agents tab: the base branch, a worktree where claude is working on task 5 with its stage bar, and finished worktrees below](https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/dashboard-agents.png)
+
 It follows the system light or dark setting and is laid out for a
 phone as well as a desktop.
+
+<p>
+  <img src="https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/phone-map.png" alt="The map on a phone, mid-run" width="300">
+  <img src="https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/phone-agents.png" alt="The Agents tab on a phone" width="300">
+</p>
+
+![The map in dark mode](https://raw.githubusercontent.com/eugkim0120/muvue/main/docs/images/dashboard-map-dark.png)
 
 To use the dashboard from another device on your tailnet, bind the
 machine's Tailscale address: `muvue serve --host 100.x.y.z
