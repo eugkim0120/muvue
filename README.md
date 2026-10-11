@@ -157,6 +157,7 @@ It records exactly what was verified for each vendor, and what wasn't.
 
 ```bash
 muvue adapter install claude-code   # hooks in .claude/settings.json
+muvue adapter install claude-code --user   # record-only hooks for every Claude Code session on this machine
 muvue adapter install codex         # or gemini / cursor: instruction files
 muvue mcp                           # MCP stdio server with the agent's commands only
 ```
@@ -166,6 +167,14 @@ session starts. They block edits while a task is waiting for your
 approval, and keep a turn from ending while a task in progress has no
 logged work or touches an outdated part of the project memory. Hooks
 run through a stdlib-only fast path: on CI, p99 is 34 ms per call.
+
+The hooks also record each Claude Code session: which worktree and
+branch it is in, what it last did, which files it edited, and whether it
+is working, waiting for you, quiet, idle or ended. `--user` installs the
+hooks once for every Claude Code session on the machine, including
+sessions in worktrees outside the repository; those hooks only record
+and never block an edit. Other agent CLIs report through the MCP tools
+`session_start`, `session_heartbeat` and `session_end`.
 
 Agents use `muvue brief <node> [--budget N] [--since EVENT]`, `start`,
 `note`, `ask --default ...`, `done` and
@@ -199,6 +208,14 @@ The dashboard is organised around what you do next:
 - **Spend**: KPIs and each agent's spend against its budget.
 - The project menu (top left) switches projects and holds pause,
   resume and close. `⌘K` opens a jump-to palette.
+
+A project has four tabs: **Map** (the plan diagram), **Plan** and
+**Repo** (placeholders for now), and **Agents**: every branch with a git
+graph down the left, the agent working on it and its state, its task or
+"off-plan", changed files, commits ahead and behind, and a five-step
+stage bar (worktree, commits, checks, review, merged); worktrees with no
+agent below. Tap a branch for its session, its task's planned files and,
+for agents muvue started, Stop.
 
 It follows the system light or dark setting and is laid out for a
 phone as well as a desktop.
@@ -254,6 +271,7 @@ fails with the exact key.
 | `[agents.<name>]` | agent command, auth check, usage parser, cost model, budget, rate-limit policy |
 | `[routing]` | which agent gets each kind of task |
 | `[budget]` | wall-clock and task-count caps per `muvue run` |
+| `[sessions]` | seconds before a session counts as quiet (`working_s`), idle (`idle_s`) and ended (`ended_s`) |
 | `[daemon]`, `[notify]` | bind address and extra allowed origins; a URL (ntfy topic or webhook) for inbox notifications |
 
 ## Development
@@ -291,7 +309,7 @@ hook latency benchmark against the v4 budgets.
 ## Docs
 
 - `docs/protocol.md`: task statuses, every command, API routes, events
-  (protocol version 2)
+  (protocol version 4)
 - `docs/decisions.md`: numbered decision log
 - `docs/threat-model.md`: the daemon's security model
 - `docs/providers.md`: what's verified for each agent CLI

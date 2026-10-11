@@ -155,7 +155,11 @@ class RoutingConfig(StrictModel):
 # every human verb (project create, spec, children/decompose, remove,
 # edit, breakdown, run), `agents/status`, `nodes/{id}/runs`, and
 # `depends_on` becoming dict-shaped (`{"id", "carries"}`) everywhere.
-PROTOCOL_VERSION = 3
+# 4: mission control phase 1 -- UserPromptSubmit/SessionEnd hooks and
+# session fields on hook queue lines, the MCP session_start/
+# session_heartbeat/session_end tools, GET /sessions, GET /worktrees and
+# POST /sessions/{id}/stop.
+PROTOCOL_VERSION = 4
 
 
 class MuvueConfig(StrictModel):
@@ -195,7 +199,7 @@ class MuvueConfig(StrictModel):
 
 DEFAULT_CONFIG_TOML = """\
 schema_version = 1
-protocol_version = 3
+protocol_version = 4
 mode = "light"
 worktree_mode = "branch"
 worktree_setup = "uv sync"

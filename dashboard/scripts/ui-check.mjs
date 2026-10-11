@@ -293,6 +293,18 @@ try {
     check("muvue link: the link signs a new browser in", await signedIn(f));
     await f.setViewportSize({ width: 1280, height: 800 });
     await f.screenshot({ path: join(outDir, "07-desktop-signed-in.png") });
+    // --- Agents tab (mission control phase 1) at phone and desktop width
+    await f.goto(base + "#/p/" + projectId + "?tab=agents");
+    for (const [w, h] of [[1280, 800], [390, 844]]) {
+      await f.setViewportSize({ width: w, height: h });
+      const shown = await f.waitForSelector(".agents-tab h2", { timeout: 5000 }).then(() => true, () => false);
+      await f.screenshot({ path: join(outDir, `08-agents-${w}.png`), fullPage: true });
+      check(`agents tab ${w}: the Branches section renders`, shown && (await f.getByRole("heading", { name: "Branches" }).count()) === 1);
+      check(`agents tab ${w}: the base branch row is listed`, (await f.locator(".branch-row").count()) >= 1);
+      check(`agents tab ${w}: no horizontal page scroll`, await f.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
+      const short = await f.locator(".project-tabs button, .branch-row").evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().height < 44).length);
+      check(`agents tab ${w}: every tab and branch row is at least 44px tall`, short === 0, `${short} too short`);
+    }
     await fresh.close();
   }
 } finally {
