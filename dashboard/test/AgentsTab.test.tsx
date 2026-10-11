@@ -97,3 +97,22 @@ test("a git failure shows on its own row and the rest of the page still renders"
   await waitFor(() => screen.getByText("git failed: fatal: bad object"));
   expect(branchOrder()).toEqual(["main", "bad"]);
 });
+
+test("a git failure on the base row shows on that row", async () => {
+  vi.spyOn(client, "api").mockImplementation((path: string) => {
+    if (path.startsWith("/sessions")) return Promise.resolve({ sessions: [] });
+    return Promise.resolve({ errors: [], worktrees: [wt({ path: "/repo", branch: "main", is_base: true, stage: null, error: "git failed: fatal: not a repository" })] });
+  });
+  render(<AgentsTab projectId={1} />);
+  await waitFor(() => screen.getByText("git failed: fatal: not a repository"));
+  expect(document.querySelector('[data-branch="main"]')?.textContent).toContain("git failed: fatal: not a repository");
+});
+
+test("switching project drops the previous project's sessions while the new fetch is pending", async () => {
+  const { rerender } = render(<AgentsTab projectId={1} />);
+  await waitFor(() => screen.getByText("node-12"));
+  vi.spyOn(client, "api").mockImplementation(() => new Promise(() => {}));
+  rerender(<AgentsTab projectId={2} />);
+  expect(screen.queryByText("node-12")).toBeNull();
+  expect(screen.getByText("loading…")).toBeTruthy();
+});

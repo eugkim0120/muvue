@@ -58,7 +58,9 @@ function BranchLine({ row, first, last, onOpen }: { row: BranchRow; first: boole
         ) : <span class="caption">no agent</span>}
       </span>
       <span class="branch-task caption">{w.is_base ? "base branch" : taskLabel(w)}</span>
-      {w.is_base ? null : (
+      {w.is_base ? (
+        w.error ? <span class="branch-changes caption">{w.error}</span> : null
+      ) : (
         <>
           <span class="branch-changes caption">{w.error ?? `${changesLabel(w)} · ${aheadBehindLabel(w)}`}</span>
           <StageBar stage={w.stage} />
@@ -68,7 +70,13 @@ function BranchLine({ row, first, last, onOpen }: { row: BranchRow; first: boole
   );
 }
 
+// Keyed by project so the previous project's sessions are never shown as
+// the new one's while its fetch is in flight (useApi keeps stale data).
 export function AgentsTab({ projectId }: { projectId: number | null }) {
+  return <AgentsTabBody key={projectId} projectId={projectId} />;
+}
+
+function AgentsTabBody({ projectId }: { projectId: number | null }) {
   const [tick, setTick] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   useEffect(() => {

@@ -29,3 +29,9 @@ test(".branch-row meets the 44px touch-target minimum", () => {
   const css = readFileSync(join(__dirname, "..", "src", "agents", "agents.css"), "utf8");
   expect(minHeightOf(css, ".branch-row")).toBeGreaterThanOrEqual(44);
 });
+
+test(".btn and .icon-btn (panel Stop, Open session, close) meet the 44px touch-target minimum", () => {
+  const css = readFileSync(join(__dirname, "..", "src", "ui", "ui.css"), "utf8");
+  expect(minHeightOf(css, ".btn")).toBeGreaterThanOrEqual(44);
+  expect(minHeightOf(css, ".icon-btn")).toBeGreaterThanOrEqual(44);
+});

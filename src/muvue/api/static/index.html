@@ -3517,13 +3517,16 @@ function BranchLine({ row, first, last, onOpen }) {
       ] })
     ] }) : /* @__PURE__ */ u$1("span", { class: "caption", children: "no agent" }) }),
     /* @__PURE__ */ u$1("span", { class: "branch-task caption", children: w2.is_base ? "base branch" : taskLabel(w2) }),
-    w2.is_base ? null : /* @__PURE__ */ u$1(S$1, { children: [
+    w2.is_base ? w2.error ? /* @__PURE__ */ u$1("span", { class: "branch-changes caption", children: w2.error }) : null : /* @__PURE__ */ u$1(S$1, { children: [
       /* @__PURE__ */ u$1("span", { class: "branch-changes caption", children: w2.error ?? `${changesLabel(w2)} · ${aheadBehindLabel(w2)}` }),
       /* @__PURE__ */ u$1(StageBar, { stage: w2.stage })
     ] })
   ] });
 }
 function AgentsTab({ projectId: projectId2 }) {
+  return /* @__PURE__ */ u$1(AgentsTabBody, { projectId: projectId2 }, projectId2);
+}
+function AgentsTabBody({ projectId: projectId2 }) {
   const [tick, setTick] = d$2(0);
   const [selected, setSelected] = d$2(null);
   h$2(() => {
