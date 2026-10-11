@@ -2617,7 +2617,7 @@ function ProgressBar({ counts, spend }) {
   ] });
 }
 const usd = (n2) => `$${n2.toFixed(2)}`;
-function spendLabel(kpis) {
+function spendLabel$1(kpis) {
   const drivers = Object.entries(kpis?.spend_by_driver ?? {});
   if (!drivers.length) return null;
   const [name, d2] = drivers.reduce((a2, b2) => b2[1].pct > a2[1].pct ? b2 : a2);
@@ -2869,7 +2869,7 @@ function ProjectPage() {
         ] }),
         /* @__PURE__ */ u$1("div", { class: "row meta-row", children: [
           /* @__PURE__ */ u$1("button", { type: "button", class: "status-line-btn", onClick: () => setAgentsSheet(true), children: /* @__PURE__ */ u$1(StatusLine, { phase: p2.phase, done, total, working }) }),
-          /* @__PURE__ */ u$1(ProgressBar, { counts: progressCounts((nodesQ.data ?? []).filter((n2) => n2.kind === "task")), spend: spendLabel(kpisQ.data) })
+          /* @__PURE__ */ u$1(ProgressBar, { counts: progressCounts((nodesQ.data ?? []).filter((n2) => n2.kind === "task")), spend: spendLabel$1(kpisQ.data) })
         ] }),
         kpisQ.error ? /* @__PURE__ */ u$1("div", { class: "caption", children: [
           "Spend unavailable: ",
@@ -3344,6 +3344,231 @@ function NodeSheet() {
     /* @__PURE__ */ u$1(Details, { nodeId: id, predictedTouches: detail.predicted_touches })
   ] }) });
 }
+const STAGES = ["worktree", "commits", "checks", "review", "merged"];
+function isLive(s2) {
+  return s2.state !== "ended";
+}
+const STATE_CLASS = {
+  working: "st-in_progress",
+  waiting: "st-awaiting_approval",
+  quiet: "st-ready",
+  idle: "",
+  ended: ""
+};
+function stateLabel(s2) {
+  return s2 === "waiting" ? "waiting on you" : s2;
+}
+function liveSession(ids, byId) {
+  const live = ids.map((id) => byId.get(id)).filter((s2) => s2 !== void 0 && isLive(s2));
+  live.sort((a2, b2) => b2.last_event_at.localeCompare(a2.last_event_at));
+  return live[0] ?? null;
+}
+function branchRows(list, sessions) {
+  const byId = new Map(sessions.map((s2) => [s2.id, s2]));
+  const rows = list.worktrees.map((w2) => ({ worktree: w2, session: liveSession(w2.session_ids, byId) }));
+  const others = rows.filter((r2) => !r2.worktree.is_base);
+  const forkOf = (r2) => r2.worktree.fork_time ?? Number.MAX_SAFE_INTEGER;
+  return {
+    base: rows.find((r2) => r2.worktree.is_base) ?? null,
+    active: others.filter((r2) => r2.session !== null).sort((a2, b2) => forkOf(a2) - forkOf(b2) || a2.worktree.path.localeCompare(b2.worktree.path)),
+    idle: others.filter((r2) => r2.session === null).sort((a2, b2) => (b2.worktree.tip_time ?? 0) - (a2.worktree.tip_time ?? 0))
+  };
+}
+function stageReached(stage) {
+  return stage === null ? 0 : STAGES.indexOf(stage) + 1;
+}
+function taskLabel(w2) {
+  return w2.node_id !== null ? `#${w2.node_id} ${w2.node_title ?? ""}`.trim() : "off-plan";
+}
+function changesLabel(w2) {
+  const n2 = w2.changed_paths.length;
+  return n2 === 1 ? "1 file" : `${n2} files`;
+}
+function aheadBehindLabel(w2) {
+  return w2.ahead === null || w2.behind === null ? "–" : `↑${w2.ahead} ↓${w2.behind}`;
+}
+function spendLabel(s2) {
+  return `${s2.in_tokens + s2.out_tokens} tokens · $${s2.cost.toFixed(2)}`;
+}
+function ageLabel(at, now) {
+  const ms = typeof at === "number" ? at * 1e3 : Date.parse(at);
+  const s2 = Math.max(0, Math.round((now - ms) / 1e3));
+  if (s2 < 60) return "just now";
+  if (s2 < 3600) return `${Math.floor(s2 / 60)}m ago`;
+  if (s2 < 86400) return `${Math.floor(s2 / 3600)}h ago`;
+  return `${Math.floor(s2 / 86400)}d ago`;
+}
+function BranchPanel({ row, onClose }) {
+  const w2 = row.worktree;
+  const s2 = row.session;
+  const stopA = useAction();
+  const [details, setDetails] = d$2(false);
+  const [confirmStop, setConfirmStop] = d$2(false);
+  async function stop() {
+    if (!s2) return;
+    setConfirmStop(false);
+    const ok = await stopA.run(() => post(routes.sessionStop(s2.id)));
+    if (ok) {
+      toast("stop sent to the agent");
+      refresh();
+    }
+  }
+  if (confirmStop) {
+    return /* @__PURE__ */ u$1(
+      Confirm,
+      {
+        title: "Stop this agent?",
+        body: "muvue sends SIGTERM to the agent's process group. The run records this attempt as failed.",
+        confirmLabel: "Stop agent",
+        danger: true,
+        onConfirm: stop,
+        onCancel: () => setConfirmStop(false)
+      }
+    );
+  }
+  return /* @__PURE__ */ u$1(Sheet, { title: w2.branch ?? w2.path, onClose, children: /* @__PURE__ */ u$1("div", { class: "stack", children: [
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "Session" }),
+      s2 ? /* @__PURE__ */ u$1("p", { class: "row", children: [
+        /* @__PURE__ */ u$1("span", { class: "pill " + STATE_CLASS[s2.state], children: stateLabel(s2.state) }),
+        /* @__PURE__ */ u$1("span", { children: [
+          s2.agent,
+          " · ",
+          s2.origin === "launched" ? "started by muvue" : "started by hand",
+          " · ",
+          s2.last_action ?? "no action yet"
+        ] })
+      ] }) : /* @__PURE__ */ u$1("p", { class: "muted", children: "No agent is working here." }),
+      s2 && details ? /* @__PURE__ */ u$1("dl", { class: "kv", children: [
+        /* @__PURE__ */ u$1("dt", { children: "id" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.id }),
+        /* @__PURE__ */ u$1("dt", { children: "directory" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.cwd }),
+        /* @__PURE__ */ u$1("dt", { children: "transcript" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.transcript_path ?? "—" }),
+        /* @__PURE__ */ u$1("dt", { children: "started" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.started_at }),
+        /* @__PURE__ */ u$1("dt", { children: "last event" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.last_event_at }),
+        /* @__PURE__ */ u$1("dt", { children: "files touched" }),
+        /* @__PURE__ */ u$1("dd", { children: s2.touches.join(", ") || "—" }),
+        s2.spend ? /* @__PURE__ */ u$1(S$1, { children: [
+          /* @__PURE__ */ u$1("dt", { children: "spend" }),
+          /* @__PURE__ */ u$1("dd", { children: spendLabel(s2.spend) })
+        ] }) : null
+      ] }) : null
+    ] }),
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "Planned files" }),
+      w2.node_id === null ? /* @__PURE__ */ u$1("p", { class: "muted", children: "Off-plan: no task, so no planned files." }) : w2.planned.length === 0 ? /* @__PURE__ */ u$1("p", { class: "muted", children: "The task names no files." }) : /* @__PURE__ */ u$1("ul", { class: "planned", children: w2.planned.map((p2) => /* @__PURE__ */ u$1("li", { children: [
+        /* @__PURE__ */ u$1("span", { class: "mono", children: p2.glob }),
+        /* @__PURE__ */ u$1("span", { class: "caption planned-state", children: p2.touched ? "changed" : "not yet" })
+      ] })) }),
+      w2.changed_paths.length ? /* @__PURE__ */ u$1(S$1, { children: [
+        /* @__PURE__ */ u$1("h3", { children: "Changed files" }),
+        /* @__PURE__ */ u$1("ul", { class: "planned", children: w2.changed_paths.map((p2) => /* @__PURE__ */ u$1("li", { class: "mono", children: p2 })) })
+      ] }) : null,
+      w2.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: w2.error }) : null
+    ] }),
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h3", { children: "Overlap" }),
+      /* @__PURE__ */ u$1("p", { class: "muted", children: "No overlap checks yet." })
+    ] }),
+    /* @__PURE__ */ u$1("div", { class: "row", children: [
+      s2 ? /* @__PURE__ */ u$1(Button, { onClick: () => setDetails((d2) => !d2), children: details ? "Hide session" : "Open session" }) : null,
+      w2.node_id !== null ? /* @__PURE__ */ u$1(Button, { onClick: () => {
+        onClose();
+        openNode(w2.node_id);
+      }, children: "Open diff" }) : null,
+      s2 && s2.origin === "launched" ? /* @__PURE__ */ u$1(Button, { variant: "danger", busy: stopA.busy, busyLabel: "Stopping…", onClick: () => setConfirmStop(true), children: "Stop agent" }) : null
+    ] }),
+    stopA.error ? /* @__PURE__ */ u$1("div", { class: "callout danger", children: stopA.error }) : null
+  ] }) });
+}
+const RELOAD_MS = 3e4;
+function GraphCell({ base, first, last }) {
+  return /* @__PURE__ */ u$1("svg", { class: "git-graph", viewBox: "0 0 28 52", preserveAspectRatio: "none", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u$1("line", { class: "trunk", x1: "8", y1: first ? 26 : 0, x2: "8", y2: last ? 26 : 52, "vector-effect": "non-scaling-stroke" }),
+    base ? /* @__PURE__ */ u$1("circle", { class: "tip base", cx: "8", cy: "26", r: "5" }) : /* @__PURE__ */ u$1(S$1, { children: [
+      /* @__PURE__ */ u$1("path", { class: "fork", d: "M8 12 Q8 26 20 26", "vector-effect": "non-scaling-stroke" }),
+      /* @__PURE__ */ u$1("circle", { class: "tip", cx: "20", cy: "26", r: "4" })
+    ] })
+  ] });
+}
+function StageBar({ stage }) {
+  const reached = stageReached(stage);
+  return /* @__PURE__ */ u$1("span", { class: "stage-bar", role: "img", "aria-label": stage ? `stage: ${stage}` : "stage unknown", children: STAGES.map((st, i2) => /* @__PURE__ */ u$1("span", { class: "stage-seg" + (i2 < reached ? " on" : ""), title: st })) });
+}
+function BranchLine({ row, first, last, onOpen }) {
+  const w2 = row.worktree;
+  const s2 = row.session;
+  return /* @__PURE__ */ u$1("button", { type: "button", class: "list-row branch-row", "data-branch": w2.branch ?? "", onClick: onOpen, children: [
+    /* @__PURE__ */ u$1(GraphCell, { base: w2.is_base, first, last }),
+    /* @__PURE__ */ u$1("span", { class: "branch-main", children: [
+      /* @__PURE__ */ u$1("span", { class: "title mono", children: w2.branch ?? "(detached)" }),
+      /* @__PURE__ */ u$1("span", { class: "caption branch-sub", children: w2.path })
+    ] }),
+    /* @__PURE__ */ u$1("span", { class: "branch-agent", children: s2 ? /* @__PURE__ */ u$1(S$1, { children: [
+      /* @__PURE__ */ u$1("span", { class: "pill " + STATE_CLASS[s2.state], children: stateLabel(s2.state) }),
+      /* @__PURE__ */ u$1("span", { class: "caption", children: [
+        " ",
+        s2.agent,
+        s2.origin === "hand" ? " · by hand" : ""
+      ] })
+    ] }) : /* @__PURE__ */ u$1("span", { class: "caption", children: "no agent" }) }),
+    /* @__PURE__ */ u$1("span", { class: "branch-task caption", children: w2.is_base ? "base branch" : taskLabel(w2) }),
+    w2.is_base ? null : /* @__PURE__ */ u$1(S$1, { children: [
+      /* @__PURE__ */ u$1("span", { class: "branch-changes caption", children: w2.error ?? `${changesLabel(w2)} · ${aheadBehindLabel(w2)}` }),
+      /* @__PURE__ */ u$1(StageBar, { stage: w2.stage })
+    ] })
+  ] });
+}
+function AgentsTab({ projectId: projectId2 }) {
+  const [tick, setTick] = d$2(0);
+  const [selected, setSelected] = d$2(null);
+  h$2(() => {
+    const t2 = setInterval(() => setTick((n2) => n2 + 1), RELOAD_MS);
+    return () => clearInterval(t2);
+  }, []);
+  const signedIn = authed.value;
+  const sessionsQ = useApi(
+    () => signedIn ? api(routes.sessions(projectId2), { background: true }) : Promise.resolve({ sessions: [] }),
+    [signedIn, projectId2, refreshTick.value, tick]
+  );
+  const worktreesQ = useApi(
+    () => signedIn ? api(routes.worktrees(), { background: true }) : Promise.resolve({ worktrees: [], errors: [] }),
+    [signedIn, refreshTick.value, tick]
+  );
+  const rows = T(
+    () => worktreesQ.data && sessionsQ.data ? branchRows(worktreesQ.data, sessionsQ.data.sessions) : null,
+    [worktreesQ.data, sessionsQ.data]
+  );
+  if (!signedIn) return /* @__PURE__ */ u$1("div", { class: "agents-tab", children: /* @__PURE__ */ u$1("p", { class: "muted", children: "Sign in to see agent sessions and worktrees." }) });
+  const error = sessionsQ.error ?? worktreesQ.error;
+  if (error) return /* @__PURE__ */ u$1("div", { class: "agents-tab", children: /* @__PURE__ */ u$1("div", { class: "callout danger", children: error }) });
+  if (!rows || !worktreesQ.data) return /* @__PURE__ */ u$1("div", { class: "agents-tab", children: /* @__PURE__ */ u$1(Empty, { text: "loading…" }) });
+  const now = Date.now();
+  const branches = [...rows.base ? [rows.base] : [], ...rows.active];
+  const open = [...branches, ...rows.idle].find((r2) => r2.worktree.path === selected) ?? null;
+  return /* @__PURE__ */ u$1("div", { class: "agents-tab", children: [
+    worktreesQ.data.errors.map((e2) => /* @__PURE__ */ u$1("div", { class: "callout danger", children: e2 })),
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h2", { children: "Branches" }),
+      /* @__PURE__ */ u$1("div", { class: "list", children: branches.map((r2, i2) => /* @__PURE__ */ u$1(BranchLine, { row: r2, first: i2 === 0, last: i2 === branches.length - 1, onOpen: () => setSelected(r2.worktree.path) })) })
+    ] }),
+    /* @__PURE__ */ u$1("section", { class: "stack tight", children: [
+      /* @__PURE__ */ u$1("h2", { children: "Worktrees with no agent" }),
+      rows.idle.length === 0 ? /* @__PURE__ */ u$1("p", { class: "muted", children: "None." }) : /* @__PURE__ */ u$1("div", { class: "list", children: rows.idle.map((r2) => /* @__PURE__ */ u$1("button", { type: "button", class: "list-row branch-row idle-row", "data-branch": r2.worktree.branch ?? "", onClick: () => setSelected(r2.worktree.path), children: [
+        /* @__PURE__ */ u$1("span", { class: "branch-main", children: [
+          /* @__PURE__ */ u$1("span", { class: "title mono", children: r2.worktree.branch ?? "(detached)" }),
+          /* @__PURE__ */ u$1("span", { class: "caption branch-sub", children: r2.worktree.path })
+        ] }),
+        /* @__PURE__ */ u$1("span", { class: "caption branch-agent", children: r2.worktree.error ?? `${r2.worktree.merged ? "merged" : "not merged"} · ${r2.worktree.tip_time !== null ? `last commit ${ageLabel(r2.worktree.tip_time, now)}` : "no commits"}` })
+      ] })) })
+    ] }),
+    open ? /* @__PURE__ */ u$1(BranchPanel, { row: open, onClose: () => setSelected(null) }) : null
+  ] });
+}
 function paletteItems(query, nodes, projs, actions) {
   const q2 = query.trim().toLowerCase();
   const hit = (s2) => !q2 || s2.toLowerCase().includes(q2);
@@ -3485,7 +3710,7 @@ function App() {
       /* @__PURE__ */ u$1(AuthStrip, {}),
       /* @__PURE__ */ u$1("main", { children: [
         hasProject ? /* @__PURE__ */ u$1(ProjectTabs, { tab }) : null,
-        !hasProject || tab === "map" ? /* @__PURE__ */ u$1(ProjectPage, {}) : tab === "agents" ? /* @__PURE__ */ u$1(TabPlaceholder, { text: "Agents view is loading." }) : /* @__PURE__ */ u$1(TabPlaceholder, { text: PLACEHOLDER_TEXT[tab] })
+        !hasProject || tab === "map" ? /* @__PURE__ */ u$1(ProjectPage, {}) : tab === "agents" ? /* @__PURE__ */ u$1(AgentsTab, { projectId: projectId.value }) : /* @__PURE__ */ u$1(TabPlaceholder, { text: PLACEHOLDER_TEXT[tab] })
       ] })
     ] }),
     nodeId ? /* @__PURE__ */ u$1(NodeSheet, {}, nodeId) : null,
@@ -3810,7 +4035,28 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom); }
 
 .clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .review-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }</style>
+.link-btn { margin-left: auto; min-height: 44px; padding: 0 8px; background: none; border: 0; color: var(--accent-strong); cursor: pointer; font: inherit; text-decoration: underline; }
+.agents-tab { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.branch-row { min-height: 52px; display: grid; grid-template-columns: 28px minmax(0, 1fr); grid-template-areas: "graph main" "graph agent" "graph task" "graph changes" "graph stage"; gap: 2px 10px; align-items: center; padding: 6px 16px 6px 8px; }
+.branch-row.idle-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "agent"; padding-left: 16px; }
+.git-graph { grid-area: graph; align-self: stretch; width: 28px; height: 100%; min-height: 40px; }
+.git-graph .trunk, .git-graph .fork { stroke: var(--text-2); stroke-width: 2; fill: none; }
+.git-graph .tip { fill: var(--accent-strong); }
+.git-graph .tip.base { fill: var(--text-2); }
+.branch-main { grid-area: main; min-width: 0; display: flex; flex-direction: column; }
+.branch-sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-agent { grid-area: agent; min-width: 0; }
+.branch-task { grid-area: task; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-changes { grid-area: changes; min-width: 0; }
+.stage-bar { grid-area: stage; display: inline-flex; gap: 3px; }
+.stage-seg { width: 18px; height: 8px; border-radius: 2px; background: var(--surface-2); border: 1px solid var(--border); }
+.stage-seg.on { background: var(--st-done); border-color: var(--st-done); }
+.planned { margin: 0; padding-left: 18px; font-size: 13px; }
+.planned-state { margin-left: 8px; }
+@media (min-width: 900px) {
+  .branch-row { grid-template-columns: 28px minmax(160px, 1.4fr) minmax(150px, 1fr) minmax(120px, 1fr) minmax(110px, auto) auto; grid-template-areas: "graph main agent task changes stage"; gap: 0 12px; }
+  .branch-row.idle-row { grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 1fr); grid-template-areas: "main agent"; }
+}</style>
 </head>
 <body>
 <div id="root"></div>

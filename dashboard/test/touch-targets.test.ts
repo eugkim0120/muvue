@@ -24,3 +24,8 @@ test(".spec-line meets the 44px touch-target minimum and centers its content", (
   const body = re.exec(css)![1]!;
   expect(body).toMatch(/align-items:\s*center/);
 });
+
+test(".branch-row meets the 44px touch-target minimum", () => {
+  const css = readFileSync(join(__dirname, "..", "src", "agents", "agents.css"), "utf8");
+  expect(minHeightOf(css, ".branch-row")).toBeGreaterThanOrEqual(44);
+});

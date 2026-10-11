@@ -1,0 +1,21 @@
+.agents-tab { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.branch-row { min-height: 52px; display: grid; grid-template-columns: 28px minmax(0, 1fr); grid-template-areas: "graph main" "graph agent" "graph task" "graph changes" "graph stage"; gap: 2px 10px; align-items: center; padding: 6px 16px 6px 8px; }
+.branch-row.idle-row { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "agent"; padding-left: 16px; }
+.git-graph { grid-area: graph; align-self: stretch; width: 28px; height: 100%; min-height: 40px; }
+.git-graph .trunk, .git-graph .fork { stroke: var(--text-2); stroke-width: 2; fill: none; }
+.git-graph .tip { fill: var(--accent-strong); }
+.git-graph .tip.base { fill: var(--text-2); }
+.branch-main { grid-area: main; min-width: 0; display: flex; flex-direction: column; }
+.branch-sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-agent { grid-area: agent; min-width: 0; }
+.branch-task { grid-area: task; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-changes { grid-area: changes; min-width: 0; }
+.stage-bar { grid-area: stage; display: inline-flex; gap: 3px; }
+.stage-seg { width: 18px; height: 8px; border-radius: 2px; background: var(--surface-2); border: 1px solid var(--border); }
+.stage-seg.on { background: var(--st-done); border-color: var(--st-done); }
+.planned { margin: 0; padding-left: 18px; font-size: 13px; }
+.planned-state { margin-left: 8px; }
+@media (min-width: 900px) {
+  .branch-row { grid-template-columns: 28px minmax(160px, 1.4fr) minmax(150px, 1fr) minmax(120px, 1fr) minmax(110px, auto) auto; grid-template-areas: "graph main agent task changes stage"; gap: 0 12px; }
+  .branch-row.idle-row { grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 1fr); grid-template-areas: "main agent"; }
+}

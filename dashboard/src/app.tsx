@@ -9,6 +9,7 @@ import { Toasts } from "./ui/Toasts";
 import { ProjectPage } from "./project/ProjectPage";
 import { ProjectTabs, TabPlaceholder, PLACEHOLDER_TEXT } from "./project/ProjectTabs";
 import { NodeSheet } from "./node/NodeSheet";
+import { AgentsTab } from "./agents/AgentsTab";
 import { CommandPalette } from "./shell/CommandPalette";
 
 export function App() {
@@ -39,7 +40,7 @@ export function App() {
         <main>
           {hasProject ? <ProjectTabs tab={tab} /> : null}
           {!hasProject || tab === "map" ? <ProjectPage /> : tab === "agents" ? (
-            <TabPlaceholder text="Agents view is loading." />
+            <AgentsTab projectId={projectId.value} />
           ) : (
             <TabPlaceholder text={PLACEHOLDER_TEXT[tab]} />
           )}
