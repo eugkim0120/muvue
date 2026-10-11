@@ -62,12 +62,18 @@ def clear_current_node(repo_root: Path) -> None:
 # Claude Code
 # --------------------------------------------------------------------------
 
-_CLAUDE_HOOK_EVENTS = {
+CLAUDE_HOOK_EVENTS = {
     "SessionStart": "session-start",
+    "UserPromptSubmit": "user-prompt-submit",
     "PreToolUse": "pre-tool-use",
     "PreCompact": "pre-compact",
     "Stop": "stop",
+    "SessionEnd": "session-end",
 }
+# Mission control phase 1: commands in ~/.claude/settings.json carry this
+# prefix, which makes `muvue._hook` record the event without deciding
+# anything (see `muvue._hook._session_hook`).
+USER_SCOPE_PREFIX = "MUVUE_HOOK_SCOPE=user "
 
 
 def _is_muvue_hook_command(command: str) -> bool:
@@ -78,33 +84,27 @@ def _is_muvue_hook_command(command: str) -> bool:
     return "muvue._hook" in command or "-m muvue hook" in command
 
 
-def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
-    """Write/merge `.claude/settings.json`'s `hooks` section. Merges into
-    an existing settings.json (never overwrites unrelated keys or other
-    tools' hook entries -- plan section 5's shim principle, "append to
-    existing hooks", applied to this JSON config instead of a shell
+def _merge_claude_hooks(path: Path, *, protocol_version: int, prefix: str = "") -> Path:
+    """Write/merge a Claude Code settings file's `hooks` section. Merges
+    into an existing settings.json (never overwrites unrelated keys or
+    other tools' hook entries -- plan section 5's shim principle, "append
+    to existing hooks", applied to this JSON config instead of a shell
     script) and is idempotent: re-running replaces only muvue's own
-    entries, detected by the `_muvue` marker each hook command carries."""
-    repo_root = Path(repo_root)
-    path = repo_root / ".claude" / "settings.json"
+    entries, detected by `_is_muvue_hook_command`."""
     path.parent.mkdir(parents=True, exist_ok=True)
     settings: dict = json.loads(path.read_text()) if path.exists() else {}
     hooks = settings.setdefault("hooks", {})
 
-    for claude_event, muvue_name in _CLAUDE_HOOK_EVENTS.items():
+    for claude_event, muvue_name in CLAUDE_HOOK_EVENTS.items():
         # v4 section 4a (P0.5): the Claude Code adapter's hook commands
         # invoke the stdlib-only fast path too (`PreToolUse` fires per
         # tool call -- the whole reason this entry point exists), not
         # the full Typer CLI. Shared with the git-hook shim writer so
         # both stay in sync -- see core.repo_init.hook_fast_path_command.
-        command = hook_fast_path_command(muvue_name)
-        entry_list = hooks.get(claude_event, [])
-        # Idempotent + non-destructive: drop any previous muvue entry for
-        # this event (identified by the command containing "-m muvue
-        # hook"), keep every other tool's entries, then re-add ours.
+        command = prefix + hook_fast_path_command(muvue_name)
         entry_list = [
             group
-            for group in entry_list
+            for group in hooks.get(claude_event, [])
             if not any(_is_muvue_hook_command(h.get("command", "")) for h in group.get("hooks", []))
         ]
         group: dict = {"hooks": [{"type": "command", "command": command}]}
@@ -116,6 +116,65 @@ def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
     settings["_muvue"] = {"protocol_version": protocol_version}
     path.write_text(json.dumps(settings, indent=2) + "\n")
     return path
+
+
+def install_claude_code(repo_root: Path, *, protocol_version: int) -> Path:
+    """`.claude/settings.json` of one repository: the decision hooks
+    (SessionStart, PreToolUse, PreCompact, Stop) plus the two record-only
+    session events (UserPromptSubmit, SessionEnd)."""
+    return _merge_claude_hooks(
+        Path(repo_root) / ".claude" / "settings.json", protocol_version=protocol_version,
+    )
+
+
+def user_settings_path(home: Path | None = None) -> Path:
+    return (home or Path.home()) / ".claude" / "settings.json"
+
+
+def install_claude_code_user(*, protocol_version: int, home: Path | None = None) -> Path:
+    """`muvue adapter install claude-code --user` (mission control phase
+    1): the same six hooks in `~/.claude/settings.json`, so every Claude
+    Code session on this machine reports, including sessions in worktrees
+    whose checkout has no `.claude/settings.json`. These hooks only
+    record: they never block an edit in a repository that did not install
+    the adapter itself. `uninit` of one repository leaves them, since
+    they serve every repository; in a directory that is not a registered
+    repository they exit 0 at once."""
+    return _merge_claude_hooks(
+        user_settings_path(home), protocol_version=protocol_version, prefix=USER_SCOPE_PREFIX,
+    )
+
+
+def _muvue_hook_events(path: Path) -> set[str]:
+    """The Claude Code events that run a muvue hook in one settings file."""
+    if not path.exists():
+        return set()
+    try:
+        settings = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return set()
+    found = set()
+    for event, groups in (settings.get("hooks") or {}).items():
+        for group in groups if isinstance(groups, list) else []:
+            hooks = group.get("hooks", []) if isinstance(group, dict) else []
+            if any(isinstance(h, dict) and _is_muvue_hook_command(h.get("command", "")) for h in hooks):
+                found.add(event)
+    return found
+
+
+def claude_code_installs(repo_root: Path, home: Path | None = None) -> dict[str, Path]:
+    """Where muvue's Claude Code hooks are installed for this repository:
+    `"repo"` (its `.claude/settings.json`), `"user"` (`~/.claude/
+    settings.json`), both or neither."""
+    candidates = {"repo": Path(repo_root) / ".claude" / "settings.json", "user": user_settings_path(home)}
+    return {scope: path for scope, path in candidates.items() if _muvue_hook_events(path)}
+
+
+def missing_claude_events(path: Path) -> list[str]:
+    """Events a muvue install in `path` lacks, e.g. one written before
+    UserPromptSubmit and SessionEnd were added."""
+    installed = _muvue_hook_events(path)
+    return [event for event in CLAUDE_HOOK_EVENTS if installed and event not in installed]
 
 
 def claude_code_protocol_version(repo_root: Path) -> int | None:

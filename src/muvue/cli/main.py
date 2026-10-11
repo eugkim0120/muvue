@@ -488,11 +488,23 @@ def link(path: Path = typer.Argument(Path("."), help="Repo root the daemon serve
 def adapter_install(
     name: str = typer.Argument(..., help="claude-code, codex, gemini, or cursor"),
     path: Path = typer.Option(Path("."), "--path"),
+    user: bool = typer.Option(
+        False, "--user",
+        help="claude-code only: install record-only hooks in ~/.claude/settings.json, so every "
+        "Claude Code session on this machine reports to muvue.",
+    ),
 ) -> None:
     """Write the given vendor's config, pointing it at muvue's CLI/MCP
     surface (plan section 7). The Claude Code hook contract was checked
     against claude 2.1.281; the Codex/Gemini/Cursor writers are
     best-effort -- see docs/providers.md for what was verified."""
+    if user:
+        if name != "claude-code":
+            typer.echo(f"--user applies to claude-code only, not {name!r}", err=True)
+            raise typer.Exit(1)
+        written = core.adapters.install_claude_code_user(protocol_version=core.config.PROTOCOL_VERSION)
+        typer.echo(f"installed {name} adapter for every session of this user: {written}")
+        return
     repo_root = _find_repo_root(path)
     config = _load_config(repo_root)
     installers = {
