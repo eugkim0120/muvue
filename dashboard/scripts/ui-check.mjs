@@ -145,13 +145,14 @@ try {
     const next = document.querySelector("[data-next-step]").getBoundingClientRect();
     return { dagTop: dag.top + window.scrollY, nextBeside: next.left >= dag.right - 1 };
   });
-  check("desktop: with the demo banner showing, the diagram starts above 260px", desk.dagTop < 260, `starts at ${Math.round(desk.dagTop)}px`);
+  // The +52px over the old 260/200 is the project tab bar (44px target + 8px padding).
+  check("desktop: with the demo banner showing, the diagram starts above 312px", desk.dagTop < 312, `starts at ${Math.round(desk.dagTop)}px`);
   const bannerH = await page.evaluate(() => document.querySelector("[data-fake-notice]").getBoundingClientRect().height);
   check("desktop: the collapsed demo banner is one line (<= 60px)", bannerH <= 60, `${Math.round(bannerH)}px`);
   await page.locator("[aria-label='dismiss demo notice']").click();
   check("desktop: dismissing the demo banner removes it", await page.locator("[data-fake-notice]").count() === 0);
   const deskAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
-  check("desktop: once dismissed, the diagram starts above 200px", deskAfter < 200, `starts at ${Math.round(deskAfter)}px`);
+  check("desktop: once dismissed, the diagram starts above 252px", deskAfter < 252, `starts at ${Math.round(deskAfter)}px`);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(800);
   const phoneAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
