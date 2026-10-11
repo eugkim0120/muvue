@@ -1,13 +1,112 @@
 {
   "suite": "readinglog",
   "date": "2026-10-11",
-  "muvue_sha": "bc22bc8920f5907b01e1a3be1cb90f01780f7bde",
-  "muvue_dirty": true,
+  "muvue_sha": "1b07dd3eca2d5834c387b04b1d6075d972f7635a",
+  "muvue_dirty": false,
   "arms": {
     "muvue": {
       "status": "ok",
       "error": null,
-      "wall_s": 6.84,
+      "wall_s": 7.54,
+      "reviewer": "approve-all",
+      "invoker": "agent/agent_parent:claude",
+      "bench_approvals": 8,
+      "merges": {
+        "runs": [
+          {
+            "node_id": 2,
+            "status": "merged",
+            "sha": "821a2dcdf29ba82eca2419951803c2c53010f9e0"
+          },
+          {
+            "node_id": 2,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 3,
+            "status": "merged",
+            "sha": "821a2dcdf29ba82eca2419951803c2c53010f9e0"
+          },
+          {
+            "node_id": 2,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 3,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 4,
+            "status": "merged",
+            "sha": "821a2dcdf29ba82eca2419951803c2c53010f9e0"
+          },
+          {
+            "node_id": 2,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 3,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 4,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 5,
+            "status": "merged",
+            "sha": "3f922defd175f1292b70ec732173469bc54f1358"
+          },
+          {
+            "node_id": 2,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 3,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 4,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 5,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 6,
+            "status": "merged",
+            "sha": "3f922defd175f1292b70ec732173469bc54f1358"
+          }
+        ],
+        "final": [
+          {
+            "node_id": 2,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 3,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 4,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 5,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 6,
+            "status": "already_merged"
+          },
+          {
+            "node_id": 7,
+            "status": "merged",
+            "sha": "3f922defd175f1292b70ec732173469bc54f1358"
+          }
+        ]
+      },
       "acceptance": {
         "passed": 0,
         "total": 4,
@@ -20,7 +119,7 @@
         "steps": [
           [
             "init",
-            "/tmp/muvue-bench-ak8rdlny/muvue/repo",
+            "<repo>",
             0
           ],
           [
@@ -232,11 +331,12 @@
       "truth": {
         "label": "measured",
         "done": 6,
-        "done_with_commit": 1,
-        "done_claiming_blocked": 5,
-        "truth_score": 0.167,
+        "done_with_commit": 2,
+        "done_claiming_blocked": 4,
+        "truth_score": 0.333,
         "check_runs": 6,
         "check_runs_with_output": 0,
+        "check_runs_with_output_label": "heuristic",
         "approvals_by_actor": {
           "gate2.approved": {
             "agent/agent_parent:claude": 1
@@ -244,7 +344,8 @@
           "node.done": {
             "agent/agent_parent:claude": 6
           }
-        }
+        },
+        "approved_after_failed_check_or_flag": 6
       },
       "outcome": {
         "label": "measured",
@@ -253,7 +354,9 @@
         },
         "failed": 0,
         "subtasks": 0,
-        "conflict_events": 0
+        "conflict_events": 0,
+        "done_unmerged": 0,
+        "done_unmerged_node_ids": []
       },
       "tokens": {
         "sessions": 6,
@@ -268,8 +371,8 @@
         ],
         "prompt_bytes_label": "measured",
         "shim_outcomes": {
-          "committed": 1,
-          "blocked": 5
+          "committed": 2,
+          "blocked": 4
         },
         "in_tokens": 2090120,
         "out_tokens": 19041,
@@ -280,7 +383,7 @@
     "plain": {
       "status": "ok",
       "error": null,
-      "wall_s": 0.19,
+      "wall_s": 0.15,
       "acceptance": {
         "passed": 4,
         "total": 4,
@@ -294,7 +397,7 @@
       },
       "tokens": {
         "sessions": 1,
-        "sessions_label": "measured",
+        "sessions_label": "fixed (one shim session)",
         "usage_label": "not measured (shim)"
       }
     }
