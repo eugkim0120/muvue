@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 
 from muvue import _hook
@@ -323,3 +324,46 @@ def list_sessions(
             continue
         out.append(_view(conn, row, state))
     return out
+
+
+def format_ts(dt: datetime) -> str:
+    """Millisecond timestamps in the shape `muvue._hook._now_iso` writes,
+    so stored values compare correctly as text."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
+def _now_ts() -> str:
+    return format_ts(datetime.now(timezone.utc))
+
+
+def start_launched(conn: sqlite3.Connection, *, node_id: int, project_id: int, agent: str, cwd: str) -> str:
+    """Insert the `launched` row for one runner invocation, before the
+    driver starts. Returns its id, `run-<uuid>`, which the runner passes
+    to the agent as `MUVUE_SESSION`."""
+    session_id = f"run-{uuid.uuid4()}"
+    now = _now_ts()
+    real_cwd = os.path.realpath(cwd)
+    with db_mod.write_txn(conn):
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, node_id, agent, origin, cwd, branch, started_at, "
+            "last_event_at, last_action) VALUES (?, ?, ?, ?, 'launched', ?, ?, ?, ?, 'launched')",
+            (session_id, project_id, node_id, agent, real_cwd, gitutil.branch_at(real_cwd), now, now),
+        )
+    return session_id
+
+
+def set_pid(conn: sqlite3.Connection, session_id: str, pid: int) -> None:
+    """The driver's process (and process group) id, the one thing `stop`
+    signals. Only the runner calls this; no queue line can."""
+    with db_mod.write_txn(conn):
+        conn.execute("UPDATE sessions SET pid = ? WHERE id = ? AND origin = 'launched'", (pid, session_id))
+
+
+def end_launched(conn: sqlite3.Connection, session_id: str) -> None:
+    now = _now_ts()
+    with db_mod.write_txn(conn):
+        conn.execute(
+            "UPDATE sessions SET ended_at = ?, waiting = 0, last_event_at = MAX(last_event_at, ?), "
+            "last_action = 'run ended' WHERE id = ? AND ended_at IS NULL",
+            (now, now, session_id),
+        )

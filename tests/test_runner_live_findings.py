@@ -49,7 +49,7 @@ def test_the_agents_commits_are_linked_before_done(tmp_path):
     )
     gates.approve_gate2(conn, project["id"], config=config)
 
-    def committing_agent(agent_name, agent_cfg, brief, cwd, *, log_path=None):
+    def committing_agent(agent_name, agent_cfg, brief, cwd, *, log_path=None, **kw):
         (Path(cwd) / "a.py").write_text("x = 1\n")
         subprocess.run(["git", "add", "a.py"], cwd=cwd, check=True, env=GIT_ENV)
         subprocess.run(
