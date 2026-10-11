@@ -503,10 +503,14 @@ def stop_launched(
         raise SessionError(f"session {row['id']} has already ended")
     if row["pid"] is None:
         raise SessionError(f"session {row['id']} has no process yet")
+    if row["pid"] in (os.getpid(), os.getpgrp()):
+        raise SessionError(f"session {row['id']}'s recorded pid {row['pid']} is muvue's own process; not signalling")
     gone = f"session {row['id']}'s process {row['pid']} is no longer running; marked it ended"
     if not _is_group_leader(row["pid"]):
         end_launched(conn, row["id"])
-        raise SessionError(gone)
+        raise SessionError(
+            f"session {row['id']}'s pid {row['pid']} does not lead a process group; marked it ended"
+        )
     try:
         kill(row["pid"], signal.SIGTERM)
     except ProcessLookupError:

@@ -144,16 +144,51 @@ def test_stop_of_an_ended_run_is_refused(client, auth, conn, repo):
     assert "has already ended" in response.json()["detail"]
 
 
-def test_stop_of_a_vanished_process_marks_the_run_ended(conn, repo):
+def test_stop_of_a_process_gone_before_the_signal_marks_the_run_ended(conn, repo, monkeypatch):
+    run_id = _launched(conn, repo)
+    sessions.set_pid(conn, run_id, 4242)
+    monkeypatch.setattr(sessions, "_is_group_leader", lambda pid: True)
+    calls = []
+
+    def gone(pid, sig):
+        calls.append(pid)
+        raise ProcessLookupError(pid)
+
+    with pytest.raises(sessions.SessionError, match="is no longer running; marked it ended"):
+        sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=gone)
+    assert calls == [4242]
+    assert conn.execute("SELECT ended_at FROM sessions WHERE id = ?", (run_id,)).fetchone()["ended_at"] is not None
+
+
+def test_stop_of_a_pid_that_leads_no_group_is_never_signalled(conn, repo):
     run_id = _launched(conn, repo)
     sessions.set_pid(conn, run_id, 4242)
 
-    def gone(pid, sig):
-        raise ProcessLookupError(pid)
+    def must_not_be_called(pid, sig):
+        raise AssertionError("signalled a pid that leads no group")
 
-    with pytest.raises(sessions.SessionError, match="no longer running"):
-        sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=gone)
+    with pytest.raises(sessions.SessionError, match="does not lead a process group; marked it ended"):
+        sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=must_not_be_called)
     assert conn.execute("SELECT ended_at FROM sessions WHERE id = ?", (run_id,)).fetchone()["ended_at"] is not None
+
+
+@pytest.mark.parametrize("own_pid", [os.getpid, os.getpgrp])
+def test_stop_never_signals_muvues_own_process_or_group(conn, repo, own_pid):
+    run_id = _launched(conn, repo)
+    sessions.set_pid(conn, run_id, own_pid())
+
+    def must_not_be_called(pid, sig):
+        raise AssertionError("signalled muvue itself")
+
+    with pytest.raises(sessions.SessionError, match="muvue's own process"):
+        sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty", kill=must_not_be_called)
+
+
+def test_stop_refuses_a_bad_origin_and_a_bad_host(client, auth):
+    bad_origin = client.post("/sessions/s-1/stop", json={}, headers={**auth, "Origin": "http://evil.example.com"})
+    assert bad_origin.status_code == 403
+    bad_host = client.post("/sessions/s-1/stop", json={}, headers={**auth, "Host": "evil.example.com"})
+    assert bad_host.status_code == 403
 
 
 def test_stop_never_signals_a_pid_that_is_not_a_process_group_leader(conn, repo):
@@ -163,7 +198,7 @@ def test_stop_never_signals_a_pid_that_is_not_a_process_group_leader(conn, repo)
     try:
         run_id = _launched(conn, repo)
         sessions.set_pid(conn, run_id, proc.pid)
-        with pytest.raises(sessions.SessionError, match="no longer running"):
+        with pytest.raises(sessions.SessionError, match="does not lead a process group"):
             sessions.stop_launched(conn, run_id, MuvueConfig().sessions, actor_evidence="tty")
         assert proc.poll() is None
         assert conn.execute("SELECT ended_at FROM sessions WHERE id = ?", (run_id,)).fetchone()["ended_at"] is not None
