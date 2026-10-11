@@ -544,6 +544,20 @@ def run_doctor(
                 )
         _check_drivers(config, report)
 
+    # Mission control phase 1: which Claude Code install reports this
+    # repository's sessions, and whether the repository's own install
+    # predates the session events. A stale user-level install is only
+    # listed: it is machine-wide, not this repository's to fix.
+    claude_installs = adapters_mod.claude_code_installs(repo_root)
+    report.info.append("claude code hooks: " + (", ".join(claude_installs) or "not installed"))
+    if "repo" in claude_installs:
+        missing = adapters_mod.missing_claude_events(claude_installs["repo"])
+        if missing:
+            report.warn(
+                f"{claude_installs['repo']} has no muvue hook for {', '.join(missing)}, so agent "
+                "sessions are not fully tracked; re-run `muvue adapter install claude-code`"
+            )
+
     if repair and db_path.exists():
         _list_orphan_worktrees(repo_root, db_path, report)
 

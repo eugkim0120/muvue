@@ -20,6 +20,7 @@ from __future__ import annotations
 import concurrent.futures
 import fnmatch
 import json
+import os
 import signal
 import subprocess
 import threading
@@ -36,6 +37,7 @@ from . import hooks as hooks_mod
 from . import nodes as nodes_mod
 from . import projects as projects_mod
 from . import runners as runners_mod
+from . import sessions as sessions_mod
 from . import brief as brief_mod
 from . import merge as merge_mod
 from . import notify as notify_mod
@@ -476,12 +478,28 @@ def run_node(
     cwd = node_row.get("worktree") or str(repo_root)
     log_path = Path(repo_root) / LOGS_RELDIR / f"{node['id']}.log"
 
-    result = invoke(agent_name, agent_cfg, brief_text, Path(cwd), log_path=log_path)
-    # The agent's commits reach the DB through the hook spool. Without a
-    # daemon nothing drains it, so link them now: `done` judges the node
-    # by its actual touches and diff.
-    hooks_mod.drain_queue(conn, Path(repo_root))
-    if _stop_requested.is_set():
+    # Mission control phase 1: this run is a `launched` session from before
+    # the agent starts until it returns. The agent's hooks name it through
+    # MUVUE_SESSION, so its own session id folds into this row.
+    session_id = sessions_mod.start_launched(
+        conn, node_id=node["id"], project_id=node["project_id"], agent=agent_name, cwd=cwd,
+    )
+    try:
+        result = invoke(
+            agent_name, agent_cfg, brief_text, Path(cwd), log_path=log_path,
+            env={**os.environ, sessions_mod.LAUNCHED_SESSION_ENV: session_id},
+            on_spawn=lambda pid: sessions_mod.set_pid(conn, session_id, pid),
+        )
+        # The agent's commits reach the DB through the hook spool. Without a
+        # daemon nothing drains it, so link them now: `done` judges the node
+        # by its actual touches and diff. Draining before ending the session
+        # lets the agent's last lines land on a live row.
+        hooks_mod.drain_queue(conn, Path(repo_root))
+    finally:
+        sessions_mod.end_launched(conn, session_id)
+    # A Stop from the dashboard (`sessions.stop_launched`) signals only this
+    # driver; like a `pause`, it is not the agent failing.
+    if _stop_requested.is_set() or sessions_mod.stop_requested(conn, session_id, node["id"]):
         return _stopped(conn, node_row, owner, agent_name)
 
     if result.status == "unavailable":

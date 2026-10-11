@@ -285,6 +285,7 @@ def create_app(
                 core.imports.ImportError_,
                 core.actor.HumanOnly,
                 core.removal.RemovalError,
+                core.sessions.SessionError,
                 ValueError,
             ),
         ):
@@ -385,6 +386,49 @@ def create_app(
             except Exception as e:
                 _handle_core_error(e)
         return {"agents": result}
+
+    # ------------------------------------------------------------------
+    # Sessions and worktrees (mission control phase 1). Gated like
+    # /agents/status: rows carry working directories and transcript paths.
+    # ------------------------------------------------------------------
+
+    @app.get("/sessions")
+    def list_sessions(request: Request, project_id: int | None = None, include_ended: int = 0) -> dict:
+        """Every agent session with its computed state, node, worktree,
+        branch, last action and spend (`core.sessions.list_sessions`)."""
+        _require_session(request)
+        with _conn() as conn:
+            rows = core.sessions.list_sessions(
+                conn, config.sessions, project_id=project_id, include_ended=bool(include_ended),
+            )
+        return {"sessions": rows}
+
+    @app.get("/worktrees")
+    def list_worktrees(request: Request) -> dict:
+        """Every worktree of this repository and of its strict-mode airlock
+        (`core.worktrees.repo_worktrees`). git failures are reported in the
+        body, on the row or in `errors`, never as an HTTP error."""
+        _require_session(request)
+        with _conn() as conn:
+            return core.worktrees.repo_worktrees(conn, repo_root, config)
+
+    @app.post("/sessions/{session_id}/stop")
+    def stop_session(request: Request, session_id: str) -> dict:
+        """Stop a session muvue launched. A hand-started session gets 409:
+        muvue never stops what a person started."""
+        _require_session(request)
+        with _conn() as conn:
+            try:
+                result = core.idempotency.once(
+                    conn, _request_id(request), "session.stop",
+                    lambda: core.sessions.stop_launched(
+                        conn, session_id, config.sessions, actor_evidence="dashboard_token",
+                    ),
+                    atomic=False,
+                )
+            except Exception as e:
+                _handle_core_error(e)
+        return result
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:

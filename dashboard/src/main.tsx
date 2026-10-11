@@ -4,6 +4,7 @@ import "./ui/ui.css";
 import "./shell/shell.css";
 import "./canvas/canvas.css";
 import "./cards/cards.css";
+import "./agents/agents.css";
 import { render } from "preact";
 import { App } from "./app";
 import { exchangeFragmentNonce, applyAuthResult, handleLinkHashChange, loadWhoami } from "./api/auth";

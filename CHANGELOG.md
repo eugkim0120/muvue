@@ -5,6 +5,7 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- Agent sessions and worktrees (mission control phase 1): the Claude Code hooks record every session (also `UserPromptSubmit` and `SessionEnd`), `muvue adapter install claude-code --user` records sessions machine-wide without blocking edits, other agents report through the MCP tools `session_start`/`session_heartbeat`/`session_end`, and the runner records the sessions it launches. `GET /sessions`, `GET /worktrees` and `POST /sessions/{id}/stop` (launched sessions only) serve the dashboard's new Agents tab. New `[sessions]` config table; schema version 9; protocol version 4 (set `protocol_version = 4` in `.muvue/config.toml` and re-run `muvue adapter install claude-code`). See decision #177.
 - Tailscale identity sign-in (opt-in): list your login under `[daemon] tailnet_logins` and the plain dashboard URL signs in any of your tailnet devices with no one-time link or token. `muvue link` prints the permanent URL, `muvue doctor` checks tailscaled, and `GET /auth/whoami` reports the login. See decision #176 and the threat model.
 
 ### Changed

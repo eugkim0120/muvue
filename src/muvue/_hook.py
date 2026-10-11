@@ -15,16 +15,25 @@ package init, and never `muvue.core` or any of its submodules --
 `tests/test_hook_import_graph.py` (proves the transitive closure, not
 just this file's own import statements) and docs/decisions.md #79.
 
-Every hook event except `PreToolUse` does the minimum possible amount
-of work: append one JSON line describing the event to
-`.muvue/queue.jsonl` (gitignored, append-only spool) and exit. All the
-real processing those events used to do synchronously (parsing commit
-trailers, linking commits, blocking on unlogged in-progress work, ...)
-now happens later, when something drains the queue --
+Every hook event does the minimum possible amount of work on its way
+in: append one JSON line describing the event to `.muvue/queue.jsonl`
+(gitignored, append-only spool). `PreToolUse` writes its line only when
+the payload names a Claude Code session (mission control phase 1), so a
+tool call costs one `O_APPEND` write and no DB open unless it is an
+Edit/Write decision. All the real processing (parsing commit trailers,
+linking commits, folding session lines into `sessions`, ...) happens
+later, when something drains the queue --
 `core.hooks.drain_queue`, a normal `muvue.core` module that runs
 through `write_txn` as usual (working rule 3: the queue *append* here
 is intentionally NOT a core DB write, by design, to stay off SQLite on
 the hot path; the *drain* is a core write like any other mutation).
+
+Session lines carry `session_id`, `cwd`, `transcript_path` and
+`agent` from the payload, plus `launched_session` when `MUVUE_SESSION`
+is set. A Claude Code hook in a linked worktree outside the repository
+finds the repository through the worktree's `.git` file and only
+records; so does a hook from the user-level install. Any error in a
+Claude Code hook is spooled as `hook_error` and the hook exits 0.
 
 The Claude Code decision hooks read the DB: `PreToolUse` (allow/deny,
 v4 section 4a) and, per decision #114, the once-per-session/turn
@@ -66,6 +75,18 @@ _PROGRESS_OPS = 1000
 # same as Read/Grep/Glob/etc.
 _BLOCKING_TOOL_NAMES = ("Edit", "Write")
 DECISION_HOOKS = ("pre-tool-use", "session-start", "stop", "pre-compact")
+# Claude Code events muvue only records, never decides on (mission
+# control phase 1): a prompt means the session is working again, and
+# SessionEnd closes it.
+CAPTURE_HOOKS = ("user-prompt-submit", "session-end")
+SESSION_HOOKS = DECISION_HOOKS + CAPTURE_HOOKS
+_FILE_TOOL_NAMES = ("Edit", "Write")
+# `muvue adapter install claude-code --user` prefixes its commands with
+# `MUVUE_HOOK_SCOPE=user`; such a hook only records (see `_session_hook`).
+HOOK_SCOPE_ENV = "MUVUE_HOOK_SCOPE"
+# `core.runner.run_node` sets this in a launched agent's environment; the
+# agent's hooks copy it into every line as `launched_session`.
+LAUNCHED_SESSION_ENV = "MUVUE_SESSION"
 
 
 def _now_iso() -> str:
@@ -84,6 +105,56 @@ def _find_repo_root(start: str) -> str | None:
     while True:
         if os.path.isdir(os.path.join(cur, ".muvue")):
             return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _repo_from_gitfile(gitfile: str) -> str | None:
+    """`<worktree>/.git` in a linked worktree is a file holding `gitdir:
+    <common>/worktrees/<name>`. `<common>` is `<repo>/.git` for a worktree
+    of the user's checkout, or the strict-mode airlock, whose marker file
+    names the real repository (`core.strict.REPO_ROOT_MARKER`). A string
+    parse and two small reads: no `git` subprocess on the hot path."""
+    try:
+        with open(gitfile) as f:
+            first = f.readline().strip()
+    except OSError:
+        return None
+    if not first.startswith("gitdir:"):
+        return None
+    gitdir = first[len("gitdir:"):].strip()
+    if not os.path.isabs(gitdir):
+        gitdir = os.path.join(os.path.dirname(gitfile), gitdir)
+    worktrees_dir = os.path.dirname(os.path.normpath(gitdir))
+    if os.path.basename(worktrees_dir) != "worktrees":
+        return None
+    common = os.path.dirname(worktrees_dir)
+    try:
+        with open(os.path.join(common, AIRLOCK_REPO_ROOT_MARKER)) as f:
+            return f.read().strip() or None
+    except OSError:
+        pass
+    if os.path.basename(common) == ".git":
+        return os.path.dirname(common)
+    return None
+
+
+def _find_worktree_repo_root(start: str) -> str | None:
+    """For a Claude Code hook in a linked worktree outside the repository
+    (muvue's own under `~/.muvue/worktrees/`, or one made by hand), where
+    `_find_repo_root` finds no `.muvue/`: the repository that owns the
+    worktree, if it has `.muvue/`. Git hooks never use this (see
+    `main`)."""
+    cur = os.path.abspath(start)
+    while True:
+        dotgit = os.path.join(cur, ".git")
+        if os.path.isfile(dotgit):
+            repo = _repo_from_gitfile(dotgit)
+            return repo if repo and os.path.isdir(os.path.join(repo, ".muvue")) else None
+        if os.path.isdir(dotgit):
+            return None
         parent = os.path.dirname(cur)
         if parent == cur:
             return None
@@ -220,6 +291,72 @@ def _spool_timeout(repo_root: str, hook: str, node_id) -> None:
 def _resolve_node_id(repo_root: str, payload: dict):
     node_id = payload.get("node_id")
     return _get_current_node(repo_root) if node_id is None else node_id
+
+
+def _session_fields(payload: dict) -> dict:
+    """What every line of a Claude Code session carries (mission control
+    phase 1). Empty when the payload names no session, so a payload
+    without one spools exactly what it did before."""
+    if not isinstance(payload.get("session_id"), str):
+        return {}
+    fields = {key: payload[key] for key in ("session_id", "cwd", "transcript_path") if isinstance(payload.get(key), str)}
+    fields["agent"] = "claude"
+    launched = os.environ.get(LAUNCHED_SESSION_ENV)
+    if launched:
+        fields["launched_session"] = launched
+    return fields
+
+
+def _event_line(name: str, repo_root: str, payload: dict) -> dict | None:
+    """The queue line for one Claude Code hook event, or None for a
+    PreToolUse call outside a session: PreToolUse fires on every tool
+    call, so it writes a line only when there is a session to update."""
+    session = _session_fields(payload)
+    if name == "pre-tool-use" and not session:
+        return None
+    event = {"event": name, "ts": _now_iso(), "node_id": _resolve_node_id(repo_root, payload)}
+    if name == "pre-compact":
+        event["summary"] = payload.get("summary")
+    elif name == "pre-tool-use":
+        tool_name = payload.get("tool_name")
+        event["tool_name"] = tool_name if isinstance(tool_name, str) else ""
+        tool_input = payload.get("tool_input")
+        if tool_name in _FILE_TOOL_NAMES and isinstance(tool_input, dict) and isinstance(tool_input.get("file_path"), str):
+            event["file_path"] = tool_input["file_path"]
+    elif name == "session-end" and isinstance(payload.get("reason"), str):
+        event["reason"] = payload["reason"]
+    event.update(session)
+    return event
+
+
+def record(name: str, repo_root: str, payload: dict) -> None:
+    """Spool one Claude Code hook event: a single `O_APPEND` write, no DB
+    and no subprocess. `core.hooks.drain_queue` folds it into
+    `sessions` later."""
+    line = _event_line(name, repo_root, payload)
+    if line is not None:
+        _append_queue(repo_root, line)
+
+
+def _spool_hook_error(repo_root: str, hook: str, error: BaseException) -> None:
+    _append_queue(
+        repo_root,
+        {"event": "hook_error", "ts": _now_iso(), "hook": hook, "error": f"{type(error).__name__}: {error}"},
+    )
+
+
+def _project_has_muvue_hooks(project_dir: str) -> bool:
+    """Whether the project's own `.claude/settings.json` runs muvue's
+    hooks, in which case Claude Code already runs them for this session
+    and a user-level hook must not spool the event a second time."""
+    path = os.path.abspath(os.path.join(project_dir, ".claude", "settings.json"))
+    if path == os.path.abspath(os.path.expanduser(os.path.join("~", ".claude", "settings.json"))):
+        return False
+    try:
+        with open(path) as f:
+            return "muvue._hook" in f.read()
+    except OSError:
+        return False
 
 
 def pre_tool_use(
@@ -401,20 +538,20 @@ def run(
     clock=time.monotonic,
     deadline_s: float = PRE_TOOL_USE_DEADLINE_S,
 ) -> HookOutcome:
-    """One Claude Code decision hook, end to end: spool the event (every
-    hook but PreToolUse), then decide under the deadline."""
+    """One Claude Code hook, end to end: spool its line (`record`), then
+    decide under the deadline. `user-prompt-submit` and `session-end`
+    only record."""
+    record(name, repo_root, payload)
     if name == "pre-tool-use":
         result = pre_tool_use(repo_root, payload, clock=clock, deadline_s=deadline_s)
         if result.get("decision") == "block":
             return HookOutcome(2, "", result.get("reason", "") + "\n")
         return HookOutcome()
+    if name in CAPTURE_HOOKS:
+        return HookOutcome()
 
     start = clock()
     node_id = _resolve_node_id(repo_root, payload)
-    event = {"event": name, "ts": _now_iso(), "node_id": node_id}
-    if name == "pre-compact":
-        event["summary"] = payload.get("summary")
-    _append_queue(repo_root, event)
 
     if name == "stop" and payload.get("stop_hook_active"):
         # Claude Code's own guidance: allow while a Stop hook is already
@@ -632,6 +769,34 @@ def prepare_commit_msg(repo_root: str, msg_path: str, source: str | None) -> Non
         f.write(f"{body}{sep}Muvue-Node: {node_id}\n" + (f"\n{rest}" if rest else ""))
 
 
+def _session_hook(name: str, repo_root: str, path: str, *, observe_only: bool) -> int:
+    """One Claude Code hook from `main`. A hook from the user-level install
+    (`MUVUE_HOOK_SCOPE=user`) only records, and records nothing when the
+    project's own settings already run muvue's hooks. A hook in a linked
+    worktree outside the repository (`observe_only`) only records too:
+    `.muvue/current_node` belongs to the main checkout, so its allow/deny
+    would be about another session. Any error is spooled as `hook_error`
+    and the agent is let through (exit 0)."""
+    payload = _read_stdin_json()
+    user_scope = os.environ.get(HOOK_SCOPE_ENV) == "user"
+    if user_scope and _project_has_muvue_hooks(os.environ.get("CLAUDE_PROJECT_DIR") or os.path.abspath(path)):
+        return 0
+    try:
+        if observe_only or user_scope:
+            record(name, repo_root, payload)
+            return 0
+        outcome = run(name, repo_root, payload)
+    except Exception as e:
+        try:
+            _spool_hook_error(repo_root, name, e)
+        except OSError as spool_error:
+            sys.stderr.write(f"muvue: {name} hook failed ({e!r}) and could not spool it ({spool_error!r})\n")
+        return 0
+    sys.stdout.write(outcome.stdout)
+    sys.stderr.write(outcome.stderr)
+    return outcome.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
@@ -648,6 +813,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(outcome.stderr)
         return outcome.exit_code
     repo_root = _find_repo_root(path)
+    in_linked_worktree = False
+    if repo_root is None and name in SESSION_HOOKS:
+        # A Claude Code session in a worktree outside the repository.
+        # Git hooks never take this path: see `_find_worktree_repo_root`.
+        repo_root = _find_worktree_repo_root(path)
+        in_linked_worktree = repo_root is not None
     if repo_root is None:
         # No .muvue/ found -- nothing to spool against, nothing to
         # decide. Fail open silently rather than raise: a hook shim
@@ -655,11 +826,8 @@ def main(argv: list[str] | None = None) -> int:
         # break every tool call.
         return 0
 
-    if name in DECISION_HOOKS:
-        outcome = run(name, repo_root, _read_stdin_json())
-        sys.stdout.write(outcome.stdout)
-        sys.stderr.write(outcome.stderr)
-        return outcome.exit_code
+    if name in SESSION_HOOKS:
+        return _session_hook(name, repo_root, path, observe_only=in_linked_worktree)
 
     if name == "post-commit":
         sha = _read_head_sha(repo_root)

@@ -38,10 +38,12 @@ from . import (
     risk,
     runner,
     runners,
+    sessions,
     spend,
     state_machine,
     strict,
     trailers,
+    worktrees,
 )
 from .config import ConfigError, MuvueConfig, load_config
 
@@ -79,10 +81,12 @@ __all__ = [
     "risk",
     "runner",
     "runners",
+    "sessions",
     "spend",
     "state_machine",
     "strict",
     "trailers",
+    "worktrees",
     "ConfigError",
     "MuvueConfig",
     "load_config",

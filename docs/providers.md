@@ -18,8 +18,9 @@ out, not just `--version`, where the CLI has one (see Codex below).
 ## Claude Code (verified 2026-09-25 against claude 2.1.281)
 
 `muvue adapter install claude-code` merges a `hooks` section into
-`.claude/settings.json`. It wires `SessionStart`, `PreToolUse`,
-`PreCompact` and `Stop` to the fast-path shim `PYTHONPATH=<dir>
+`.claude/settings.json`. It wires `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PreCompact`, `Stop` and `SessionEnd` (the last two
+record only) to the fast-path shim `PYTHONPATH=<dir>
 <abs-python> -S -m muvue._hook <event>` (plan v4 section 4a). The hook
 contract below was checked against the strings in the installed
 binary, not only against docs:

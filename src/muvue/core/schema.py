@@ -35,9 +35,15 @@ Process graph tables per plan section 3, plus empty structure-graph tables
   dependency edge carries (e.g. "audio frames"), shown as an arrow
   label on the dashboard's flow diagram. Nullable: existing deps rows
   and CLI/API calls that don't pass it keep working unlabeled.
+- SCHEMA_VERSION 8 -> 9 (mission control phase 1): new `sessions` table
+  (one row per run of an agent CLI, launched by the runner or started by
+  hand) and `session_touches` (repository-relative paths a session
+  edited). New tables only, so `core.migrate.run_migrate` needs no
+  `ALTER TABLE` step. Sessions are observations, not decisions:
+  `core.rebuild` does not replay them.
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -315,6 +321,35 @@ CREATE TABLE IF NOT EXISTS project_links (
     dst INTEGER NOT NULL REFERENCES projects(id),
     kind TEXT NOT NULL CHECK (kind IN ('follows', 'supersedes', 'depends')),
     PRIMARY KEY (src, dst, kind)
+);
+
+-- Mission control phase 1 (schema version 9): every agent session in
+-- this repository. Written by the runner for `launched` rows and by the
+-- queue drain (core.sessions.apply_line) for everything else; liveness
+-- is computed on read from last_event_at, waiting and ended_at.
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,            -- the agent's own session id; runner-made: "run-<uuid>"
+    project_id INTEGER REFERENCES projects(id),
+    node_id INTEGER REFERENCES nodes(id),   -- NULL = off-plan
+    agent TEXT NOT NULL,            -- "claude", or an [agents.*] name
+    origin TEXT NOT NULL CHECK (origin IN ('launched', 'hand')),
+    cwd TEXT NOT NULL,
+    branch TEXT,
+    transcript_path TEXT,
+    pid INTEGER,                    -- launched sessions only
+    started_at TEXT NOT NULL,
+    last_event_at TEXT NOT NULL,
+    last_action TEXT,               -- "Edit web/tracks.ts", "turn ended", ...
+    ended_at TEXT,
+    waiting INTEGER NOT NULL DEFAULT 0,  -- 1 after Stop, 0 after UserPromptSubmit/PreToolUse
+    alias_of TEXT REFERENCES sessions(id)  -- agent session id folded into a launched row
+);
+
+CREATE TABLE IF NOT EXISTS session_touches (
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    path TEXT NOT NULL,             -- repository-relative
+    at TEXT NOT NULL,
+    PRIMARY KEY (session_id, path)
 );
 
 CREATE TABLE IF NOT EXISTS schema_meta (

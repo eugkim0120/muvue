@@ -145,13 +145,14 @@ try {
     const next = document.querySelector("[data-next-step]").getBoundingClientRect();
     return { dagTop: dag.top + window.scrollY, nextBeside: next.left >= dag.right - 1 };
   });
-  check("desktop: with the demo banner showing, the diagram starts above 260px", desk.dagTop < 260, `starts at ${Math.round(desk.dagTop)}px`);
+  // The +52px over the old 260/200 is the project tab bar (44px target + 8px padding).
+  check("desktop: with the demo banner showing, the diagram starts above 312px", desk.dagTop < 312, `starts at ${Math.round(desk.dagTop)}px`);
   const bannerH = await page.evaluate(() => document.querySelector("[data-fake-notice]").getBoundingClientRect().height);
   check("desktop: the collapsed demo banner is one line (<= 60px)", bannerH <= 60, `${Math.round(bannerH)}px`);
   await page.locator("[aria-label='dismiss demo notice']").click();
   check("desktop: dismissing the demo banner removes it", await page.locator("[data-fake-notice]").count() === 0);
   const deskAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
-  check("desktop: once dismissed, the diagram starts above 200px", deskAfter < 200, `starts at ${Math.round(deskAfter)}px`);
+  check("desktop: once dismissed, the diagram starts above 252px", deskAfter < 252, `starts at ${Math.round(deskAfter)}px`);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(800);
   const phoneAfter = await page.evaluate(() => document.querySelector(".canvas-wrap").getBoundingClientRect().top + window.scrollY);
@@ -293,6 +294,18 @@ try {
     check("muvue link: the link signs a new browser in", await signedIn(f));
     await f.setViewportSize({ width: 1280, height: 800 });
     await f.screenshot({ path: join(outDir, "07-desktop-signed-in.png") });
+    // --- Agents tab (mission control phase 1) at phone and desktop width
+    await f.goto(base + "#/p/" + projectId + "?tab=agents");
+    for (const [w, h] of [[1280, 800], [390, 844]]) {
+      await f.setViewportSize({ width: w, height: h });
+      const shown = await f.waitForSelector(".agents-tab h2", { timeout: 5000 }).then(() => true, () => false);
+      await f.screenshot({ path: join(outDir, `08-agents-${w}.png`), fullPage: true });
+      check(`agents tab ${w}: the Branches section renders`, shown && (await f.getByRole("heading", { name: "Branches" }).count()) === 1);
+      check(`agents tab ${w}: the base branch row is listed`, (await f.locator(".branch-row").count()) >= 1);
+      check(`agents tab ${w}: no horizontal page scroll`, await f.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth));
+      const short = await f.locator(".project-tabs button, .branch-row").evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().height < 44).length);
+      check(`agents tab ${w}: every tab and branch row is at least 44px tall`, short === 0, `${short} too short`);
+    }
     await fresh.close();
   }
 } finally {

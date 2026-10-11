@@ -1,6 +1,7 @@
 """Minimal MCP stdio server (plan section 4/7): exposes *agent* verbs
-only -- `brief/show/start/done/fail/note/ask/wait/replan/status` --
-never the human verbs (`approve/reject/ack/merge/close/pause/resume/
+only -- `brief/show/start/done/fail/note/ask/wait/replan/status`, plus
+the session tools `session_start/session_heartbeat/session_end` (mission
+control phase 1) -- never the human verbs (`approve/reject/ack/merge/close/pause/resume/
 handoff/import`), per plan section 4's explicit split: "Never exposed
 over MCP" for human verbs. `core.gates`/`core.nodes` also refuse a
 non-human actor at the human verbs themselves (see `HumanOnly`), so this
@@ -107,6 +108,20 @@ def _status(conn: sqlite3.Connection, config, args: dict) -> dict:
     return core.queries.status_summary(conn, args.get("project_id"))
 
 
+def _session_start(conn: sqlite3.Connection, config, args: dict, repo_root: Path) -> dict:
+    return core.sessions.spool_start(repo_root, agent=args["agent"], cwd=args["cwd"], node_id=args.get("node_id"))
+
+
+def _session_heartbeat(conn: sqlite3.Connection, config, args: dict, repo_root: Path) -> dict:
+    return core.sessions.spool_heartbeat(
+        repo_root, args["session_id"], action=args.get("action"), touched_paths=args.get("touched_paths"),
+    )
+
+
+def _session_end(conn: sqlite3.Connection, config, args: dict, repo_root: Path) -> dict:
+    return core.sessions.spool_end(repo_root, args["session_id"])
+
+
 # name -> (handler, JSON schema for its arguments, one-line description)
 TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "brief": (_brief, {"type": "object", "properties": {"node_id": {"type": "integer"}, "budget": {"type": "integer"}, "since": {"type": "integer"}}, "required": ["node_id"]}, "What an agent needs to start work on a node, as lines; `text` is the brief, `cursor` the next `since`."),
@@ -119,6 +134,9 @@ TOOLS: dict[str, tuple[Callable, dict, str]] = {
     "wait": (_wait, {"type": "object", "properties": {"question_id": {"type": "integer"}, "default_ok": {"type": "boolean"}}, "required": ["question_id"]}, "Poll a question once."),
     "replan": (_replan, {"type": "object", "properties": {"parent_task_id": {"type": "integer"}, "title": {"type": "string"}, "body_md": {"type": "string"}, "predicted_touches": {"type": "array", "items": {"type": "string"}}, "request_id": {"type": "string"}}, "required": ["parent_task_id", "title"]}, "Add a subtask within an already-approved task's scope."),
     "status": (_status, {"type": "object", "properties": {"project_id": {"type": "integer"}}}, "Node counts by status."),
+    "session_start": (_session_start, {"type": "object", "properties": {"agent": {"type": "string"}, "cwd": {"type": "string"}, "node_id": {"type": "integer"}}, "required": ["agent", "cwd"]}, "Tell muvue an agent session started in `cwd` (absolute path); returns its session_id. For agent CLIs without Claude Code hooks."),
+    "session_heartbeat": (_session_heartbeat, {"type": "object", "properties": {"session_id": {"type": "string"}, "action": {"type": "string"}, "touched_paths": {"type": "array", "items": {"type": "string"}}}, "required": ["session_id"]}, "Report that a session is working: what it is doing and which files it touched (at most 100 paths). The session_id must come from session_start; a heartbeat for a session that was never started is ignored."),
+    "session_end": (_session_end, {"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}, "Tell muvue a session ended. The session_id must come from session_start; an end for a session that was never started is ignored."),
 }
 
 
@@ -138,6 +156,11 @@ def _tools_list_payload() -> dict:
     }
 
 
+# Handlers that take `repo_root` as a fourth argument: `start`/`done` for
+# branch coherence, worktrees and checks; the session tools to spool.
+_NEEDS_REPO_ROOT = ("start", "done", "session_start", "session_heartbeat", "session_end")
+
+
 def _call_tool(repo_root: Path, config, name: str, arguments: dict) -> dict:
     entry = TOOLS.get(name)
     if entry is None:
@@ -146,11 +169,7 @@ def _call_tool(repo_root: Path, config, name: str, arguments: dict) -> dict:
     conn = core.db.connect(repo_root / ".muvue" / "muvue.db")
     try:
         try:
-            # `start` alone also needs repo_root (v4 section 5, branch
-            # coherence -- "every start" -- and, pre-existing, strict-mode
-            # worktree binding; every other verb's core.* call takes
-            # (conn, ...) with no repo_root parameter at all).
-            if name in ("start", "done"):
+            if name in _NEEDS_REPO_ROOT:
                 result = handler(conn, config, arguments, repo_root)
             else:
                 result = handler(conn, config, arguments)
@@ -162,6 +181,7 @@ def _call_tool(repo_root: Path, config, name: str, arguments: dict) -> dict:
             core.asks.AskError,
             core.state_machine.InvalidTransition,
             core.state_machine.NotLeaseOwner,
+            core.sessions.SessionError,
             LookupError,
         ) as e:
             raise McpError(-32000, str(e)) from e

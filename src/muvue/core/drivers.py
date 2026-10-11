@@ -299,17 +299,34 @@ def stop_all(sig: int = signal.SIGTERM) -> int:
 
 def _run_streaming(
     command: str, cwd: Path, stdin_text: str, *, timeout: int, log_path: Path | None,
+    env: dict[str, str] | None = None, on_spawn: Callable[[int], None] | None = None,
 ) -> tuple[int, str, str]:
     """Run `command` in its own session, feed `stdin_text`, and collect
     stdout/stderr -- copying each line to `log_path` as it arrives so a
     running node's output can be tailed (`GET /nodes/{id}/logs`). Raises
-    `subprocess.TimeoutExpired` after killing the process group."""
+    `subprocess.TimeoutExpired` after killing the process group.
+
+    `on_spawn(pid)` runs as soon as the process exists (the runner records
+    it on the session row). If it raises, the process group is killed and
+    the error propagates: a driver nobody can stop must not keep running."""
     proc = subprocess.Popen(
         command, shell=True, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, start_new_session=True,
+        stderr=subprocess.PIPE, text=True, start_new_session=True, env=env,
     )
     with _ACTIVE_LOCK:
         _ACTIVE.add(proc)
+    if on_spawn is not None:
+        try:
+            on_spawn(proc.pid)
+        except BaseException:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # already exited; the on_spawn error is the one to report
+            proc.wait()
+            with _ACTIVE_LOCK:
+                _ACTIVE.discard(proc)
+            raise
     log = open(log_path, "a", encoding="utf-8") if log_path is not None else None
     log_lock = threading.Lock()
     chunks: dict[str, list[str]] = {"out": [], "err": []}
@@ -362,6 +379,8 @@ def invoke_driver(
     *,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     log_path: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> DriverResult:
     """Run `auth_check` (if configured), then `command` with `brief_text`
     piped on stdin, in `cwd`. Never reads/stores/passes any vendor
@@ -375,7 +394,11 @@ def invoke_driver(
     prompt's requirement.
 
     `log_path`: append the driver's output there line by line as it runs.
-    The command runs in its own session so `stop_all` can end it."""
+    The command runs in its own session so `stop_all` can end it.
+
+    `env`: the command's whole environment (None inherits this
+    process's). `on_spawn(pid)`: called once the command has started;
+    see `_run_streaming`."""
     cwd = Path(cwd)
     if agent_cfg.auth_check.strip():
         check = subprocess.run(
@@ -395,6 +418,7 @@ def invoke_driver(
     try:
         returncode, stdout, stderr = _run_streaming(
             agent_cfg.command, cwd, brief_text, timeout=timeout, log_path=log_path,
+            env=env, on_spawn=on_spawn,
         )
     except subprocess.TimeoutExpired:
         return DriverResult(status="failed", error=f"driver timed out after {timeout}s")

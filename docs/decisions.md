@@ -2502,3 +2502,44 @@ reading here. Real `decisions` table entries start once dogfooding begins
     allowlisted peers. Cost if wrong: a device you do not control that
     reaches the port under your own login gets full control, so the tailnet
     ACLs must keep the daemon's port limited to your own devices.
+
+177. **Agent sessions and worktrees are recorded (mission control phase
+    1).** muvue used to know only the nodes its runner drove; a person's
+    own Claude Code session, or two sessions in one repository, were
+    invisible. Now every session in a repository has a `sessions` row
+    (schema 9), and the dashboard's Agents tab shows them against the
+    repository's worktrees.
+    - The hooks still never touch the DB to record: a session line is
+      one `O_APPEND` write, folded in by the drain. The queue is
+      untrusted: a line never sets `pid`, the one field Stop signals.
+      It can create a `hand` row, or a `launched` alias row (no `pid`)
+      for an agent's own id when it names a live run.
+    - A session's node comes from its worktree, then from the run that
+      launched it (`MUVUE_SESSION`; the agent's own id is an alias of
+      the run), then from an MCP `node_id`, never from
+      `.muvue/current_node`, which is one file for the whole repository.
+    - Claude Code hooks in a worktree outside the repository find it
+      through the worktree's `.git` file (or the strict-mode airlock's
+      marker) and only record. Git hooks do not: a `post-commit` there
+      would spool the main checkout's HEAD, and decision #153 already
+      links worktree commits at `done`.
+    - `adapter install claude-code --user` installs record-only hooks
+      machine-wide. They never block an edit, because a repository that
+      never installed the adapter must not start refusing edits, and
+      they stand down when the project's own hooks are installed, so no
+      event is counted twice.
+    - Liveness is computed on read: working, waiting on you, quiet (no
+      event for 2 to 15 minutes; possibly a long tool call), idle, ended.
+      The spec named four states; "quiet" fills the gap between its
+      working and idle rules.
+    - PreToolUse and MCP heartbeat lines update the session without a
+      `hook.*` audit event; one audit row per tool call would swamp
+      `events`.
+    - Stop exists only for launched sessions: SIGTERM to the process
+      group the runner recorded. A hand session is refused with 409.
+    - Sessions are observations, not decisions, so `rebuild` does not
+      replay them.
+    Cost if wrong: only Edit, Write and Bash calls refresh a session, so
+    an agent that only reads for more than two minutes shows "quiet";
+    and a branch created at an old base commit with nothing on it reads
+    as merged.

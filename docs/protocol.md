@@ -1,6 +1,6 @@
 # muvue protocol
 
-`protocol_version = 3` (`muvue.core.config.PROTOCOL_VERSION`, written to
+`protocol_version = 4` (`muvue.core.config.PROTOCOL_VERSION`, written to
 `.muvue/config.toml` by `init`). Bump on any verb change. `doctor` warns
 when a repo's `config.toml` or an installed adapter names another
 version.
@@ -32,6 +32,19 @@ Version 3 (the project canvas backend) changed:
   and `depends_on` is dict-shaped (`{"id": int, "carries": str|None}`)
   everywhere it's accepted -- the CLI's `decompose`/`replan` and the API
   alike.
+
+Version 4 (mission control phase 1) changed:
+- The Claude Code adapter installs `UserPromptSubmit` and `SessionEnd`
+  hooks too, and every hook queue line of a session carries
+  `session_id`, `cwd`, `transcript_path`, `agent` and, for an agent the
+  runner launched, `launched_session`.
+- `muvue adapter install claude-code --user` installs record-only hooks
+  in `~/.claude/settings.json`.
+- New MCP tools `session_start`, `session_heartbeat`, `session_end`.
+- New endpoints `GET /sessions`, `GET /worktrees`,
+  `POST /sessions/{id}/stop`.
+- `sessions` and `session_touches` tables (`SCHEMA_VERSION` 8 -> 9) and a
+  `[sessions]` config table.
 
 All mutating verbs go through `muvue.core` — the CLI never issues raw SQL.
 
@@ -489,6 +502,135 @@ the verbs above (decision #167).
   resolved `agent` field (`node.owner` or the routed default for its
   kind) on each node, for the dashboard's flow diagram (decision #169).
 
+## Sessions and worktrees (protocol_version 4, mission control phase 1)
+
+A **session** is one run of an agent CLI. `launched` sessions are the
+runner's (`run-<uuid>`); every other session is `hand`. Rows live in
+`sessions`; repository-relative paths a session edited live in
+`session_touches`. Decision #177 explains the design.
+
+**Hook queue lines.** Every Claude Code hook line of a session adds
+`session_id`, `cwd` and `transcript_path` (each when the payload has
+it), `agent: "claude"`, and `launched_session` when `MUVUE_SESSION` is
+set (the runner sets it for the agents it launches). A payload without a
+`session_id` spools exactly what it did before, and `pre-tool-use`
+writes no line at all without one. Shapes:
+
+- `{"event": "pre-tool-use", "ts", "node_id", "tool_name", ["file_path"], <session>}`:
+  one line per Edit, Write or Bash call in a session (the matcher is
+  still `Edit|Write|Bash`; `file_path` is present for Edit and Write).
+  No DB open, no subprocess.
+- `{"event": "user-prompt-submit", "ts", "node_id", <session>}`: the
+  prompt text is never spooled.
+- `{"event": "session-end", "ts", "node_id", ["reason"], <session>}`.
+- `session-start`, `stop` and `pre-compact` lines as before, plus
+  `<session>`.
+- `{"event": "hook_error", "ts", "hook", "error"}`: a Claude Code hook
+  raised; it spools this line, exits 0 and the agent continues.
+
+A hook line's `node_id` still comes from `.muvue/current_node` (for the
+allow/deny decision and the audit event) but never decides which node a
+session belongs to.
+
+A Claude Code hook whose directory has no `.muvue/` above it reads the
+first `.git` *file* above it (`gitdir: <common>/worktrees/<name>`) and
+uses `<common>`'s repository: `<common>/..` for a worktree of the
+checkout, or the repository named by the airlock's `muvue-repo-root`
+marker for a strict-mode worktree. Such a hook only records; it does not
+allow or deny, since `.muvue/current_node` belongs to the main
+checkout. A line for a session whose repository cannot be found is
+dropped, not queued. Git hooks do not do this walk: a `post-commit` in a
+linked worktree would spool the main checkout's HEAD.
+
+**User-level install.** `muvue adapter install claude-code --user`
+writes the six hooks to `~/.claude/settings.json` with a
+`MUVUE_HOOK_SCOPE=user` prefix. Those hooks only record, never block,
+exit 0 at once outside a registered repository, and record nothing when
+the project's own `.claude/settings.json` already runs muvue's hooks.
+`doctor` prints `claude code hooks: repo`, `user`, `repo, user` or `not
+installed`, and warns when the repository's own install lacks an event
+(re-run `muvue adapter install claude-code`).
+
+**Drain.** `drain_queue` folds each session line into `sessions` in the
+transaction that writes its `hook.<event>` audit event. `pre-tool-use`
+and MCP `heartbeat` lines update the session without an audit event. The
+queue is untrusted: a line never sets `pid` and is validated field by
+field. It creates a `hand` row, or, when it names a live launched run
+(`MUVUE_SESSION`), a `launched` alias row for the agent's own id that
+points at that run and has no `pid`; a line that names no valid
+session (or a heartbeat or end for a session that was never started) is
+ignored. A session's node is the node whose `worktree` contains `cwd`;
+else, for a launched agent, the runner's node (the agent's own id is
+stored as `alias_of` the run, so one run is one session); else an MCP
+`bind_node_id`; else none (off-plan). `last_action` is `launched` (a run
+that has not reported yet), `session started`, `prompt sent`, `<Tool> <path>`, `turn ended`, `compacting`,
+`session ended`, `run ended`, or a heartbeat's `action`. `waiting` is 1
+after `stop` and 0 after any other line. Sessions are observations of
+outside processes, so `rebuild` does not replay them.
+
+**Liveness** (`state`), computed on read from `[sessions]` in
+`config.toml` (`working_s = 120`, `idle_s = 900`, `ended_s = 7200`,
+seconds since the last event). Precedence: `ended` (ended_at set, or no
+event for more than `ended_s`), then `waiting` (after Stop), then
+`working` (event within `working_s`), then `idle` (no event for more
+than `idle_s`), else `quiet` (between `working_s` and `idle_s`: a long
+tool call, or gone). Only Edit, Write and Bash calls refresh a session,
+so an agent that only reads shows `quiet` after two minutes.
+
+**MCP tools** (also in `muvue mcp`, for agent CLIs without Claude Code
+hooks). `session_start(agent, cwd, node_id?)` returns
+`{"session_id": "mcp-<uuid>"}` (`cwd` must be absolute);
+`session_heartbeat(session_id, action?, touched_paths?)` takes at most
+100 paths; `session_end(session_id)`. They spool `session-start`,
+`heartbeat` and `session-end` lines (`node_id` travels as
+`bind_node_id`). Bad arguments are `-32000` errors naming the argument.
+
+**Runner.** `run_node` inserts the `launched` row before the driver
+starts, passes `MUVUE_SESSION=<run id>` in the driver's environment,
+records the driver's pid (its process group) once it has spawned, drains
+the agent's lines, and then ends the row. If the driver exited because
+of a Stop (a `session.stopped` event for this run), the node is released
+back to `ready` as after a `pause`: it is not failed, `attempts` is not
+increased, no lesson is written, and the run does not start it again.
+
+**Endpoints** (session-gated; the POST is JSON-only):
+
+- `GET /sessions?project_id=N&include_ended=0`: `{"sessions": [...]}`,
+  newest event first. Each has the `sessions` columns plus `state`,
+  `node_title`, `node_status`, `worktree`, `touches` and `spend`
+  (`{"in_tokens", "out_tokens", "cost"}` summed from `node_usage` for a
+  launched session's node and agent, so several runs of one node add up;
+  null for hand sessions). With `project_id`, off-plan sessions are
+  included.
+- `GET /worktrees`: `{"worktrees": [...], "errors": [...]}` for the
+  checkout and the strict-mode airlock. Each row: `path`, `branch`,
+  `head`, `base`, `is_base`, `ahead`, `behind`, `changed_paths`,
+  `fork_time`, `tip_time`, `merged`, `error`, `session_ids`, `node_id`,
+  `node_title`, `node_status`, `stage` (`worktree`, `commits`, `checks`,
+  `review`, `merged`) and `planned` (`[{"glob", "touched"}]`). A git
+  failure is `git failed: <first line of stderr>` on the row, or in
+  `errors` for a whole listing. Branch status is cached by (tip sha,
+  base sha). `merged` is a heuristic: no commits ahead and either the
+  base moved past the branch or its node is `done`. `checks` is inferred
+  (the node is `in_progress` and its launched session has ended).
+- `POST /sessions/{id}/stop`: SIGTERM to a launched session's process
+  group; 200 `{"session_id", "signalled"}`. The `session.stopped` event
+  is the stop request: it commits in the same transaction as the signal
+  (and is rolled back if the signal fails), before the runner can end
+  the row, so the runner treats the driver's exit as a stop rather than
+  a failure and does not retry the node (see **Runner** above). An
+  alias id stops its run. 404 for an unknown id. 409 in every other
+  refusal, with the reason as the detail:
+  - `started by hand; stop it where it runs` for a hand session;
+  - the session has already ended, or has no process yet;
+  - the recorded pid is muvue's own process or process group (never
+    signalled);
+  - the pid does not lead a process group, so it is not the driver's
+    (never signalled; the run is marked ended);
+  - the process is gone when signalled (`ProcessLookupError`; the run
+    is marked ended);
+  - muvue is not permitted to signal it (`PermissionError`).
+
 ## Leases and optimistic version (P3, ships v0.1)
 
 - `start` refuses a second owner on an already-leased, unexpired
@@ -682,8 +824,8 @@ counts by status.
 - `claude-code`: merges a `hooks` section into `.claude/settings.json`
   (idempotent -- re-running replaces only muvue's own entries, detected
   by `-m muvue hook` in the command string; preserves unrelated keys and
-  other tools' hook entries) for `SessionStart`, `PreToolUse`,
-  `PreCompact`, `Stop`, plus a `_muvue.protocol_version` marker.
+  other tools' hook entries) for `SessionStart`, `UserPromptSubmit`,
+  `PreToolUse`, `PreCompact`, `Stop`, `SessionEnd`, plus a `_muvue.protocol_version` marker.
   `core.doctor` warns if that marker no longer matches the repo's
   current `protocol_version`.
 - `codex` / `gemini` / `cursor`: config writers only
