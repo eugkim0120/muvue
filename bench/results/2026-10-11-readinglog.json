@@ -1,0 +1,302 @@
+{
+  "suite": "readinglog",
+  "date": "2026-10-11",
+  "muvue_sha": "bc22bc8920f5907b01e1a3be1cb90f01780f7bde",
+  "muvue_dirty": true,
+  "arms": {
+    "muvue": {
+      "status": "ok",
+      "error": null,
+      "wall_s": 6.84,
+      "acceptance": {
+        "passed": 0,
+        "total": 4,
+        "label": "measured"
+      },
+      "flexibility": {
+        "commands": 25,
+        "human_verbs": 9,
+        "label": "measured",
+        "steps": [
+          [
+            "init",
+            "/tmp/muvue-bench-ak8rdlny/muvue/repo",
+            0
+          ],
+          [
+            "project",
+            "create",
+            "--goal",
+            "readinglog: a command-line reading log with progress and streaks",
+            0
+          ],
+          [
+            "spec",
+            "1",
+            "--title",
+            "readinglog CLI",
+            "--body",
+            "A small Python CLI, `readinglog`, that keeps a reading log in a JSON file (default ~/.readinglog.json, overridable with READINGLOG_FILE). Commands: `add TITLE --pages N` adds a book; `log TITLE PAGES` records pages read today; `progress` lists each book with pages read, total and percent; `stats` shows pages this week and the current daily streak. Standard library only. Every module has pytest tests.",
+            0
+          ],
+          [
+            "approve",
+            "spec:1",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "Book and reading-session models",
+            "--criteria",
+            "src/readinglog/models.py defines Book(title, pages) and Session(title, day, pages) dataclasses that round-trip to and from dicts, with tests",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/models.py",
+            "--predicted-touches",
+            "tests/test_models.py",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "JSON storage with atomic save",
+            "--criteria",
+            "src/readinglog/store.py loads and saves the log at READINGLOG_FILE or ~/.readinglog.json, writing via a temp file and os.replace, with tests",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/store.py",
+            "--predicted-touches",
+            "tests/test_store.py",
+            "--depends-on",
+            "2",
+            "--carries",
+            "Book, Session",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "add and log commands",
+            "--criteria",
+            "readinglog add TITLE --pages N and readinglog log TITLE PAGES update the store; logging an unknown title exits 1 with a message; tested",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/cli.py",
+            "--predicted-touches",
+            "src/readinglog/commands/*.py",
+            "--predicted-touches",
+            "tests/test_cli.py",
+            "--depends-on",
+            "3",
+            "--carries",
+            "load, save",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "Daily streak calculation",
+            "--criteria",
+            "src/readinglog/streak.py computes the current daily streak and pages this week from sessions and a given today date, with tests for gaps and week boundaries",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/streak.py",
+            "--predicted-touches",
+            "tests/test_streak.py",
+            "--depends-on",
+            "2",
+            "--carries",
+            "Session",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "progress report",
+            "--criteria",
+            "readinglog progress prints one line per book: title, pages read / total and percent, sorted by percent; tested",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/commands/progress.py",
+            "--predicted-touches",
+            "tests/test_progress.py",
+            "--depends-on",
+            "4",
+            "--carries",
+            "CLI entry point",
+            0
+          ],
+          [
+            "decompose",
+            "1",
+            "--title",
+            "stats command",
+            "--criteria",
+            "readinglog stats prints pages this week and the current streak in days; tested",
+            "--criteria-mode",
+            "auto",
+            "--predicted-touches",
+            "src/readinglog/commands/stats.py",
+            "--predicted-touches",
+            "tests/test_stats.py",
+            "--depends-on",
+            "4",
+            "--carries",
+            "CLI entry point",
+            "--depends-on",
+            "5",
+            "--carries",
+            "streak, week_pages",
+            0
+          ],
+          [
+            "approve",
+            "gate2:1",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:2",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:3",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:4",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:5",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:6",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "approve",
+            "review:7",
+            0
+          ],
+          [
+            "run",
+            0
+          ],
+          [
+            "merge",
+            0
+          ]
+        ]
+      },
+      "truth": {
+        "label": "measured",
+        "done": 6,
+        "done_with_commit": 1,
+        "done_claiming_blocked": 5,
+        "truth_score": 0.167,
+        "check_runs": 6,
+        "check_runs_with_output": 0,
+        "approvals_by_actor": {
+          "gate2.approved": {
+            "agent/agent_parent:claude": 1
+          },
+          "node.done": {
+            "agent/agent_parent:claude": 6
+          }
+        }
+      },
+      "outcome": {
+        "label": "measured",
+        "statuses": {
+          "done": 6
+        },
+        "failed": 0,
+        "subtasks": 0,
+        "conflict_events": 0
+      },
+      "tokens": {
+        "sessions": 6,
+        "sessions_label": "measured",
+        "prompt_bytes": [
+          844,
+          848,
+          1010,
+          861,
+          894,
+          857
+        ],
+        "prompt_bytes_label": "measured",
+        "shim_outcomes": {
+          "committed": 1,
+          "blocked": 5
+        },
+        "in_tokens": 2090120,
+        "out_tokens": 19041,
+        "cost_usd": 1.3893,
+        "usage_label": "replayed"
+      }
+    },
+    "plain": {
+      "status": "ok",
+      "error": null,
+      "wall_s": 0.19,
+      "acceptance": {
+        "passed": 4,
+        "total": 4,
+        "label": "measured"
+      },
+      "flexibility": {
+        "commands": 0,
+        "human_verbs": 0,
+        "label": "measured",
+        "steps": []
+      },
+      "tokens": {
+        "sessions": 1,
+        "sessions_label": "measured",
+        "usage_label": "not measured (shim)"
+      }
+    }
+  }
+}
