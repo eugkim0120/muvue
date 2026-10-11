@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bench.score import node_ids_with_status, read_shim_log, score_muvue
+from bench.score import check_output_of, node_ids_with_status, read_shim_log, score_muvue
 
 
 def _env(tmp_path: Path) -> dict:
@@ -63,3 +63,21 @@ def test_read_shim_log(tmp_path):
     log.write_text('{"outcome": "blocked", "prompt_bytes": 10}\n{"outcome": "committed", "prompt_bytes": 12}\n')
     assert [e["outcome"] for e in read_shim_log(log)] == ["blocked", "committed"]
     assert read_shim_log(None) == []
+
+
+def test_check_output_of_matches_check_event_with_output_key():
+    assert check_output_of("review.auto_check_failed", {"command": "pytest", "stdout": "FAILED x"})
+    assert check_output_of("node.check_ran", {"output": "ok"})
+    assert check_output_of("check.tail_recorded", {"tail": "...\n"})
+
+
+def test_check_output_of_matches_node_review_with_checks_list():
+    payload = {"tier": "low", "checks": [{"name": "test"}, {"name": "lint", "stderr": "boom"}]}
+    assert check_output_of("node.review", payload)
+
+
+def test_check_output_of_negative_cases():
+    assert not check_output_of("review.auto_check_failed", {"command": "pytest"})
+    assert not check_output_of("node.review", {"tier": "low", "flagged": False})
+    assert not check_output_of("review.awaiting", {"tier": "low", "flagged": True})
+    assert not check_output_of("node.done", {"output": "ignored, no 'check' in event type"})
