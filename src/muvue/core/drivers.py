@@ -319,7 +319,10 @@ def _run_streaming(
         try:
             on_spawn(proc.pid)
         except BaseException:
-            os.killpg(proc.pid, signal.SIGKILL)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # already exited; the on_spawn error is the one to report
             proc.wait()
             with _ACTIVE_LOCK:
                 _ACTIVE.discard(proc)

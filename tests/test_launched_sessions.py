@@ -104,3 +104,52 @@ def test_end_launched_does_not_overwrite_an_earlier_end(tmp_path):
     sessions.end_launched(conn, run_id)
     assert conn.execute("SELECT ended_at FROM sessions WHERE id = ?", (run_id,)).fetchone()["ended_at"] == first
     conn.close()
+
+
+def _run_node_with(tmp_path, monkeypatch, agent, patch_drain=None):
+    monkeypatch.delenv("MUVUE_SESSION", raising=False)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, env=GIT_ENV)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"], cwd=tmp_path, check=True, env=GIT_ENV)
+    init_repo(tmp_path)
+    conn = core_db.connect(tmp_path / ".muvue" / "muvue.db")
+    config = MuvueConfig(
+        checks=ChecksConfig(test="true", lint="true"),
+        agents={"stub": AgentConfig(command="unused", cost_model="tokens")},
+        routing=RoutingConfig(spec="stub", task="stub", subtask="stub"),
+    )
+    project = projects.create_project(conn, goal="g")
+    task = nodes.create_node(
+        conn, project_id=project["id"], kind="task", title="t", criteria=["c"],
+        criteria_mode="auto", predicted_touches=["a.py"], status="pending",
+    )
+    gates.approve_gate2(conn, project["id"], config=config)
+    if patch_drain is not None:
+        monkeypatch.setattr(runner_mod.hooks_mod, "drain_queue", patch_drain)
+    return conn, config, task
+
+
+def test_run_node_ends_the_session_when_the_driver_raises(tmp_path, monkeypatch):
+    def agent(agent_name, agent_cfg, brief, cwd, *, log_path=None, env=None, on_spawn=None):
+        raise RuntimeError("driver blew up")
+
+    conn, config, task = _run_node_with(tmp_path, monkeypatch, agent)
+    with pytest.raises(RuntimeError, match="driver blew up"):
+        runner_mod.run_node(conn, nodes.get_node(conn, task["id"]), "stub", config.agents["stub"], config, tmp_path, invoke=agent)
+    row = conn.execute("SELECT ended_at FROM sessions WHERE origin = 'launched'").fetchone()
+    assert row["ended_at"] is not None
+    conn.close()
+
+
+def test_run_node_ends_the_session_when_the_drain_raises(tmp_path, monkeypatch):
+    def agent(agent_name, agent_cfg, brief, cwd, *, log_path=None, env=None, on_spawn=None):
+        return DriverResult(status="failed", error="gives up")
+
+    def bad_drain(conn, repo_root):
+        raise RuntimeError("drain blew up")
+
+    conn, config, task = _run_node_with(tmp_path, monkeypatch, agent, patch_drain=bad_drain)
+    with pytest.raises(RuntimeError, match="drain blew up"):
+        runner_mod.run_node(conn, nodes.get_node(conn, task["id"]), "stub", config.agents["stub"], config, tmp_path, invoke=agent)
+    row = conn.execute("SELECT ended_at FROM sessions WHERE origin = 'launched'").fetchone()
+    assert row["ended_at"] is not None
+    conn.close()

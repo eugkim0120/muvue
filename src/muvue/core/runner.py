@@ -490,15 +490,13 @@ def run_node(
             env={**os.environ, sessions_mod.LAUNCHED_SESSION_ENV: session_id},
             on_spawn=lambda pid: sessions_mod.set_pid(conn, session_id, pid),
         )
-    except BaseException:
+        # The agent's commits reach the DB through the hook spool. Without a
+        # daemon nothing drains it, so link them now: `done` judges the node
+        # by its actual touches and diff. Draining before ending the session
+        # lets the agent's last lines land on a live row.
+        hooks_mod.drain_queue(conn, Path(repo_root))
+    finally:
         sessions_mod.end_launched(conn, session_id)
-        raise
-    # The agent's commits reach the DB through the hook spool. Without a
-    # daemon nothing drains it, so link them now: `done` judges the node
-    # by its actual touches and diff. Draining before ending the session
-    # lets the agent's last lines land on a live row.
-    hooks_mod.drain_queue(conn, Path(repo_root))
-    sessions_mod.end_launched(conn, session_id)
     if _stop_requested.is_set():
         return _stopped(conn, node_row, owner, agent_name)
 
