@@ -98,6 +98,9 @@ def run_migrate(repo_root: Path) -> int:
             )
             # SCHEMA_VERSION 7 -> 8 (project canvas plan): deps.carries.
             _add_column_if_missing(conn, "deps", "carries", "TEXT")
+            # SCHEMA_VERSION 8 -> 9 (mission control phase 1): `sessions`
+            # and `session_touches` are new tables, already created by
+            # `init_db`'s `CREATE TABLE IF NOT EXISTS` re-apply above.
             conn.execute(
                 "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
                 (str(SCHEMA_VERSION),),

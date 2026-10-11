@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -68,6 +68,26 @@ class BudgetConfig(StrictModel):
 
     max_wall_clock_minutes: int = 240
     max_nodes_per_run: int = 20
+
+
+class SessionsConfig(StrictModel):
+    """`[sessions]` (mission control phase 1): liveness thresholds, in
+    seconds since a session's last event. `core.sessions.session_state`
+    reads them: working within `working_s`, idle after `idle_s`, ended
+    after `ended_s`; "quiet" in between working and idle."""
+
+    working_s: int = 120
+    idle_s: int = 900
+    ended_s: int = 7200
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "SessionsConfig":
+        if not 0 < self.working_s < self.idle_s < self.ended_s:
+            raise ValueError(
+                "[sessions] needs 0 < working_s < idle_s < ended_s "
+                f"(got {self.working_s}, {self.idle_s}, {self.ended_s})"
+            )
+        return self
 
 
 class AgentBudgetConfig(StrictModel):
@@ -150,6 +170,7 @@ class MuvueConfig(StrictModel):
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    sessions: SessionsConfig = Field(default_factory=SessionsConfig)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
 
@@ -205,6 +226,11 @@ url = ""
 [budget]
 max_wall_clock_minutes = 240
 max_nodes_per_run = 20
+
+[sessions]
+working_s = 120
+idle_s = 900
+ended_s = 7200
 
 [agents.fake]
 command = "muvue-fake-agent"
